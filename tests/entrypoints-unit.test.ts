@@ -15,6 +15,12 @@ const mocks = vi.hoisted(() => ({
   closeTransport: vi.fn(async () => {}),
   uxpStart: vi.fn(async () => {}),
   uxpStop: vi.fn(async () => {}),
+  startBroker: vi.fn(async () => ({
+    endpoint: "local-test-endpoint",
+    uxpBridge: { address: () => ({ host: "127.0.0.1", port: 7788, path: "/uxp" }) },
+    close: mocks.closeMcp,
+  })),
+  runProxy: vi.fn(async () => {}),
   execFileSync: vi.fn(),
   fsExists: vi.fn(() => false),
   fsStat: vi.fn(() => ({ isDirectory: () => false, isFile: () => true })),
@@ -95,6 +101,10 @@ vi.mock("../src/bridge/uxp-websocket-bridge.js", () => ({
     stop = mocks.uxpStop;
     address() { return { host: "127.0.0.1", port: 7788, path: "/premiere-uxp" }; }
   },
+}));
+vi.mock("../src/bridge/local-broker.js", () => ({
+  startLocalBroker: mocks.startBroker,
+  runLocalBrokerProxy: mocks.runProxy,
 }));
 vi.mock("node:child_process", () => ({ execFileSync: mocks.execFileSync }));
 vi.mock("node:fs", async (original) => {
@@ -230,17 +240,47 @@ describe("stdio CLI entry point", () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining("UXP bridge listening"));
   });
 
-  it("continues with CEP-only tools when another MCP instance owns the UXP loopback port", async () => {
+  it("runs proxy mode without starting a per-session UXP listener", async () => {
+    process.argv = [process.execPath, "index.js", "--proxy"];
+    process.env.PREMIERE_UXP_TOKEN = "a-secure-token-with-length";
+
+    await import("../src/index.js");
+
+    await vi.waitFor(() => expect(mocks.runProxy).toHaveBeenCalledOnce());
+    expect(mocks.startBroker).not.toHaveBeenCalled();
+    expect(mocks.runProxy).toHaveBeenCalledWith(expect.objectContaining({
+      brokerScript: expect.stringMatching(/index\.(js|ts)$/),
+    }));
+  });
+
+  it("starts broker mode as the single UXP owner", async () => {
+    process.argv = [process.execPath, "index.js", "--broker"];
+    process.env.PREMIERE_UXP_TOKEN = "a-secure-token-with-length";
+    process.env.PREMIERE_UXP_PORT = "7788";
+
+    await import("../src/index.js");
+
+    await vi.waitFor(() => expect(mocks.startBroker).toHaveBeenCalledOnce());
+    expect(mocks.startBroker).toHaveBeenCalledWith(expect.objectContaining({
+      uxpToken: "a-secure-token-with-length",
+      uxpPort: 7788,
+    }));
+    expect(mocks.serveStdio).not.toHaveBeenCalled();
+  });
+
+  it("refuses to start degraded when another MCP instance owns the UXP loopback port", async () => {
     process.argv = [process.execPath, "index.js"];
     process.env.PREMIERE_UXP_TOKEN = "a-secure-token-with-length";
     mocks.uxpStart.mockRejectedValueOnce(Object.assign(new Error("address already in use"), { code: "EADDRINUSE" }));
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
 
     await import("../src/index.js");
 
-    await vi.waitFor(() => expect(mocks.serveStdio).toHaveBeenCalledOnce());
-    expect(mocks.connect).toHaveBeenCalledOnce();
-    expect(error).toHaveBeenCalledWith(expect.stringContaining("continuing with CEP-only tools"));
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+    expect(mocks.serveStdio).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("FATAL: UXP bridge port is already in use"));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("npm run stop:mcp"));
   });
 
   it("keeps non-port UXP startup failures fatal", async () => {

@@ -49,6 +49,11 @@ export interface FirstRunReport {
   components: ReadinessComponent[];
   nextStep: string;
   repair?: string;
+  uxpDiagnostic?: {
+    errorCode: string;
+    connected: boolean;
+    latest: { command: string; phase: string } | null;
+  };
 }
 
 export interface SupportBundle {
@@ -83,6 +88,7 @@ export interface FirstRunHostState {
   reachable: boolean;
   projectOpen?: boolean;
   sequenceOpen?: boolean;
+  uxpDiagnostic?: FirstRunReport["uxpDiagnostic"];
 }
 
 const PRIVACY_EXCLUSIONS = [
@@ -193,6 +199,11 @@ export function buildFirstRunReport(
   backend: "cep" | "uxp",
   host: FirstRunHostState,
 ): FirstRunReport {
+  const uxpDiagnostic = backend === "uxp" ? host.uxpDiagnostic : undefined;
+  const uxpRepair = "Open Window > UXP Plugins > MCP for Adobe Premiere Pro, reload the development plugin, reconnect it, then run the safe UXP check again.";
+  const unreachableComponentRepair = backend === "uxp"
+    ? uxpRepair
+    : "In Premiere Pro, open Window > Extensions > MCP Bridge and make sure it says Running. Close any open Premiere dialog, then try again.";
   const mcpProcess: ReadinessComponent = {
     id: "mcp_process",
     label: "AI assistant connection",
@@ -219,7 +230,7 @@ export function buildFirstRunReport(
           boundary: "connected",
           state: "needs_attention",
           message: "Premiere Pro did not answer the safe connection check.",
-          repair: "In Premiere Pro, open Window > Extensions > MCP Bridge and make sure it says Running. Close any open Premiere dialog, then try again.",
+          repair: unreachableComponentRepair,
         },
         {
           id: "active_project",
@@ -236,8 +247,13 @@ export function buildFirstRunReport(
           message: "Premiere did not respond, so sequence status is unknown.",
         },
       ],
-      nextStep: "Reconnect the Premiere Connector, then run this safe check again.",
-      repair: "If the Connector still does not respond, run premiere-pro-mcp --diagnose-cep and follow its repair guidance.",
+      nextStep: backend === "uxp"
+        ? uxpRepair
+        : "Reconnect the Premiere Connector, then run this safe check again.",
+      repair: backend === "uxp"
+        ? uxpRepair
+        : "If the Connector still does not respond, run premiere-pro-mcp --diagnose-cep and follow its repair guidance.",
+      ...(uxpDiagnostic ? { uxpDiagnostic } : {}),
     };
   }
 

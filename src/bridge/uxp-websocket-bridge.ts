@@ -5,6 +5,22 @@ import { WebSocket, WebSocketServer } from "ws";
 
 const LOOPBACK_HOST = "127.0.0.1";
 const SUPPORTED_PROTOCOLS = new Set([1, 2]);
+const COMMAND_NAME = /^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)+$/;
+const DIAGNOSTIC_PHASES = new Set([
+  "received",
+  "parsed",
+  "host.project.started",
+  "host.project.completed",
+  "host.sequence.started",
+  "host.sequence.completed",
+  "host.playhead.started",
+  "host.playhead.completed",
+  "host.playhead.timed_out",
+  "serialized",
+  "sent",
+  "failed",
+]);
+const MAX_DIAGNOSTIC_RECORDS = 64;
 
 export interface UxpBridgeOptions {
   token: string;
@@ -31,6 +47,19 @@ export interface UxpHello {
   [key: string]: unknown;
 }
 
+interface UxpDiagnosticRecord {
+  sequence: number;
+  command: string;
+  requestIdPresent: boolean;
+  phase: string;
+}
+
+interface UxpDiagnostics {
+  records: UxpDiagnosticRecord[];
+  capacity: number;
+  dropped: number;
+}
+
 export type UxpConnectionState =
   | { status: "stopped" | "listening"; connected: false }
   | {
@@ -39,6 +68,7 @@ export type UxpConnectionState =
       protocolVersion: number;
       capabilities: UxpHello;
       connectedAt: string;
+      diagnostics?: UxpDiagnostics;
     };
 
 interface PendingRequest {
@@ -71,6 +101,50 @@ function validPort(value: number): number {
   return value;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function validateDiagnostics(value: unknown): UxpDiagnostics | null {
+  if (!isRecord(value) || !Array.isArray(value.records)) return null;
+  if (value.records.length > MAX_DIAGNOSTIC_RECORDS) return null;
+
+  const capacity = value.capacity;
+  const dropped = value.dropped;
+  if (
+    typeof capacity !== "number" ||
+    !Number.isSafeInteger(capacity) ||
+    capacity < 1 ||
+    capacity > MAX_DIAGNOSTIC_RECORDS ||
+    typeof dropped !== "number" ||
+    !Number.isSafeInteger(dropped) ||
+    dropped < 0
+  ) return null;
+
+  const records: UxpDiagnosticRecord[] = [];
+  for (const record of value.records) {
+    if (!isRecord(record)) return null;
+    const sequence = record.sequence;
+    const command = record.command;
+    const requestIdPresent = record.requestIdPresent;
+    const phase = record.phase;
+    if (
+      typeof sequence !== "number" ||
+      !Number.isSafeInteger(sequence) ||
+      sequence < 1 ||
+      typeof command !== "string" ||
+      command.length < 1 ||
+      command.length > 128 ||
+      !COMMAND_NAME.test(command) ||
+      typeof requestIdPresent !== "boolean" ||
+      typeof phase !== "string" ||
+      !DIAGNOSTIC_PHASES.has(phase)
+    ) return null;
+    records.push({ sequence, command, requestIdPresent, phase });
+  }
+  return { records, capacity, dropped };
+}
+
 /**
  * Authenticated loopback WebSocket server used only by the local Premiere UXP
  * panel. It never binds a LAN/WAN interface and does not silently fall back to
@@ -83,6 +157,7 @@ export class UxpWebSocketBridge extends EventEmitter {
   private socket: WebSocket | null = null;
   private hello: UxpHello | null = null;
   private connectedAt: string | null = null;
+  private diagnostics: UxpDiagnostics | null = null;
   private handshakeTimer: NodeJS.Timeout | null = null;
   private readonly pending = new Map<string, PendingRequest>();
 
@@ -150,13 +225,21 @@ export class UxpWebSocketBridge extends EventEmitter {
 
   getState(): UxpConnectionState {
     if (this.socket?.readyState === WebSocket.OPEN && this.hello && this.connectedAt) {
-      return {
+      const state: Extract<UxpConnectionState, { status: "connected" }> = {
         status: "connected",
         connected: true,
         protocolVersion: this.hello.protocolVersion,
         capabilities: this.hello,
         connectedAt: this.connectedAt,
       };
+      if (this.diagnostics) {
+        state.diagnostics = {
+          records: this.diagnostics.records.map((record) => ({ ...record })),
+          capacity: this.diagnostics.capacity,
+          dropped: this.diagnostics.dropped,
+        };
+      }
+      return state;
     }
     return {
       status: this.httpServer ? "listening" : "stopped",
@@ -249,6 +332,7 @@ export class UxpWebSocketBridge extends EventEmitter {
   }
 
   private handleMessage(client: WebSocket, raw: string): void {
+    if (client !== this.socket) return;
     let message: any;
     try {
       message = JSON.parse(raw);
@@ -284,6 +368,10 @@ export class UxpWebSocketBridge extends EventEmitter {
       return;
     }
     if (message?.type === "event") {
+      if (message.payload?.name === "premiere.bridge.command.trace") {
+        const diagnostics = validateDiagnostics(message.payload.diagnostic);
+        if (diagnostics) this.diagnostics = diagnostics;
+      }
       this.emit("event", message.payload);
       return;
     }
@@ -310,6 +398,7 @@ export class UxpWebSocketBridge extends EventEmitter {
     this.socket = null;
     this.hello = null;
     this.connectedAt = null;
+    this.diagnostics = null;
     if (socket?.readyState === WebSocket.OPEN) socket.close();
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);

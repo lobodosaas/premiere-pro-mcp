@@ -9,6 +9,10 @@ import { fileURLToPath } from "url";
 import path from "path";
 import { UxpWebSocketBridge } from "./bridge/uxp-websocket-bridge.js";
 import {
+  runLocalBrokerProxy,
+  startLocalBroker,
+} from "./bridge/local-broker.js";
+import {
   collectLocalDoctor,
   createSupportBundle,
   renderDoctorHuman,
@@ -44,6 +48,8 @@ premiere-pro-mcp — MCP server for Adobe Premiere Pro (319 default-profile tool
 
 Usage:
   premiere-pro-mcp              Start the MCP server (stdio transport)
+  premiere-pro-mcp --proxy      Attach this stdio session to the shared local broker
+  premiere-pro-mcp --broker     Start the shared local broker and UXP bridge
   premiere-pro-mcp --install-cep   Install the CEP plugin into Premiere Pro
   premiere-pro-mcp --uninstall-cep Remove this CEP plugin from Premiere Pro
   premiere-pro-mcp --diagnose-cep  Check the CEP install, debug keys, and Premiere signature logs
@@ -58,9 +64,10 @@ Environment variables:
   PREMIERE_TIMEOUT_MS   Command timeout in ms (default: 30000)
   PREMIERE_MCP_CAPABILITIES  Comma-separated authority profile
   PREMIERE_MCP_TOOL_PACKS    Comma-separated discovery packs: full, essential, inspection, delivery, captions
-  PREMIERE_MCP_DEBUG    Set to 1/true to enable verbose stderr diagnostics
-  PREMIERE_UXP_TOKEN    Enable the authenticated local UXP bridge (minimum 16 characters)
-  PREMIERE_UXP_PORT     UXP loopback WebSocket port (default: 7777)
+   PREMIERE_MCP_DEBUG    Set to 1/true to enable verbose stderr diagnostics
+   PREMIERE_UXP_TOKEN    Enable the authenticated local UXP bridge (minimum 16 characters)
+   PREMIERE_UXP_PORT     UXP loopback WebSocket port (default: 7777)
+   PREMIERE_MCP_BROKER_ENDPOINT  Optional per-user broker IPC endpoint override
 
 More info: https://github.com/leancoderkavy/premiere-pro-mcp
 `);
@@ -153,15 +160,60 @@ if (cepActions.length === 1) {
   process.exit(0);
 }
 
+const brokerMode = args.includes("--broker");
+const proxyMode = args.includes("--proxy");
+if (brokerMode && proxyMode) {
+  console.error("Use only one of --broker or --proxy.");
+  process.exit(1);
+}
+
 async function main() {
   process.env.PREMIERE_MCP_TRANSPORT = "stdio";
+
+  if (proxyMode) {
+    await runLocalBrokerProxy({
+      brokerScript: __filename,
+      endpoint: process.env.PREMIERE_MCP_BROKER_ENDPOINT,
+      environment: process.env,
+    });
+    return;
+  }
+
   const telemetry = getTelemetry();
   const bridgeOptions = {
     tempDir: process.env.PREMIERE_TEMP_DIR,
     timeoutMs: process.env.PREMIERE_TIMEOUT_MS
       ? parseInt(process.env.PREMIERE_TIMEOUT_MS, 10)
-      : undefined,
+    : undefined,
   };
+
+  if (brokerMode) {
+    const uxpToken = process.env.PREMIERE_UXP_TOKEN;
+    if (!uxpToken) {
+      throw new Error("--broker requires PREMIERE_UXP_TOKEN");
+    }
+
+    const broker = await startLocalBroker({
+      bridgeOptions,
+      uxpToken,
+      uxpPort: process.env.PREMIERE_UXP_PORT
+        ? parseInt(process.env.PREMIERE_UXP_PORT, 10)
+        : undefined,
+      uxpPath: process.env.PREMIERE_UXP_PATH,
+      ipcEndpoint: process.env.PREMIERE_MCP_BROKER_ENDPOINT,
+      telemetry,
+    });
+    debugLog(`Local broker ready at ${broker.endpoint}`);
+    debugLog(`UXP bridge listening on ws://${broker.uxpBridge.address().host}:${broker.uxpBridge.address().port}${broker.uxpBridge.address().path}`);
+
+    const shutdown = async () => {
+      await broker.close();
+      process.exit(0);
+    };
+    process.once("SIGINT", () => void shutdown());
+    process.once("SIGTERM", () => void shutdown());
+    return;
+  }
 
   const tempDir = getTempDir(bridgeOptions);
   debugLog("Starting MCP server...");
@@ -186,8 +238,14 @@ async function main() {
     } catch (error) {
       if (!isLoopbackPortInUse(error)) throw error;
       console.error(
-        "[premiere-pro-mcp] UXP bridge unavailable because its loopback port is already in use; continuing with CEP-only tools.",
+        "[premiere-pro-mcp] FATAL: UXP bridge port is already in use — another premiere-pro-mcp " +
+        "server instance (orphan from a previous session) is still running. UXP tools would silently " +
+        "miss requests while CEP tools kept working, so this server is refusing to start degraded.\n" +
+        "Fix: run 'npm run stop:mcp' (or kill the stale 'node dist/index.js' processes), " +
+        "then restart the MCP client.",
       );
+      process.exit(1);
+      return;
     }
   }
 

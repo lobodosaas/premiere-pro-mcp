@@ -206,7 +206,7 @@ describe("sendCommand", () => {
     const publishedPaths = mockedRenameSync.mock.calls.map(([, target]) => String(target));
     expect(publishedPaths).toHaveLength(2);
     expect(new Set(publishedPaths).size).toBe(2);
-    expect(publishedPaths.every((path) => /cmd_[0-9a-f-]{36}\.jsx$/.test(path))).toBe(true);
+    expect(publishedPaths.every((path) => /cmd_[0-9a-f-]{36}_[0-9a-f-]{36}\.jsx$/.test(path))).toBe(true);
   });
 
   it("attempts event-driven response watching before using the polling fallback", async () => {
@@ -443,6 +443,65 @@ describe("cleanupTempDir", () => {
     vi.clearAllMocks();
   });
 
+  it("does not remove fresh protocol files from another active server", () => {
+    mockedExistsSync.mockReturnValue(true);
+    mockedReaddirSync.mockReturnValue([
+      "cmd_live.jsx" as any,
+      "res_live.json" as any,
+      "busy_live.json" as any,
+    ]);
+    mockedStatSync.mockReturnValue({ mtimeMs: Date.now() } as unknown as ReturnType<typeof statSync>);
+
+    cleanupTempDir({ tempDir: "/tmp/test-bridge" });
+
+    expect(mockedUnlinkSync).not.toHaveBeenCalled();
+  });
+
+  it("keeps protocol files owned by a live bridge and removes dead-owner files", () => {
+    const liveOwner = "11111111-1111-4111-8111-111111111111";
+    const deadOwner = "22222222-2222-4222-8222-222222222222";
+    mockedExistsSync.mockReturnValue(true);
+    mockedReaddirSync.mockReturnValue([
+      `bridge-owner_${liveOwner}.json` as any,
+      `bridge-owner_${deadOwner}.json` as any,
+      `cmd_${liveOwner}_request.jsx` as any,
+      `res_${liveOwner}_request.json` as any,
+      `cmd_${deadOwner}_request.jsx` as any,
+      `res_${deadOwner}_request.json` as any,
+    ]);
+    mockedReadFileSync.mockImplementation((filePath) =>
+      String(filePath).includes(liveOwner)
+        ? JSON.stringify({ protocolVersion: 1, pid: process.pid })
+        : JSON.stringify({ protocolVersion: 1, pid: 99999999 }),
+    );
+    mockedStatSync.mockReturnValue({ mtimeMs: Date.now() } as unknown as ReturnType<typeof statSync>);
+
+    cleanupTempDir({ tempDir: "/tmp/test-bridge" });
+
+    const unlinkCalls = mockedUnlinkSync.mock.calls.map(([filePath]) => String(filePath));
+    expect(unlinkCalls.some((filePath) => filePath.includes(liveOwner))).toBe(false);
+    expect(unlinkCalls.some((filePath) => filePath.includes(deadOwner))).toBe(true);
+  });
+
+  it("age-protects namespaced files when owner lease state is unreadable", () => {
+    const owner = "33333333-3333-4333-8333-333333333333";
+    mockedExistsSync.mockReturnValue(true);
+    mockedReaddirSync.mockReturnValue([
+      `bridge-owner_${owner}.json` as any,
+      `cmd_${owner}_request.jsx` as any,
+    ]);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("lease temporarily unreadable");
+    });
+    mockedStatSync.mockReturnValue({ mtimeMs: Date.now() } as unknown as ReturnType<typeof statSync>);
+
+    cleanupTempDir({ tempDir: "/tmp/test-bridge" });
+
+    expect(mockedUnlinkSync).not.toHaveBeenCalledWith(
+      join("/tmp/test-bridge", `cmd_${owner}_request.jsx`),
+    );
+  });
+
   it("removes cmd_ and res_ files", () => {
     mockedExistsSync.mockReturnValue(true);
     mockedReaddirSync.mockReturnValue([
@@ -451,6 +510,7 @@ describe("cleanupTempDir", () => {
       "res_123.json" as any,
       "other_file.txt" as any,
     ]);
+    mockedStatSync.mockReturnValue({ mtimeMs: 0 } as unknown as ReturnType<typeof statSync>);
 
     cleanupTempDir({ tempDir: "/tmp/test-bridge" });
 

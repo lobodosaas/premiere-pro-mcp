@@ -165,6 +165,21 @@ const debugEnabled = /^(1|true|yes|on|debug)$/i.test(
   process.env.PREMIERE_MCP_DEBUG ?? "",
 );
 
+/**
+ * Opt-out for MCP workflow prompt registration. OpenCode's local stdio
+ * getPrompt path overflows its EventEmitter when a server advertises many
+ * prompts, so operators can disable only the prompts while keeping every
+ * tool and resource. Undefined/default keeps prompts enabled; any of
+ * 0/false/no/off/disabled (case-insensitive, trimmed) disables them.
+ * Evaluated per createServer call so tests and hosts can toggle it per
+ * server instance.
+ */
+function promptsDisabled(): boolean {
+  return /^(0|false|no|off|disabled)$/i.test(
+    (process.env.PREMIERE_MCP_PROMPTS ?? "").trim(),
+  );
+}
+
 function debugLog(message: string): void {
   if (debugEnabled) {
     console.error(`[premiere-pro-mcp] ${message}`);
@@ -377,6 +392,7 @@ export function createServer(
     ? resolveToolPacks()
     : resolveToolPacks(serverOptions.toolPacks, "explicit");
   const telemetry = serverOptions.telemetry ?? getTelemetry();
+  const promptsOff = promptsDisabled();
 
   // Collect all tools from each module
   const toolModules = collectTools(
@@ -589,16 +605,18 @@ export function createServer(
     }),
   );
 
-  for (const prompt of WORKFLOW_PROMPTS) {
-    server.registerPrompt(
-      prompt.name,
-      {
-        title: prompt.title,
-        description: prompt.description,
-        argsSchema: z.object(prompt.argsSchema),
-      },
-      prompt.render,
-    );
+  if (!promptsOff) {
+    for (const prompt of WORKFLOW_PROMPTS) {
+      server.registerPrompt(
+        prompt.name,
+        {
+          title: prompt.title,
+          description: prompt.description,
+          argsSchema: z.object(prompt.argsSchema),
+        },
+        prompt.render,
+      );
+    }
   }
 
   // Register ExtendScript API reference resource
@@ -622,7 +640,7 @@ export function createServer(
 
   const toolCount = Object.keys(toolModules).length;
   debugLog(
-    `Registered ${toolCount} tools + 14 resources + ${WORKFLOW_PROMPTS.length} prompts`,
+    `Registered ${toolCount} tools + 14 resources + ${promptsOff ? 0 : WORKFLOW_PROMPTS.length} prompts`,
   );
 
   return server;

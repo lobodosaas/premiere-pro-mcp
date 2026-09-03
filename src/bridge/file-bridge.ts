@@ -7,6 +7,12 @@ import { getHelpersSource, helpersFileName, buildBootstrap } from "./script-buil
 const DEFAULT_TEMP_DIR = join(tmpdir(), "premiere-mcp-bridge");
 const POLL_FALLBACK_MS = 250;
 const DEFAULT_TIMEOUT_MS = 30000;
+const STALE_PROTOCOL_FILE_MS = 60_000;
+const OWNER_LEASE_PREFIX = "bridge-owner_";
+const OWNER_LEASE_VERSION = 1;
+const OWNER_ID_PATTERN = /^[0-9a-f-]{36}$/i;
+const processOwnerId = randomUUID();
+const bridgeOwnerIds = new WeakMap<object, string>();
 export const BRIDGE_HEARTBEAT_FILE = "bridge-heartbeat.json";
 export const BRIDGE_HEARTBEAT_STALE_MS = 3_000;
 
@@ -32,6 +38,11 @@ export type BridgeLivenessState = "running" | "waiting" | "stale" | "unknown";
 export interface BridgeLiveness {
   state: BridgeLivenessState;
   ageMs: number | null;
+}
+
+interface OwnerStates {
+  active: Set<string>;
+  dead: Set<string>;
 }
 
 /**
@@ -143,8 +154,8 @@ function ensureHelpers(tempDir: string): string {
  * 
  * Protocol:
  * 1. Write the script to a staging file, then atomically publish it as
- *    <tempDir>/cmd_<id>.jsx. The CEP panel only sees complete commands.
- * 2. CEP plugin picks it up, executes, writes result to <tempDir>/res_<id>.json
+ *    <tempDir>/cmd_<owner>_<id>.jsx. The CEP panel only sees complete commands.
+ * 2. CEP plugin picks it up, executes, writes result to <tempDir>/res_<owner>_<id>.json
  * 3. We poll for the response file and parse it.
  */
 export async function sendCommand(
@@ -160,7 +171,9 @@ export async function sendCommand(
     if (failure) return failure;
   }
 
-  const id = randomUUID();
+  const ownerId = getBridgeOwnerId(options);
+  ensureOwnerLease(tempDir, ownerId);
+  const id = `${ownerId}_${randomUUID()}`;
   const cmdFile = join(tempDir, `cmd_${id}.jsx`);
   const stagedCmdFile = `${cmdFile}.staged`;
   const resFile = join(tempDir, `res_${id}.json`);
@@ -225,7 +238,9 @@ export async function sendRawCommand(
     if (failure) return failure;
   }
 
-  const id = randomUUID();
+  const ownerId = getBridgeOwnerId(options);
+  ensureOwnerLease(tempDir, ownerId);
+  const id = `${ownerId}_${randomUUID()}`;
   const cmdFile = join(tempDir, `cmd_${id}.jsx`);
   const stagedCmdFile = `${cmdFile}.staged`;
   const resFile = join(tempDir, `res_${id}.json`);
@@ -376,12 +391,132 @@ export function cleanupTempDir(options?: BridgeOptions): void {
 
   try {
     const files = readdirSync(tempDir);
+    const ownerStates = inspectOwnerStates(tempDir, files, getBridgeOwnerId(options));
+    const freshBusyIds = new Set<string>();
     for (const file of files) {
-      if (file.startsWith("cmd_") || file.startsWith("res_") || file.startsWith("busy_")) {
-        safeUnlink(join(tempDir, file));
+      const protocolFile = parseProtocolFile(file);
+      if (protocolFile?.kind === "busy" && !isStaleProtocolFile(join(tempDir, file))) {
+        freshBusyIds.add(protocolFile.id);
       }
+    }
+    for (const file of files) {
+      const protocolFile = parseProtocolFile(file);
+      if (!protocolFile) continue;
+      const ownerId = protocolOwnerId(protocolFile.id);
+      const ownedByLiveBridge = ownerId ? ownerStates.active.has(ownerId) : false;
+      if (ownedByLiveBridge) continue;
+      // Remove namespaced files immediately only after a well-formed lease
+      // proves their owner is dead; unknown lease state stays age-protected.
+      if (ownerId && ownerStates.dead.has(ownerId)) {
+        safeUnlink(join(tempDir, file));
+        continue;
+      }
+      if (freshBusyIds.has(protocolFile.id)) continue;
+      if (isStaleProtocolFile(join(tempDir, file))) safeUnlink(join(tempDir, file));
     }
   } catch {
     // Ignore cleanup errors
+  }
+}
+
+function getBridgeOwnerId(options?: BridgeOptions): string {
+  if (!options) return processOwnerId;
+  const existing = bridgeOwnerIds.get(options);
+  if (existing) return existing;
+  const ownerId = randomUUID();
+  bridgeOwnerIds.set(options, ownerId);
+  return ownerId;
+}
+
+function ownerLeasePath(tempDir: string, ownerId: string): string {
+  return join(tempDir, `${OWNER_LEASE_PREFIX}${ownerId}.json`);
+}
+
+function ensureOwnerLease(tempDir: string, ownerId: string): void {
+  const leasePath = ownerLeasePath(tempDir, ownerId);
+  if (existsSync(leasePath)) return;
+  const stagedPath = `${leasePath}.staged`;
+  try {
+    writeFileSync(stagedPath, JSON.stringify({
+      protocolVersion: OWNER_LEASE_VERSION,
+      ownerId,
+      pid: process.pid,
+    }), "utf-8");
+    renameSync(stagedPath, leasePath);
+  } finally {
+    safeUnlink(stagedPath);
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function inspectOwnerStates(tempDir: string, files: string[], currentOwnerId: string): OwnerStates {
+  const active = new Set<string>([currentOwnerId]);
+  const dead = new Set<string>();
+  for (const file of files) {
+    const match = new RegExp(`^${OWNER_LEASE_PREFIX}([0-9a-f-]{36})\\.json$`, "i").exec(file);
+    if (!match) continue;
+    const leasePath = join(tempDir, file);
+    try {
+      const lease = JSON.parse(readFileSync(leasePath, "utf-8")) as Record<string, unknown>;
+      const pid = lease.pid;
+      const ownerId = match[1];
+      if (
+        lease.protocolVersion === OWNER_LEASE_VERSION
+        && (lease.ownerId === undefined || lease.ownerId === ownerId)
+        && typeof pid === "number"
+        && Number.isSafeInteger(pid)
+        && pid > 0
+        && isProcessAlive(pid)
+      ) {
+        active.add(ownerId);
+      } else if (
+        lease.protocolVersion === OWNER_LEASE_VERSION
+        && (lease.ownerId === undefined || lease.ownerId === ownerId)
+        && typeof pid === "number"
+        && Number.isSafeInteger(pid)
+        && pid > 0
+      ) {
+        dead.add(ownerId);
+        safeUnlink(leasePath);
+      } else {
+        // Keep malformed leases and their protocol files age-protected.
+      }
+    } catch {
+      // Preserve malformed lease files; protocol files remain age-protected.
+    }
+  }
+  return { active, dead };
+}
+
+function protocolOwnerId(id: string): string | null {
+  const separator = id.indexOf("_");
+  if (separator < 0) return null;
+  const ownerId = id.slice(0, separator);
+  return OWNER_ID_PATTERN.test(ownerId) ? ownerId : null;
+}
+
+function parseProtocolFile(file: string): { kind: "cmd" | "res" | "busy"; id: string } | null {
+  const match = /^(cmd_|res_|busy_)(.+?)(?:\.jsx(?:\.staged)?|\.json)$/.exec(file);
+  if (!match) return null;
+  return {
+    kind: match[1].slice(0, -1) as "cmd" | "res" | "busy",
+    id: match[2],
+  };
+}
+
+function isStaleProtocolFile(filePath: string): boolean {
+  try {
+    const modifiedAt = statSync(filePath).mtimeMs;
+    return Number.isFinite(modifiedAt) && Date.now() - modifiedAt > STALE_PROTOCOL_FILE_MS;
+  } catch {
+    return false;
   }
 }

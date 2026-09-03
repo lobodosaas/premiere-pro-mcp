@@ -124,6 +124,7 @@ describe("file bridge fallback and cleanup branches", () => {
     fs.readdir.mockReturnValue([
       "busy_1.json", "cmd_1.jsx", "res_1.json", "helpers.jsx",
     ] as ReturnType<typeof readdirSync>);
+    fs.stat.mockReturnValue({ mtimeMs: 0 } as ReturnType<typeof statSync>);
     expect(() => cleanupTempDir({ tempDir: "/tmp/cleanup-bridge" })).not.toThrow();
     expect(fs.unlink).toHaveBeenCalledWith(expect.stringContaining("busy_1.json"));
   });
