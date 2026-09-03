@@ -145,7 +145,8 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
     },
 
     move_clip: {
-      description: "Move a clip to a new position on the timeline",
+      description: "Move a clip to a new position on the timeline. " +
+        "KNOWN PREMIERE 26.x QE LIMITATION: moving across tracks with new_track_index can be rejected ('Not Enough Parameters'); repositioning in time on the same track is reliable.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -629,7 +630,9 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
     },
 
     duplicate_clip: {
-      description: "Duplicate a clip on the timeline (copy to same position on next available track)",
+      description: "Duplicate a clip on the timeline (copy to same position on next available track). " +
+        "CAUTION: the duplicate may be inserted with the FULL source duration (MOGRTs and long sources report huge ranges) and can push downstream clips aside. " +
+        "For long sources prefer add_to_timeline + trim (transform_track_item_uxp) instead.",
       parameters: {
         type: "object" as const,
         properties: {

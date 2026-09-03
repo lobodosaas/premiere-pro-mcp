@@ -124,8 +124,13 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
       },
       handler: async (args: WorkflowArgs) => {
         if (args.action === "catalog") return invoke(bridge, "effects.catalog", args.media_type ? { mediaType: args.media_type } : {});
+        const toIndex = (value: unknown): number | undefined => {
+          if (value === undefined || value === null || value === "") return undefined;
+          const n = Number(value);
+          return Number.isInteger(n) && n >= 0 ? n : (value as number);
+        };
         const coordinates = {
-          mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
+          mediaType: args.media_type, trackIndex: toIndex(args.track_index), clipIndex: toIndex(args.clip_index),
         };
         if (args.action === "inspect") return invoke(bridge, "effects.chain.get", coordinates);
         if (args.action === "add") return invoke(bridge, "effects.chain.add", {

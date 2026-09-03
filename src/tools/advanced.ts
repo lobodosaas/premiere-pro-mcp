@@ -8,7 +8,8 @@ export function getAdvancedTools(bridgeOptions: BridgeOptions) {
   return {
     ripple_delete: {
       description:
-        "Ripple delete a clip (removes clip and closes the gap). Uses QE DOM.",
+        "Ripple delete a clip (removes clip and closes the gap). Uses QE DOM. " +
+        "KNOWN PREMIERE 26.3 ISSUE: structural QE edits may silently no-op — always verify the clip is gone (get_track_info) and fall back to remove_from_timeline if it is still present.",
       parameters: {
         type: "object" as const,
         properties: {

@@ -338,6 +338,62 @@ describe("issue #189 — Premiere 26.3 capability boundaries and macOS presets",
     expect(captionScript).toContain("verify playback or exported frames");
   });
 
+  it("resolves clip-relative keyframe time against a non-zero source in-point", async () => {
+    const keyframeScript = await scriptFor(keyframes.add_keyframe, {
+      node_id: "caption-graphic-1",
+      effect_name: "Motion",
+      property_name: "Scale",
+      time_seconds: 0.05,
+      value: 105,
+    });
+
+    expect(keyframeScript).toContain("var relativeSeconds = 0.05");
+    expect(keyframeScript).toContain("clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks)");
+    expect(keyframeScript).toContain("clipDurationSeconds = __ticksToSeconds(clip.duration.ticks)");
+    expect(keyframeScript).toContain("var resolvedPropertyTimeSeconds = clipInPointSeconds + relativeSeconds");
+    expect(keyframeScript).toContain("__secondsToTicks(resolvedPropertyTimeSeconds)");
+    expect(keyframeScript).toContain("relativeTimeSeconds: relativeSeconds");
+    expect(keyframeScript).toContain("resolvedPropertyTimeSeconds: resolvedPropertyTimeSeconds");
+    expect(keyframeScript).not.toContain("__secondsToTicks(0.05).toString()");
+    expect(keyframeScript).toContain("clipDurationSeconds <= 0");
+    expect(keyframeScript).toContain("relativeSeconds >= clipDurationSeconds");
+    expect(keyframeScript).not.toContain("clipDurationSeconds + 0.0001");
+    expect(keyframeScript).toContain("var addResult = prop.addKey(time)");
+    expect(keyframeScript).toContain("var setResult = prop.setValueAtKey(time, 105, true)");
+    expect(keyframeScript).not.toContain("if (addResult !== 0)");
+    expect(keyframeScript).not.toContain("if (setResult !== 0)");
+    expect(keyframeScript).toContain("var keysAfterAdd = prop.getKeys()");
+    expect(keyframeScript).toContain("storedAtResolvedTime");
+    expect(keyframeScript).toContain('if (typeof readBack !== "number" || !isFinite(readBack))');
+    expect(keyframeScript).toContain("addKeyReturn: typeof addResult === \"undefined\" ? null : addResult");
+    expect(keyframeScript).toContain("setValueAtKeyReturn: typeof setResult === \"undefined\" ? null : setResult");
+
+    const boundsCheck = keyframeScript.indexOf("relativeSeconds >= clipDurationSeconds");
+    const mutation = keyframeScript.indexOf("prop.setTimeVarying(true)");
+    const keyTimeReadback = keyframeScript.indexOf("var keysAfterAdd = prop.getKeys()");
+    const valueMutation = keyframeScript.indexOf("var setResult = prop.setValueAtKey");
+    expect(boundsCheck).toBeGreaterThan(-1);
+    expect(mutation).toBeGreaterThan(boundsCheck);
+    expect(keyTimeReadback).toBeGreaterThan(mutation);
+    expect(valueMutation).toBeGreaterThan(keyTimeReadback);
+  });
+
+  it.each([-0.01, Number.NaN])("rejects invalid relative keyframe time %s before bridge access", async (timeSeconds) => {
+    const result = await keyframes.add_keyframe.handler({
+      node_id: "caption-graphic-1",
+      effect_name: "Motion",
+      property_name: "Scale",
+      time_seconds: timeSeconds,
+      value: 105,
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: "time_seconds must be a finite non-negative time relative to clip start.",
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
   it("validates and structurally verifies timeline insertion instead of trusting insertClip", async () => {
     const invalid = await timeline.add_to_timeline.handler({ item_id: "clip-1", start_seconds: -1 });
     expect(invalid).toEqual(expect.objectContaining({ success: false }));

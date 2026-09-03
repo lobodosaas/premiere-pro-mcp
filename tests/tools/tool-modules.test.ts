@@ -297,6 +297,41 @@ describe("Tool Handler Behavior", () => {
       expect(result).toMatchObject({ success: true, data: { backend: "uxp", overall: "needs_attention" } });
       expect(mockedSendCommand).not.toHaveBeenCalled();
     });
+
+    it("reports the latest sanitized UXP phase when the safe read times out", async () => {
+      const uxpBridge = {
+        request: vi.fn().mockRejectedValue(Object.assign(new Error("timed out"), { code: "UXP_TIMEOUT" })),
+        getState: vi.fn(() => ({
+          status: "connected",
+          connected: true,
+          protocolVersion: 2,
+          capabilities: { backend: "uxp", protocolVersion: 2, commands: {} },
+          connectedAt: "2026-09-01T12:00:00.000Z",
+          diagnostics: {
+            records: [{ sequence: 7, command: "state.get", requestIdPresent: true, phase: "host.playhead.started" }],
+            capacity: 64,
+            dropped: 0,
+          },
+        })),
+      } as any;
+      const tools = getHealthTools(bridgeOptions, undefined, undefined, { uxpBridge });
+
+      const result = await (tools.verify_premiere_connection.handler as any)({ backend: "uxp" });
+
+      expect(result).toMatchObject({
+        success: true,
+        data: {
+          backend: "uxp",
+          overall: "needs_attention",
+          uxpDiagnostic: {
+            errorCode: "UXP_TIMEOUT",
+            connected: true,
+            latest: { command: "state.get", phase: "host.playhead.started" },
+          },
+        },
+      });
+      expect(JSON.stringify(result)).not.toMatch(/token|projectName|projectPath|mediaPath/i);
+    });
   });
 
   describe("project.create_project", () => {

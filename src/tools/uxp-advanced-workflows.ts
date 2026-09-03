@@ -62,6 +62,20 @@ const timelineTargetProperties = {
   clip_index: { type: "integer", minimum: 0 },
 };
 
+// Some MCP clients deliver numeric tool arguments as strings. The panel-side
+// validators enforce Number.isInteger, so coerce defensively before mapping.
+function toInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 ? n : (value as number);
+}
+
+function toFiniteNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : (value as number);
+}
+
 const timelinePositionProperties = {
   time_seconds: { type: "number", minimum: 0, maximum: 86400 },
   video_track_index: { type: "integer", minimum: 0 },
@@ -272,10 +286,10 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
       },
       handler: async (args: AdvancedArgs) => {
         const common = compact({
-          mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
-          componentIndex: args.component_index, paramIndex: args.param_index,
+          mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+          componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
           expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
-          timeSeconds: args.time_seconds,
+          timeSeconds: toFiniteNumber(args.time_seconds),
         });
         const commands: Record<string, string> = {
           inspect: "parameters.inspect", set_value: "parameters.set", add_keyframe: "parameters.keyframeAdd",
@@ -288,7 +302,8 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     transform_track_item_uxp: {
-      description: "Inspect or atomically move, trim, rename, and enable/disable one audio or video track item with stale-position guards and readback.",
+      description: "Inspect or atomically move, trim, rename, and enable/disable one audio or video track item with stale-position guards and readback. " +
+        "CAUTION: do not mix source trims (in_seconds/out_seconds) with timeline repositioning (start_seconds/end_seconds) in ONE call — Premiere may recompute the out point and commit an unverified state. Apply the trim first, verify the readback, then reposition in a second call.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -310,10 +325,10 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
       },
       handler: async (args: AdvancedArgs) => {
         const values = compact({
-          mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
-          expectedStartSeconds: args.expected_start_seconds, expectedEndSeconds: args.expected_end_seconds,
-          moveBySeconds: args.move_by_seconds, startSeconds: args.start_seconds, endSeconds: args.end_seconds,
-          inSeconds: args.in_seconds, outSeconds: args.out_seconds, disabled: args.disabled, name: args.name,
+          mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+          expectedStartSeconds: toFiniteNumber(args.expected_start_seconds), expectedEndSeconds: toFiniteNumber(args.expected_end_seconds),
+          moveBySeconds: toFiniteNumber(args.move_by_seconds), startSeconds: toFiniteNumber(args.start_seconds), endSeconds: toFiniteNumber(args.end_seconds),
+          inSeconds: toFiniteNumber(args.in_seconds), outSeconds: toFiniteNumber(args.out_seconds), disabled: args.disabled, name: args.name,
         });
         if (args.action === "inspect") return invoke(bridge, "trackItem.inspect", values);
         if (args.action === "update") return invoke(bridge, "trackItem.update", { ...values, ...operation(args) });
@@ -444,7 +459,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           project_item: "encoder.projectItem", file: "encoder.file",
         };
         if (!args.action || !commands[args.action]) return invalidAction(args.action);
-        const jobQuery = compact({ jobId: args.job_id, timeoutMs: args.timeout_ms, limit: args.limit });
+        const jobQuery = compact({ jobId: args.job_id, timeoutMs: toFiniteNumber(args.timeout_ms), limit: toInteger(args.limit) });
         if (args.action === "wait") {
           const hostWaitMs = typeof args.timeout_ms === "number" ? args.timeout_ms : 0;
           return invoke(bridge, commands[args.action], jobQuery, hostWaitMs);

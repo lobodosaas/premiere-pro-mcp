@@ -63,7 +63,8 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
     },
 
     set_effect_property: {
-      description: "Set the value of a specific effect property on a clip",
+      description: "Set the value of a specific effect property on a clip. " +
+        "CAUTION: matching is by FIRST displayName occurrence — when a component has duplicate names (e.g., several 'Text' params in MOGRTs), this writes to the first one, which may be an internal GUID param. Inspect with get_effect_properties / list_clip_effects and confirm the target is unique before writing.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -256,11 +257,28 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         time_seconds: number;
         value: number;
       }) => {
+        if (!Number.isFinite(args.time_seconds) || args.time_seconds < 0) {
+          return { success: false, error: "time_seconds must be a finite non-negative time relative to clip start." };
+        }
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
           
           var clip = result.clip;
+          var relativeSeconds = ${args.time_seconds};
+          var clipInPointSeconds = NaN;
+          var clipDurationSeconds = NaN;
+          try {
+            clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks);
+            clipDurationSeconds = __ticksToSeconds(clip.duration.ticks);
+          } catch(eTiming) {}
+          if (!isFinite(clipInPointSeconds) || !isFinite(clipDurationSeconds) || clipDurationSeconds <= 0) {
+            return __error("Premiere did not provide readable clip timing; no keyframe was written.");
+          }
+          if (relativeSeconds >= clipDurationSeconds) {
+            return __error("time_seconds is outside the visible clip duration; no keyframe was written.");
+          }
+          var resolvedPropertyTimeSeconds = clipInPointSeconds + relativeSeconds;
           var comp = null;
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "${escapeForExtendScript(args.effect_name)}" || clip.components[i].matchName === "${escapeForExtendScript(args.effect_name)}") {
@@ -290,15 +308,28 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           } catch(e) {}
           
           var time = new Time();
-          time.ticks = __secondsToTicks(${args.time_seconds}).toString();
-          prop.addKey(time);
-          prop.setValueAtKey(time, ${args.value}, true);
+          time.ticks = __secondsToTicks(resolvedPropertyTimeSeconds).toString();
+          var addResult = prop.addKey(time);
+          var storedAtResolvedTime = false;
+          var keysAfterAdd = prop.getKeys();
+          if (keysAfterAdd) {
+            for (var keyIndex = 0; keyIndex < keysAfterAdd.length; keyIndex++) {
+              if (String(keysAfterAdd[keyIndex].ticks) === String(time.ticks)) {
+                storedAtResolvedTime = true;
+                break;
+              }
+            }
+          }
+          if (!storedAtResolvedTime) {
+            return __error("Premiere did not return a keyframe at the resolved property time; storage is not reported as verified.");
+          }
+          var setResult = prop.setValueAtKey(time, ${args.value}, true);
           var readBack = null;
           try { readBack = prop.getValueAtKey(time); } catch(eReadBack) {}
-          if (readBack === null || readBack === undefined) {
-            return __error("Premiere did not return the keyframe value after writing it; storage is not reported as verified.");
+          if (typeof readBack !== "number" || !isFinite(readBack)) {
+            return __error("Premiere did not return a finite numeric keyframe value after writing it; storage is not reported as verified.");
           }
-          if (typeof readBack === "number" && Math.abs(readBack - ${args.value}) > 0.0001) {
+          if (Math.abs(readBack - ${args.value}) > 0.0001) {
             return __error("Premiere returned " + readBack + " after writing keyframe value ${args.value}; storage is not reported as verified.");
           }
           
@@ -310,6 +341,12 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
             time: ${args.time_seconds},
+            relativeTimeSeconds: relativeSeconds,
+            resolvedPropertyTimeSeconds: resolvedPropertyTimeSeconds,
+            clipInPointSeconds: clipInPointSeconds,
+            keyframeTimeVerified: true,
+            addKeyReturn: typeof addResult === "undefined" ? null : addResult,
+            setValueAtKeyReturn: typeof setResult === "undefined" ? null : setResult,
             value: ${args.value},
             readBackValue: readBack
           });

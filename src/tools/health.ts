@@ -25,6 +25,39 @@ const disabledTelemetry: Telemetry = {
   shutdown: async () => {},
 };
 
+type UxpDiagnostic = NonNullable<FirstRunReport["uxpDiagnostic"]>;
+
+function buildUxpDiagnostic(
+  bridge: UxpWebSocketBridge | undefined,
+  error: unknown,
+): UxpDiagnostic {
+  let connected = false;
+  let latest: UxpDiagnostic["latest"] = null;
+
+  if (bridge && typeof bridge.getState === "function") {
+    try {
+      const state = bridge.getState();
+      connected = state.connected === true;
+      const records = state.connected ? state.diagnostics?.records : undefined;
+      const record = records && records.length > 0 ? records[records.length - 1] : undefined;
+      if (record) latest = { command: record.command, phase: record.phase };
+    } catch {
+      // A diagnostic read must never hide the original safe-check failure.
+    }
+  }
+
+  const errorCode = error && typeof error === "object" && "code" in error
+    ? (error as { code?: unknown }).code
+    : undefined;
+  return {
+    errorCode: typeof errorCode === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(errorCode)
+      ? errorCode
+      : "UXP_CHECK_FAILED",
+    connected,
+    latest,
+  };
+}
+
 export function getHealthTools(
   bridgeOptions: BridgeOptions,
   capabilities: CapabilityConfig = resolveCapabilities(),
@@ -197,7 +230,10 @@ export function getHealthTools(
         let report: FirstRunReport;
         if (backend === "uxp") {
           if (!options.uxpBridge) {
-            report = buildFirstRunReport("uxp", { reachable: false });
+            report = buildFirstRunReport("uxp", {
+              reachable: false,
+              uxpDiagnostic: { errorCode: "UXP_NOT_CONNECTED", connected: false, latest: null },
+            });
           } else {
             try {
               // This is an explicit read-only UXP request. Do not try CEP if it
@@ -211,8 +247,11 @@ export function getHealthTools(
                 projectOpen: state.projectOpen === true,
                 sequenceOpen: state.sequenceOpen === true,
               });
-            } catch {
-              report = buildFirstRunReport("uxp", { reachable: false });
+            } catch (error) {
+              report = buildFirstRunReport("uxp", {
+                reachable: false,
+                uxpDiagnostic: buildUxpDiagnostic(options.uxpBridge, error),
+              });
             }
           }
         } else {

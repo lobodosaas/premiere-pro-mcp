@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WORKFLOW_CATALOG, WORKFLOW_PROMPTS, WORKFLOW_RESOURCE } from "../src/workflows/catalog.js";
 import { annotationsForTool, structuredToolResult } from "../src/workflows/tool-metadata.js";
 import { createServer } from "../src/server.js";
@@ -6,6 +6,10 @@ import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { Telemetry, TelemetryProperties } from "../src/telemetry.js";
 
 describe("modern MCP surface", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it("publishes focused workflow prompts with inspection and verification guidance", () => {
     expect(WORKFLOW_PROMPTS).toHaveLength(WORKFLOW_CATALOG.length);
     expect(new Set(WORKFLOW_PROMPTS.map((prompt) => prompt.name)).size).toBe(WORKFLOW_PROMPTS.length);
@@ -87,6 +91,7 @@ describe("modern MCP surface", () => {
   });
 
   it("advertises prompts, resources, and tool annotations over MCP", async () => {
+    vi.stubEnv("PREMIERE_MCP_PROMPTS", "on");
     const server = createServer({ timeoutMs: 50 });
     const client = new Client({ name: "modernization-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -163,6 +168,31 @@ describe("modern MCP surface", () => {
         capabilityData.tools.tools.find((tool: any) => tool.name === "execute_extendscript")
           ?.authority,
       ).toMatchObject({ required: "unsafe-script", enabled: false });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
+  it("omits prompts when PREMIERE_MCP_PROMPTS disables them, keeping tools and resources intact", async () => {
+    vi.stubEnv("PREMIERE_MCP_PROMPTS", "off");
+    const server = createServer({ timeoutMs: 50 });
+    const client = new Client({ name: "prompts-off-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const capabilities = client.getServerCapabilities();
+      expect(capabilities?.prompts).toBeUndefined();
+
+      const tools = await client.listTools();
+      expect(tools.tools).toHaveLength(319);
+
+      const resources = await client.listResources();
+      expect(resources.resources.map((resource) => resource.uri)).toContain("config://premiere-workflows");
+
+      const read = await client.readResource({ uri: "config://premiere-workflows" });
+      expect(read.contents[0].mimeType).toBe("application/json");
     } finally {
       await client.close();
       await server.close();
