@@ -245,6 +245,27 @@ If you installed from npm, configure the client to run the global command:
 }
 ```
 
+When `PREMIERE_UXP_TOKEN` is enabled and more than one local MCP session may
+run at once, add `--proxy` to every client configuration. Each proxy attaches
+to one per-user broker; only that broker owns the UXP loopback listener.
+
+```json
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "premiere-pro-mcp",
+      "args": ["--proxy"]
+    }
+  }
+}
+```
+
+The first proxy starts the broker in a detached process. Later proxies reuse
+it through a Windows named pipe or a Unix-domain socket. Pass
+`PREMIERE_UXP_TOKEN` and any `PREMIERE_UXP_PORT` setting in the MCP client's
+environment so the broker inherits them. Restart all MCP client processes
+after changing this configuration.
+
 If you cloned the repository instead, use the source-build configuration shown below for your client.
 
 <details>
@@ -501,7 +522,12 @@ The MCP server can accept a local UXP panel connection and invoke the UXP comman
 PREMIERE_UXP_TOKEN="replace-with-a-long-random-secret" premiere-pro-mcp
 ```
 
-Enter the same token in the UXP panel. The listener binds only to `127.0.0.1:7777`, authenticates the WebSocket upgrade, requires a versioned capability handshake, correlates concurrent requests, and fails pending work on timeout or disconnect. Set `PREMIERE_UXP_PORT` to use another loopback port.
+Enter the same token in the UXP panel. The listener binds only to `127.0.0.1:7777`, authenticates the WebSocket upgrade, requires a versioned capability handshake, correlates concurrent requests, and fails pending work on timeout or disconnect. Set `PREMIERE_UXP_PORT` to use another loopback port. Use `--proxy` for multiple local MCP sessions; `--broker` explicitly starts the single per-user UXP owner and is normally started automatically by the first proxy.
+
+If an older direct server still owns the UXP port, run `npm run stop:mcp` from
+that checkout. Cleanup matches the exact `dist/index.js` path, excludes proxy
+sessions on Windows and POSIX, and reports if another process still owns the
+configured port.
 
 When enabled, MCP discovery includes 54 capability-gated UXP additions. The first expansion covers effects, deterministic timeline selection, selection batches, scene detection, proxy/ingest, relink, metadata, color conformance, Source Monitor audition, storage, and least-privilege workspace access. The second adds Project-panel selection, marker CRUD, bin organization, sequence settings, imports, typed effect parameters/keyframes, track-item transforms, SequenceEditor timeline edits, sequence lifecycle, and AME encoding. The third wave begins with a redacted event journal, conservative AME terminal receipts, explicit host-readiness gates, safe multi-project sessions, lease-based growing-media control, namespaced workflow checkpoints, bounded media-health maintenance, caption-aware track mute state, and transactional source trim/framing documented in [the third-wave workflow matrix](docs/third-wave-uxp-workflows.md). The bounded migration surface also includes a non-ripple selected-item lift plus native video-transition listing and transactions; it does not claim direct empty-track create/delete or global redo support. A separate [hybrid benchmark gate](docs/uxp-hybrid-benchmark.md) keeps native acceleration disabled until reproducible cross-platform evidence exists. See also [the first stable workflow matrix](docs/uxp-stable-workflows.md) and [the next-ten workflow matrix](docs/uxp-next-ten-workflows.md). Commands are advertised only while the authenticated local UXP bridge is connected; the host capability handshake remains the authority for support in the running Premiere build. A failed UXP command is never silently retried through CEP because the first operation may have partially succeeded.
 

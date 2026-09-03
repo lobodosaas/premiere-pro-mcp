@@ -105,7 +105,7 @@ operation” when the tool has no enum-based mode.
 | `detect_scene_edits` | Default profile | `mode`: `apply_cuts`, `create_markers`, `create_subclips` | Safe scene-edit facade. It uses the authenticated Premiere UXP bridge when connected and explicitly confirmed; CEP fallback is intentionally withheld because synchronous scene detection can block the panel. |
 | `detect_silence` | Default profile | Single operation | Find silent ranges in a media file and return both the silences and the complementary segments worth keeping. Analysis only — nothing in the project or on the timeline is modified. Requires ffmpeg on PATH: Premiere's scripting API exposes no audio-level or waveform data, so silence cannot be measured through the bridge. |
 | `detect_source_scene_changes` | Default profile | Single operation | Detect probable visual cuts in a local source file using FFmpeg scene scores. Read-only and source-relative; it does not cut a Premiere timeline. |
-| `duplicate_clip` | Default profile | Single operation | Duplicate a clip on the timeline (copy to same position on next available track) |
+| `duplicate_clip` | Default profile | Single operation | Duplicate a clip on the timeline (copy to same position on next available track). CAUTION: the duplicate may be inserted with the FULL source duration (MOGRTs and long sources report huge ranges) and can push downstream clips aside. For long sources prefer add_to_timeline + trim (transform_track_item_uxp) instead. |
 | `duplicate_sequence` | Default profile | Single operation | Duplicate an existing sequence |
 | `enable_disable_clip` | Default profile | Single operation | Enable or disable a clip on the timeline |
 | `encode_file` | Default profile | Single operation | Encode an external file (not in project) using Adobe Media Encoder |
@@ -223,7 +223,7 @@ operation” when the tool has no enum-based mode.
 | `manage_project_context` | Default profile | `capture`, `enrich`, `status`, `clear` | Capture, enrich, inspect, or clear a durable local Premiere project-context index. Capture stores bounded active-sequence/source metadata; enrich adds transcripts, shots, audio observations, or notes without re-analyzing unchanged sources. Never include secrets or unrelated customer data. |
 | `manage_proxies` | Default profile | `create`, `attach`, `toggle` | Create, attach, or toggle proxies for a project item. Note: 'create' queues a proxy encode in Adobe Media Encoder and returns immediately — AME renders in the background. Once it finishes, call this tool again with action 'attach' and proxy_path set to the output_path you passed here. There is no single-call create-and-attach in Premiere's ExtendScript API. |
 | `match_frame` | Default profile | `track_type`: `video`, `audio` | Get source media info for the frame at the current playhead on a specific track. Useful for match frame operations. |
-| `move_clip` | Default profile | Single operation | Move a clip to a new position on the timeline |
+| `move_clip` | Default profile | Single operation | Move a clip to a new position on the timeline. KNOWN PREMIERE 26.x QE LIMITATION: moving across tracks with new_track_index can be rejected ('Not Enough Parameters'); repositioning in time on the same track is reliable. |
 | `move_clip_to_track` | Default profile | Single operation | Move a clip to a different track. Uses QE DOM. |
 | `move_item_to_bin` | Default profile | Single operation | Move a project item to a different bin |
 | `move_items_to_bin` | Default profile | Single operation | Move multiple project items to a target bin at once. |
@@ -265,7 +265,7 @@ operation” when the tool has no enum-based mode.
 | `replace_clip` | Default profile | Single operation | Replace a clip on the timeline with a different project item, preserving position and duration |
 | `replace_clip_media` | Default profile | Single operation | Replace the source media of a clip on the timeline with a different project item, keeping the clip's position and duration. |
 | `reverse_clip` | Default profile | Single operation | Unavailable: Premiere does not expose a supported scripting API for reversing a timeline clip's playback direction. |
-| `ripple_delete` | Default profile | Single operation | Ripple delete a clip (removes clip and closes the gap). Uses QE DOM. |
+| `ripple_delete` | Default profile | Single operation | Ripple delete a clip (removes clip and closes the gap). Uses QE DOM. KNOWN PREMIERE 26.3 ISSUE: structural QE edits may silently no-op — always verify the clip is gone (get_track_info) and fall back to remove_from_timeline if it is still present. |
 | `roll_edit` | Default profile | Single operation | Perform a verified roll edit at the outgoing cut of a clip using the public timeline DOM. |
 | `save_project` | Default profile | Single operation | Save the current Premiere Pro project |
 | `save_project_as` | Default profile | Single operation | Save the current project to a new location |
@@ -297,7 +297,7 @@ operation” when the tool has no enum-based mode.
 | `set_clips_volume` | Default profile | Single operation | Set the volume (in dB) on every audio clip of a track, or on a list of clip indices. One round trip instead of one call per clip - essential for sequences with dozens of clips. |
 | `set_color_label` | Default profile | Single operation | Set the color label on a project item or clip |
 | `set_color_value` | Default profile | Single operation | Set a color value on an effect property (e.g., tint color, fill color) |
-| `set_effect_property` | Default profile | Single operation | Set the value of a specific effect property on a clip |
+| `set_effect_property` | Default profile | Single operation | Set the value of a specific effect property on a clip. CAUTION: matching is by FIRST displayName occurrence — when a component has duplicate names (e.g., several 'Text' params in MOGRTs), this writes to the first one, which may be an internal GUID param. Inspect with get_effect_properties / list_clip_effects and confirm the target is unique before writing. |
 | `set_footage_interpretation` | Default profile | Single operation | Set footage interpretation settings for a project item |
 | `set_frame_blend` | Default profile | Single operation | Enable or disable frame blending on a clip. Uses QE DOM. |
 | `set_graphics_white_luminance` | Default profile | Single operation | Set the graphics white luminance value (HDR setting) for the project |
@@ -415,7 +415,7 @@ authenticated and the connected host advertises the required command capabilitie
 | `save_project_uxp` | Connected UXP | Single operation | Save the active project through UXP and require Premiere to confirm success. |
 | `search_clip_transcript_uxp` | Connected UXP | Single operation | Search Premiere's native transcript JSON without modifying the clip or timeline. |
 | `set_source_monitor_position_uxp` | Connected UXP | Single operation | Set and read back the Source Monitor position using Premiere 26.3+ UXP. |
-| `transform_track_item_uxp` | Connected UXP | `inspect`, `update` | Inspect or atomically move, trim, rename, and enable/disable one audio or video track item with stale-position guards and readback. |
+| `transform_track_item_uxp` | Connected UXP | `inspect`, `update` | Inspect or atomically move, trim, rename, and enable/disable one audio or video track item with stale-position guards and readback. CAUTION: do not mix source trims (in_seconds/out_seconds) with timeline repositioning (start_seconds/end_seconds) in ONE call — Premiere may recompute the out point and commit an unverified state. Apply the trim first, verify the readback, then reposition in a second call. |
 | `wait_for_host_readiness_uxp` | Connected UXP | `snapshot`, `analysis`, `operation` | Capture a pre-dispatch readiness revision or wait, without retrying, for video-effect analysis or one documented operation-completion receipt. |
 
 ## Maintenance
