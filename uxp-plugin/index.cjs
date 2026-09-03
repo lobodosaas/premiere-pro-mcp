@@ -6,8 +6,10 @@ const TranscriptSupport = globalThis.PremiereMcpTranscript;
 const WorkspaceSupport = globalThis.PremiereMcpWorkspace;
 const EventSupport = globalThis.PremiereMcpEvents;
 const Commands = globalThis.PremiereMcpCommands;
+const CommandDiagnostics = globalThis.PremiereMcpCommandDiagnostics;
 const workspaceBroker = WorkspaceSupport.createWorkspaceBroker({ fs: storage && storage.localFileSystem });
 const eventJournal = EventSupport.createEventJournal({ capacity: 512 });
+const commandDiagnostics = CommandDiagnostics.createCommandDiagnostics({ capacity: 64 });
 const commandRegistry = Commands.createCommandRegistry({
   ppro,
   Protocol,
@@ -18,6 +20,7 @@ const commandRegistry = Commands.createCommandRegistry({
   transcriptImportProbe: canImportTranscript
 });
 let socket = null;
+let connectionGeneration = 0;
 let reconnectTimer = null;
 let lastState = "";
 let stateRevision = 0;
@@ -55,7 +58,7 @@ async function capabilities() {
   value.commands["state.get"].cancellable = false;
   value.commands["operation.cancel"] = { supported: true, readOnly: false, scope: "preflight only" };
   if (value.commands["frame.export"]) Object.assign(value.commands["frame.export"], {
-    cancellable: "preflight only", verification: "exporter return value", undoable: false, atomic: false
+    cancellable: "preflight only", verification: "exporter return plus workspace file check", undoable: false, atomic: false
   });
   const supportedHost = TranscriptSupport.versionAtLeast(host && host.version, "25.6.0");
   const transcriptExportApi = supportedHost && !!(ppro.Transcript && ppro.Transcript.exportToJSON && ppro.Transcript.importFromJSON);
@@ -216,10 +219,31 @@ async function inspectCaptions() {
   return { sequenceId: String(sequence.guid), sequenceName: sequence.name, trackCount: count, tracks };
 }
 
-async function stateSnapshot() {
+function traceCommand(command, requestId, phase, targetSocket, generation) {
+  if (targetSocket && !isCurrentConnection(targetSocket, generation)) return;
+  commandDiagnostics.record(command, requestId, phase);
+  send(Protocol.envelope("event", {
+    name: "premiere.bridge.command.trace",
+    diagnostic: commandDiagnostics.snapshot()
+  }, requestId), targetSocket, generation);
+}
+
+async function stateSnapshot(requestId, targetSocket, generation) {
+  if (targetSocket && !isCurrentConnection(targetSocket, generation)) return null;
+  traceCommand("state.get", requestId, "host.project.started", targetSocket, generation);
   const project = await ppro.Project.getActiveProject();
+  if (targetSocket && !isCurrentConnection(targetSocket, generation)) return null;
+  traceCommand("state.get", requestId, "host.project.completed", targetSocket, generation);
+  traceCommand("state.get", requestId, "host.sequence.started", targetSocket, generation);
   const sequence = project && await project.getActiveSequence();
+  if (targetSocket && !isCurrentConnection(targetSocket, generation)) return null;
+  traceCommand("state.get", requestId, "host.sequence.completed", targetSocket, generation);
+  if (targetSocket) traceCommand("state.get", requestId, "host.playhead.started", targetSocket, generation);
+  else traceCommand("state.get", requestId, "host.playhead.started");
   const position = sequence && await sequence.getPlayerPosition();
+  if (targetSocket && !isCurrentConnection(targetSocket, generation)) return null;
+  if (targetSocket) traceCommand("state.get", requestId, "host.playhead.completed", targetSocket, generation);
+  else traceCommand("state.get", requestId, "host.playhead.completed");
   return {
     revision: stateRevision,
     projectOpen: !!project,
@@ -230,33 +254,44 @@ async function stateSnapshot() {
   };
 }
 
-async function exportFrame(args, operation) {
+async function exportFrame(args, operation, targetSocket, generation) {
   assertNotCancelled(operation);
-  publishOperation("progress", operation, { phase: "preflight", progress: 0.1 });
+  publishOperation("progress", operation, { phase: "preflight", progress: 0.1 }, targetSocket, generation);
   const project = await ppro.Project.getActiveProject();
   if (!project) throw new Error("No active project");
   const sequence = await project.getActiveSequence();
   if (!sequence) throw new Error("No active sequence");
   if (!args.outputDirectory) throw new Error("outputDirectory is required");
-  const outputDirectory = await workspaceBroker.assertPathAllowed(args.outputDirectory, { label: "outputDirectory", kind: "directory" });
+  const outputDirectory = await workspaceBroker.assertPathAllowed(args.outputDirectory, { label: "outputDirectory", kind: "directory", rootOnly: true });
   const filename = Protocol.safeFilename(args.filename);
-  const exporterFilename = Protocol.exporterFrameName(filename);
+  const path = Protocol.joinPath(outputDirectory, filename);
+  const exporterDirectory = /[\\\/]$/.test(outputDirectory) ? outputDirectory : outputDirectory + "/";
   const position = args.seconds == null ? await sequence.getPlayerPosition() : await tickTime(args.seconds);
   const size = await sequence.getFrameSize();
   const width = positiveInt(args.width, size.width), height = positiveInt(args.height, size.height);
   assertNotCancelled(operation);
   operation.phase = "host_call";
-  publishOperation("progress", operation, { phase: "host_call", progress: 0.4, cancellable: false });
-  const returned = await ppro.Exporter.exportSequenceFrame(sequence, position, exporterFilename, outputDirectory, width, height);
-  if (returned !== true) throw new Error("Premiere did not confirm frame export; no output path is reported");
-  const path = Protocol.joinPath(outputDirectory, filename);
+  publishOperation("progress", operation, { phase: "host_call", progress: 0.4, cancellable: false }, targetSocket, generation);
+  const returned = await ppro.Exporter.exportSequenceFrame(sequence, position, path, exporterDirectory, width, height);
+  // The exporter's boolean result is host-dependent (upstream issues #9/#247):
+  // some hosts write the file anyway, some append a second extension. Only a
+  // workspace file check proves the artifact, so the return value is evidence.
+  const verifiedPath = await findExportedFile(path);
+  if (returned !== true && !verifiedPath) {
+    const error = new Error("Premiere did not confirm frame export and no file appeared in the approved workspace within " + FRAME_EXPORT_VERIFY_TIMEOUT_MS + "ms");
+    error.exporterResult = returned;
+    throw error;
+  }
   return {
-    path, width, height, seconds: position.seconds, exporterResult: returned,
+    path: verifiedPath || path, width, height, seconds: position.seconds, exporterResult: returned,
+    verifiedOnDisk: !!verifiedPath,
     operation: Protocol.operationSemantics({
       mutatesProject: false,
-      verificationStatus: "not_verified",
-      verificationBoundary: "exporter_return_value",
-      verificationEvidence: [{ type: "host_return", value: returned }],
+      verificationStatus: verifiedPath ? "verified" : "not_verified",
+      verificationBoundary: verifiedPath ? "workspace_file_check" : "exporter_return_value",
+      verificationEvidence: verifiedPath
+        ? [{ type: "workspace_file", value: true }, { type: "host_return", value: returned }]
+        : [{ type: "host_return", value: returned }],
       cancellationSupported: true
     })
   };
@@ -266,24 +301,49 @@ async function tickTime(seconds) {
   if (ppro.TickTime && typeof ppro.TickTime.createWithSeconds === "function") return ppro.TickTime.createWithSeconds(Number(seconds));
   throw new Error("This Premiere build cannot create TickTime; omit seconds to capture the playhead");
 }
+
+const FRAME_EXPORT_VERIFY_TIMEOUT_MS = 5000;
+const FRAME_EXPORT_VERIFY_POLL_MS = 250;
+function fileUrlFromPath(path) { return "file://" + path.split("/").map(encodeURIComponent).join("/"); }
+async function findExportedFile(path) {
+  const fs = storage && storage.localFileSystem;
+  if (!fs || typeof fs.getEntryWithUrl !== "function") return null;
+  const candidates = [path, path + ".png"];
+  const deadline = Date.now() + FRAME_EXPORT_VERIFY_TIMEOUT_MS;
+  for (;;) {
+    for (const candidate of candidates) {
+      try {
+        if (await fs.getEntryWithUrl(fileUrlFromPath(candidate))) return candidate;
+      } catch (_) {}
+    }
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, FRAME_EXPORT_VERIFY_POLL_MS));
+  }
+}
 function positiveInt(value, fallback) { const n = Number(value == null ? fallback : value); if (!Number.isFinite(n) || n <= 0) throw new Error("frame dimensions must be positive"); return Math.round(n); }
 
-async function dispatch(raw) {
+async function dispatch(raw, targetSocket, generation) {
   let cmd;
   let operation;
   try {
+    traceCommand("unknown.command", null, "received", targetSocket, generation);
     cmd = Protocol.parseCommand(raw);
+    traceCommand(cmd.command, cmd.requestId, "parsed", targetSocket, generation);
     if (cmd.command === "operation.cancel") {
       const result = operationTracker.requestCancel(cmd.args.requestId);
-      send(Protocol.envelope("result", { ok: true, result }, cmd.requestId));
+      const response = Protocol.envelope("result", { ok: true, result }, cmd.requestId);
+      Protocol.serializeEnvelope(response);
+      traceCommand(cmd.command, cmd.requestId, "serialized", targetSocket, generation);
+      send(response, targetSocket, generation);
+      traceCommand(cmd.command, cmd.requestId, "sent", targetSocket, generation);
       return;
     }
     operation = operationTracker.begin(cmd.requestId, cmd.command);
-    publishOperation("started", operation, { phase: "preflight", progress: 0 });
+    publishOperation("started", operation, { phase: "preflight", progress: 0 }, targetSocket, generation);
     let result;
     if (cmd.command === "capabilities.get") result = await capabilities();
-    else if (cmd.command === "state.get") result = await stateSnapshot();
-    else if (cmd.command === "frame.export") result = await exportFrame(cmd.args, operation);
+    else if (cmd.command === "state.get") result = await stateSnapshot(cmd.requestId, targetSocket, generation);
+    else if (cmd.command === "frame.export") result = await exportFrame(cmd.args, operation, targetSocket, generation);
     else if (cmd.command === "transcript.export") result = await exportTranscript(cmd.args);
     else if (cmd.command === "transcript.search") result = await searchTranscript(cmd.args);
     else if (cmd.command === "transcript.has") result = await hasTranscript(cmd.args);
@@ -325,9 +385,12 @@ async function dispatch(raw) {
     // serialization rejects an oversized result, the catch path emits only
     // `failed`, never both `completed` and `failed` for one operation.
     Protocol.serializeEnvelope(response);
-    publishOperation("completed", operation, { phase: "complete", progress: 1 });
-    send(response);
+    traceCommand(cmd.command, cmd.requestId, "serialized", targetSocket, generation);
+    publishOperation("completed", operation, { phase: "complete", progress: 1 }, targetSocket, generation);
+    send(response, targetSocket, generation);
+    traceCommand(cmd.command, cmd.requestId, "sent", targetSocket, generation);
   } catch (error) {
+    traceCommand(cmd ? cmd.command : "unknown.command", cmd && cmd.requestId, "failed", targetSocket, generation);
     const cancelled = error && error.code === "UXP_OPERATION_CANCELLED";
     const errorCode = cancelled
       ? "UXP_OPERATION_CANCELLED"
@@ -336,7 +399,7 @@ async function dispatch(raw) {
         : "UXP_COMMAND_FAILED";
     if (operation) publishOperation(cancelled ? "cancelled" : "failed", operation, {
       phase: operation.phase, progress: null, error: error.message || String(error)
-    });
+    }, targetSocket, generation);
     send(Protocol.envelope("result", {
       ok: false,
       error: {
@@ -344,15 +407,22 @@ async function dispatch(raw) {
         message: error.message || String(error),
         operation: Protocol.operationSemantics({ cancellationSupported: true })
       }
-    }, cmd && cmd.requestId));
+    }, cmd && cmd.requestId), targetSocket, generation);
   } finally {
     if (operation) operationTracker.finish(operation);
   }
 }
 
 function connect() {
+  const generation = ++connectionGeneration;
+  commandDiagnostics.clear();
   if (reconnectTimer) clearTimeout(reconnectTimer);
-  if (socket) try { socket.onclose = null; socket.close(); } catch (_) {}
+  if (socket) {
+    const previousSocket = socket;
+    detachSocketHandlers(previousSocket);
+    try { previousSocket.close(); } catch (_) {}
+    socket = null;
+  }
   const configuredUrl = document.getElementById("bridge-url").value;
   const token = document.getElementById("bridge-token").value;
   let url;
@@ -364,22 +434,67 @@ function connect() {
     return scheduleReconnect("Invalid bridge URL");
   }
   setStatus("Connecting to " + url.origin + url.pathname);
-  try { socket = new WebSocket(url); } catch (e) { return scheduleReconnect(e.message); }
-  socket.onopen = async () => { setStatus("Connected"); send(Protocol.envelope("hello", await capabilities())); publishState("connected"); };
-  socket.onmessage = (event) => dispatch(event.data);
-  socket.onerror = () => setStatus("Bridge connection error");
-  socket.onclose = () => { void commandRegistry.dispose(); scheduleReconnect("Disconnected"); };
+  let nextSocket;
+  try { nextSocket = new WebSocket(url); } catch (e) { return scheduleReconnect(e.message); }
+  socket = nextSocket;
+  nextSocket.onopen = async () => {
+    if (!isCurrentConnection(nextSocket, generation)) return;
+    const advertised = await capabilities();
+    if (!isCurrentConnection(nextSocket, generation)) return;
+    setStatus("Connected");
+    send(Protocol.envelope("hello", advertised), nextSocket, generation);
+    if (!isCurrentConnection(nextSocket, generation)) return;
+    await publishState("connected", null, nextSocket, generation);
+  };
+  nextSocket.onmessage = (event) => {
+    if (!isCurrentConnection(nextSocket, generation)) return;
+    dispatch(event.data, nextSocket, generation);
+  };
+  nextSocket.onerror = () => {
+    if (isCurrentConnection(nextSocket, generation)) setStatus("Bridge connection error");
+  };
+  nextSocket.onclose = () => {
+    if (!isCurrentConnection(nextSocket, generation)) return;
+    commandDiagnostics.clear();
+    void commandRegistry.dispose();
+    scheduleReconnect("Disconnected");
+  };
 }
-function scheduleReconnect(message) { setStatus(message + "; retrying in 2s"); reconnectTimer = setTimeout(connect, 2000); }
-function send(value) { if (socket && socket.readyState === WebSocket.OPEN) socket.send(Protocol.serializeEnvelope(value)); }
+function scheduleReconnect(message) {
+  const generation = connectionGeneration;
+  setStatus(message + "; retrying in 2s");
+  reconnectTimer = setTimeout(() => {
+    if (generation === connectionGeneration) connect();
+  }, 2000);
+}
+function detachSocketHandlers(targetSocket) {
+  targetSocket.onopen = null;
+  targetSocket.onmessage = null;
+  targetSocket.onerror = null;
+  targetSocket.onclose = null;
+}
+function isCurrentConnection(targetSocket, generation) {
+  return targetSocket === socket && generation === connectionGeneration;
+}
+function send(value, targetSocket, generation) {
+  const destination = targetSocket || socket;
+  if (targetSocket && !isCurrentConnection(targetSocket, generation)) return;
+  if (destination && destination.readyState === WebSocket.OPEN) destination.send(Protocol.serializeEnvelope(value));
+}
 function disconnect() {
+  connectionGeneration += 1;
+  commandDiagnostics.clear();
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
-  if (socket) try { socket.onclose = null; socket.close(); } catch (_) {}
+  if (socket) {
+    const currentSocket = socket;
+    detachSocketHandlers(currentSocket);
+    try { currentSocket.close(); } catch (_) {}
+  }
   socket = null;
 }
-function publishOperation(name, operation, detail) {
-  send(Protocol.operationEvent(name, operation, detail));
+function publishOperation(name, operation, detail, targetSocket, generation) {
+  send(Protocol.operationEvent(name, operation, detail), targetSocket, generation);
 }
 function assertNotCancelled(operation) {
   if (!operation || !operation.cancelRequested) return;
@@ -510,10 +625,13 @@ function stopFallbackPolling() {
   if (fallbackPollTimer) clearInterval(fallbackPollTimer);
   fallbackPollTimer = null;
 }
-async function publishState(reason, hostEvent) {
+async function publishState(reason, hostEvent, targetSocket, generation) {
+  if (targetSocket && !isCurrentConnection(targetSocket, generation)) return;
   try {
     stateRevision += 1;
-    const state = await stateSnapshot();
+    const state = await stateSnapshot(null, targetSocket, generation);
+    if (targetSocket && !isCurrentConnection(targetSocket, generation)) return;
+    if (!state) return;
     const comparable = Object.assign({}, state, { revision: 0 });
     const encoded = JSON.stringify(comparable);
     if (reason !== "fallback-poll" || encoded !== lastState) {
@@ -523,9 +641,11 @@ async function publishState(reason, hostEvent) {
         reason,
         hostEvent: hostEvent || null,
         state
-      }));
+      }), targetSocket, generation);
     }
-  } catch (e) { setStatus(e.message); }
+  } catch (e) {
+    if (!targetSocket || isCurrentConnection(targetSocket, generation)) setStatus(e.message);
+  }
 }
 function setStatus(value) { const el = document.getElementById("status"); if (el) el.textContent = value; }
 
@@ -535,6 +655,7 @@ async function chooseWorkspace() {
     await workspaceBroker.requestRoot();
     renderWorkspaceStatus();
     setStatus("Workspace access granted");
+    connect();
   } catch (error) {
     setStatus(error.message || String(error));
   }
@@ -545,6 +666,7 @@ async function revokeWorkspace() {
     await workspaceBroker.revoke();
     renderWorkspaceStatus();
     setStatus("Workspace access revoked");
+    connect();
   } catch (error) {
     setStatus(error.message || String(error));
   }

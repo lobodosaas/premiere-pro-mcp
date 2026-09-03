@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import {
   UxpBridgeError,
@@ -80,6 +80,31 @@ describe("UXP WebSocket bridge", () => {
         commands: { "state.get": { supported: true } },
       },
     });
+    client.close();
+  });
+
+  it("retains only validated sanitized panel diagnostics", async () => {
+    const bridge = await createBridge();
+    const client = await connectHost(bridge);
+    client.send(JSON.stringify({
+      protocolVersion: 1,
+      type: "event",
+      payload: {
+        name: "premiere.bridge.command.trace",
+        diagnostic: {
+          records: [{ sequence: 1, command: "state.get", requestIdPresent: true, phase: "parsed" }],
+          capacity: 64,
+          dropped: 0,
+        },
+      },
+    }));
+
+    await vi.waitFor(() => expect(bridge.getState()).toMatchObject({
+      diagnostics: {
+        records: [{ command: "state.get", phase: "parsed" }],
+      },
+    }));
+    expect(JSON.stringify(bridge.getState())).not.toMatch(/token|args|projectPath|mediaPath/i);
     client.close();
   });
 
@@ -205,6 +230,39 @@ describe("UXP WebSocket bridge", () => {
     const second = await connectHost(bridge);
     await rejection;
     first.on("error", () => {});
+    second.close();
+  });
+
+  it("ignores messages queued from a superseded host connection", async () => {
+    const bridge = await createBridge();
+    const first = await connectHost(bridge, { "state.get": { supported: true } });
+    const second = new WebSocket(bridgeUrl(bridge));
+    await once(second, "open");
+
+    (bridge as any).handleMessage(first, JSON.stringify({
+      protocolVersion: 1,
+      type: "hello",
+      payload: {
+        backend: "uxp",
+        protocolVersion: 1,
+        commands: { "frame.export": { supported: true } },
+      },
+    }));
+
+    second.send(JSON.stringify({
+      protocolVersion: 1,
+      type: "hello",
+      payload: {
+        backend: "uxp",
+        protocolVersion: 1,
+        commands: { "state.get": { supported: true } },
+      },
+    }));
+
+    await vi.waitFor(() => expect(bridge.getState()).toMatchObject({
+      status: "connected",
+      capabilities: { commands: { "state.get": { supported: true } } },
+    }));
     second.close();
   });
 

@@ -187,6 +187,13 @@
         throw workspaceError("UXP_WORKSPACE_REQUIRED", "Choose an approved workspace folder in the MCP for Adobe Premiere Pro panel before using " + label);
       }
       const candidate = parseAbsolutePath(value, label);
+      const root = parseAbsolutePath(rootPath, "workspace root");
+      if (options && options.rootOnly === true) {
+        if (root.kind !== candidate.kind || root.comparison !== candidate.comparison) {
+          throw workspaceError("UXP_PATH_OUTSIDE_WORKSPACE", label + " must equal the approved workspace folder");
+        }
+        return candidate.normalized;
+      }
       if (!isContained(rootPath, candidate.normalized, kind === "directory")) {
         throw workspaceError("UXP_PATH_OUTSIDE_WORKSPACE", label + " must stay inside the approved workspace folder");
       }

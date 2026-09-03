@@ -25,7 +25,7 @@
       "transcript.languages": { readOnly: true, minHostVersion: "26.3.0", probe: canQueryTranscriptLanguages, handler: transcriptLanguages },
       "objectMask.has": { readOnly: true, minHostVersion: "26.3.0", probe: canInspectObjectMasks, handler: hasObjectMask },
       "encoder.configure": { minHostVersion: "26.3.0", probe: canConfigureEncoder, handler: configureEncoder },
-      "frame.export": { requiresWorkspace: true, minHostVersion: "25.6.0", probe: canExportFrame, handler: exportFrame },
+      "frame.export": { requiresWorkspace: true, workspaceRootOnly: true, minHostVersion: "25.6.0", probe: canExportFrame, handler: exportFrame },
       "timeline.selection.lift": { destructive: true, undoable: true, minHostVersion: "25.6.0", probe: canLiftSelection, handler: liftSelection },
       "transition.video.list": { readOnly: true, minHostVersion: "25.6.0", probe: canListTransitions, handler: listTransitions },
       "transition.video.add": { destructive: true, undoable: true, minHostVersion: "25.6.0", probe: canMutateTransitions, handler: addTransition },
@@ -113,7 +113,11 @@
       const commands = {};
       for (const name of Object.keys(definitions)) {
         const definition = definitions[name], apiSupported = !definition.probe || await definition.probe();
-        const pathValidationSupported = !definition.requiresWorkspace || workspaceState.canonicalPathValidation === "available";
+        const pathValidationSupported = !definition.requiresWorkspace
+          ? true
+          : definition.workspaceRootOnly
+            ? workspaceState.configured === true
+            : workspaceState.canonicalPathValidation === "available";
         const supported = apiSupported && pathValidationSupported;
         commands[name] = {
           supported, backend: "uxp", documented: true,
@@ -122,10 +126,13 @@
         };
         if (definition.minHostVersion) commands[name].minHostVersion = definition.minHostVersion;
         if (definition.requiresWorkspace) commands[name].workspaceRequired = true;
+        if (definition.workspaceRootOnly) commands[name].workspacePathMode = "approved_root_only";
         if (definition.conditionalWorkspace) commands[name].workspaceRequired = "path_variant_only";
         if (definition.targetCapabilityProbe) commands[name].targetCapabilityProbe = "invocation";
         if (!apiSupported) commands[name].reason = "Required Premiere UXP API is unavailable in this host";
-        else if (!pathValidationSupported) commands[name].reason = "This UXP host cannot canonically validate native paths; use the CEP fallback for path-based workflows";
+        else if (!pathValidationSupported) commands[name].reason = definition.workspaceRootOnly
+          ? "An approved workspace folder is required for this command"
+          : "This UXP host cannot canonically validate native paths; use the CEP fallback for path-based workflows";
       }
       return {
         backend: "uxp", protocolVersion: Protocol.PROTOCOL_VERSION, hostMinVersion: "25.6.0",
@@ -345,15 +352,15 @@
     async function exportFrame(args) {
       const context = await activeContext(false);
       if (!args.outputDirectory) throw commandError("UXP_INVALID_ARGUMENT", "outputDirectory is required");
-      const outputDirectory = await allowedPath(args.outputDirectory, "outputDirectory", "directory");
+      const outputDirectory = await allowedPath(args.outputDirectory, "outputDirectory", "directory", { rootOnly: true });
       const filename = Protocol.safeFilename(args.filename);
-      const exporterFilename = Protocol.exporterFrameName(filename);
+      const path = Protocol.joinPath(outputDirectory, filename);
+      const exporterDirectory = /[\\\/]$/.test(outputDirectory) ? outputDirectory : outputDirectory + "/";
       const position = args.seconds == null ? await context.sequence.getPlayerPosition() : await tickTime(args.seconds, "seconds");
       const size = await context.sequence.getFrameSize();
       const width = positiveInt(args.width, size.width, "width"), height = positiveInt(args.height, size.height, "height");
-      const returned = await ppro.Exporter.exportSequenceFrame(context.sequence, position, exporterFilename, outputDirectory, width, height);
+      const returned = await ppro.Exporter.exportSequenceFrame(context.sequence, position, path, exporterDirectory, width, height);
       if (returned !== true) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not confirm frame export; no output path is reported");
-      const path = Protocol.joinPath(outputDirectory, filename);
       return { path, width, height, seconds: position.seconds, exporterResult: returned };
     }
     async function liftSelection(args) {
@@ -578,10 +585,10 @@
     function operationSemantics(options) {
       return Protocol && typeof Protocol.operationSemantics === "function" ? Protocol.operationSemantics(options) : undefined;
     }
-    async function allowedPath(value, label, kind) {
+    async function allowedPath(value, label, kind, options) {
       const path = requiredString(value, label);
       return workspace && typeof workspace.assertPathAllowed === "function"
-        ? await workspace.assertPathAllowed(path, { label, kind })
+        ? await workspace.assertPathAllowed(path, Object.assign({ label, kind }, options || {}))
         : path;
     }
     function canExportFrame() { return !!(ppro.Exporter && typeof ppro.Exporter.exportSequenceFrame === "function"); }

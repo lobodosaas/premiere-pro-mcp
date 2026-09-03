@@ -111,6 +111,86 @@ describe("UXP command registry", () => {
     });
   });
 
+  it("supports root-only frame export without canonical validation while retaining ordinary path gating", async () => {
+    const value = host();
+    const workspace = {
+      status: () => ({ configured: true, canonicalPathValidation: "unavailable" }),
+      assertPathAllowed: vi.fn(async (path: string) => path),
+    };
+    const registry = Commands.createCommandRegistry({ ppro: value.ppro, Protocol, workspace });
+
+    await expect(registry.capabilities()).resolves.toMatchObject({
+      commands: {
+        "frame.export": {
+          supported: true, workspaceRequired: true, workspacePathMode: "approved_root_only",
+        },
+        "sequence.createPreset": {
+          supported: false, reason: expect.stringContaining("canonically validate"),
+        },
+      },
+    });
+  });
+
+  it("passes root-only validation to frame export dispatch", async () => {
+    const value = host();
+    const assertPathAllowed = vi.fn(async (path: string) => path);
+    const workspace = {
+      status: () => ({ configured: true, canonicalPathValidation: "unavailable" }),
+      assertPathAllowed,
+    };
+    const registry = Commands.createCommandRegistry({ ppro: value.ppro, Protocol, workspace });
+
+    await expect(registry.dispatch("frame.export", {
+      outputDirectory: "C:/approved", filename: "frame.png",
+    })).resolves.toMatchObject({ path: "C:/approved/frame.png" });
+    expect(assertPathAllowed).toHaveBeenCalledWith("C:/approved", {
+      label: "outputDirectory", kind: "directory", rootOnly: true,
+    });
+  });
+
+  it("reports frame export unsupported when no approved workspace is configured", async () => {
+    const value = host();
+    const registry = Commands.createCommandRegistry({
+      ppro: value.ppro,
+      Protocol,
+      workspace: {
+        status: () => ({ configured: false, canonicalPathValidation: "unavailable" }),
+        assertPathAllowed: vi.fn(async (path: string) => path),
+      },
+    });
+
+    await expect(registry.capabilities()).resolves.toMatchObject({
+      commands: {
+        "frame.export": {
+          supported: false,
+          reason: expect.stringContaining("approved workspace"),
+        },
+      },
+    });
+  });
+
+  it("reports frame export unsupported when the exporter API is absent", async () => {
+    const value = host();
+    const ppro = { ...value.ppro, Exporter: undefined };
+    const registry = Commands.createCommandRegistry({
+      ppro,
+      Protocol,
+      workspace: {
+        status: () => ({ configured: true, canonicalPathValidation: "unavailable" }),
+        assertPathAllowed: vi.fn(async (path: string) => path),
+      },
+    });
+
+    await expect(registry.capabilities()).resolves.toMatchObject({
+      commands: {
+        "frame.export": {
+          supported: false,
+          reason: expect.stringContaining("Required Premiere UXP API is unavailable"),
+        },
+      },
+    });
+  });
+
   it("lists installed video transition match names", async () => {
     await expect(host().registry.dispatch("transition.video.list", {})).resolves.toEqual({
       matchNames: ["CrossDissolve", "DipToBlack"], count: 2
@@ -132,15 +212,15 @@ describe("UXP command registry", () => {
     expect(value.ppro.TransitionFactory.createVideoTransition).toHaveBeenCalledWith("ADBE Cross Dissolve New");
   });
 
-  it("exports a PNG with a bare host filename and a one-extension returned path", async () => {
+  it("passes Adobe's required full output path and directory separator to frame export", async () => {
     const value = host();
     await expect(value.registry.dispatch("frame.export", {
       outputDirectory: "C:/approved", filename: "frame.png",
     })).resolves.toMatchObject({ path: "C:/approved/frame.png", exporterResult: true });
     expect(value.exportSequenceFrame).toHaveBeenCalledWith(
-      value.sequence, { seconds: 3 }, "frame", "C:/approved", 1920, 1080,
+      value.sequence, { seconds: 3 }, "C:/approved/frame.png", "C:/approved/", 1920, 1080,
     );
-    expect(value.exportedFrames).toEqual(["frame"]);
+    expect(value.exportedFrames).toEqual(["C:/approved/frame.png"]);
   });
 
   it("does not report a frame path when Premiere rejects the export", async () => {

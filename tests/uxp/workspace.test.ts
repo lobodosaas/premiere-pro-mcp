@@ -102,6 +102,22 @@ describe("least-privilege UXP workspace broker", () => {
       .rejects.toMatchObject({ code: "UXP_CANONICAL_PATH_UNAVAILABLE" });
   });
 
+  it("accepts only the exact approved root without canonical resolution in root-only mode", async () => {
+    const fixture = storageFixture();
+    const broker = Workspace.createWorkspaceBroker({ fs: fixture.fs });
+    await broker.requestRoot();
+
+    await expect(broker.assertPathAllowed("D:/Projects/Film", {
+      label: "outputDirectory", kind: "directory", rootOnly: true,
+    })).resolves.toBe("D:/Projects/Film");
+    await expect(broker.assertPathAllowed("D:/Projects/Film/exports", {
+      label: "outputDirectory", kind: "directory", rootOnly: true,
+    })).rejects.toMatchObject({ code: "UXP_PATH_OUTSIDE_WORKSPACE" });
+    await expect(broker.assertPathAllowed("D:/Projects/Other", {
+      label: "outputDirectory", kind: "directory", rootOnly: true,
+    })).rejects.toMatchObject({ code: "UXP_PATH_OUTSIDE_WORKSPACE" });
+  });
+
   it("restores and revokes a persisted folder capability", async () => {
     const fixture = storageFixture();
     const first = Workspace.createWorkspaceBroker({ fs: fixture.fs });
