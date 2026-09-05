@@ -8,7 +8,9 @@
   function createCommandRegistry(deps) {
     const ppro = deps.ppro, Protocol = deps.Protocol, workspace = deps.workspace;
     const completedOperations = new Map();
+    const completedDigests = new Map();
     const inFlightOperations = new Map();
+    const inFlightDigests = new Map();
     const listedVideoTransitionMatchNames = new Set();
     const definitions = {
       "capabilities.get": { readOnly: true, handler: capabilities },
@@ -74,10 +76,20 @@
       const input = args || {};
       const operationId = validateOperationId(input.operationId);
       const operationKey = operationId ? command + ":" + operationId : null;
+      // An operation id is bound to the exact payload that first used it.
+      // Replaying an identical request is safe; reusing the id with different
+      // content is rejected instead of returning a stale result.
+      const digest = operationId ? canonicalArgsDigest(input) : null;
       if (!definition.readOnly && operationKey && completedOperations.has(operationKey)) {
+        if (completedDigests.get(operationKey) !== digest) {
+          throw commandError("UXP_OPERATION_CONFLICT", "operationId was reused with a different payload; retry with the identical request or a new operationId");
+        }
         return { ...completedOperations.get(operationKey), replayed: true };
       }
       if (!definition.readOnly && operationKey && inFlightOperations.has(operationKey)) {
+        if (inFlightDigests.get(operationKey) !== digest) {
+          throw commandError("UXP_OPERATION_CONFLICT", "operationId is already in flight with a different payload");
+        }
         return { ...await inFlightOperations.get(operationKey), replayed: true };
       }
       const execute = async () => {
@@ -94,13 +106,22 @@
       // WebSocket dispatches share one host mutation instead of racing it.
       const pending = Promise.resolve().then(execute);
       inFlightOperations.set(operationKey, pending);
+      if (digest !== null) inFlightDigests.set(operationKey, digest);
       try {
         const envelope = await pending;
         completedOperations.set(operationKey, envelope);
-        if (completedOperations.size > 256) completedOperations.delete(completedOperations.keys().next().value);
+        if (digest !== null) completedDigests.set(operationKey, digest);
+        if (completedOperations.size > 256) {
+          const oldest = completedOperations.keys().next().value;
+          completedOperations.delete(oldest);
+          completedDigests.delete(oldest);
+        }
         return envelope;
       } finally {
-        if (inFlightOperations.get(operationKey) === pending) inFlightOperations.delete(operationKey);
+        if (inFlightOperations.get(operationKey) === pending) {
+          inFlightOperations.delete(operationKey);
+          inFlightDigests.delete(operationKey);
+        }
       }
     }
     async function capabilities() {
@@ -783,7 +804,19 @@
   }
   function targetArgs(args) { return { videoTrackIndex: nonNegativeInt(args.videoTrackIndex, "videoTrackIndex"), clipIndex: nonNegativeInt(args.clipIndex, "clipIndex") }; }
   function optionalPosition(value) { const result = value == null ? "end" : value; if (result !== "start" && result !== "end") throw commandError("UXP_INVALID_ARGUMENT", "position must be start or end"); return result; }
-  function assertObject(value) { if (!value || typeof value !== "object" || Array.isArray(value)) throw commandError("UXP_INVALID_ARGUMENT", "args must be an object"); }
+    function assertObject(value) { if (!value || typeof value !== "object" || Array.isArray(value)) throw commandError("UXP_INVALID_ARGUMENT", "args must be an object"); }
+    // Canonical payload digest for operation-id binding. Key order and the
+    // operationId itself are excluded so identical retries hash identically.
+    function canonicalDigestValue(value) {
+      if (value && typeof value === "object") {
+        if (Array.isArray(value)) return "[" + value.map(canonicalDigestValue).join(",") + "]";
+        return "{" + Object.keys(value).sort().map((key) => key + ":" + canonicalDigestValue(value[key])).join(",") + "}";
+      }
+      return String(value);
+    }
+    function canonicalArgsDigest(input) {
+      return Object.keys(input || {}).filter((key) => key !== "operationId").sort().map((key) => key + ":" + canonicalDigestValue(input[key])).join("|");
+    }
   function assertOnlyKeys(value, allowed) { const unknown = Object.keys(value).filter((key) => !allowed.includes(key)); if (unknown.length) throw commandError("UXP_INVALID_ARGUMENT", "Unknown argument: " + unknown[0]); }
   function nonNegativeInt(value, name) { if (!Number.isInteger(value) || value < 0) throw commandError("UXP_INVALID_ARGUMENT", name + " must be a non-negative integer"); return value; }
   function nonNegativeNumber(value, name) { const number = Number(value); if (!Number.isFinite(number) || number < 0) throw commandError("UXP_INVALID_ARGUMENT", name + " must be a non-negative number"); return number; }

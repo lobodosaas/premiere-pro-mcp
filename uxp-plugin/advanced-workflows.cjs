@@ -826,9 +826,16 @@
 
     async function patternAlreadyApplied(state, plan) {
       const opacity = state.opacity.param, position = state.position.param;
+      const inRange = (times) => times.filter((seconds) => seconds != null
+        && seconds >= plan.resolvedStartSeconds - 0.0001 && seconds <= plan.resolvedMidSeconds + 0.0001);
+      const opacityInRange = inRange(state.opacitySnapshot.existingKeyframeTimesSeconds);
+      const positionInRange = inRange(state.positionSnapshot.existingKeyframeTimesSeconds);
+      // Exactness matters: extra keys inside the range mean this is not a
+      // clean completed pattern, so a second apply must not report noop.
+      if (opacityInRange.length !== 2 || positionInRange.length !== 2) return false;
       const hasKeys = (times) => [plan.resolvedStartSeconds, plan.resolvedMidSeconds]
         .every((expected) => times.some((seconds) => numbersClose(seconds, expected)));
-      if (!hasKeys(state.opacitySnapshot.existingKeyframeTimesSeconds) || !hasKeys(state.positionSnapshot.existingKeyframeTimesSeconds)) return false;
+      if (!hasKeys(opacityInRange) || !hasKeys(positionInRange)) return false;
       const [opacityStart, opacityMid, positionStart, positionMid] = await Promise.all([
         readbackAt(opacity, plan.resolvedStartSeconds), readbackAt(opacity, plan.resolvedMidSeconds),
         readbackAt(position, plan.resolvedStartSeconds), readbackAt(position, plan.resolvedMidSeconds),
@@ -867,14 +874,32 @@
       };
     }
 
+    // Serializes concurrent caption applies on the same clip. The key uses the
+    // caller-visible target because the project/sequence identity is only
+    // known after the first host read; a mid-flight project switch is out of
+    // scope and documented at the call site.
+    const captionLocks = new Set();
+
     async function applyCaptionAnimation(args) {
       const context = captionContext(args, true);
       const yOffset = finiteNumber(args.yOffset, "yOffset", -1, 1);
       const coordinateSpace = boundedString(String(args.coordinateSpace ?? ""), "coordinateSpace", 32);
       if (args.confirmApply !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", "caption entrance apply requires confirmApply=true after reviewing the preview");
+      if (args.operationId == null) throw commandError("UXP_OPERATION_ID_REQUIRED", "caption entrance apply requires an operationId for replay protection");
       const snapshot = args.snapshot && typeof args.snapshot === "object" && !Array.isArray(args.snapshot) ? args.snapshot : null;
       if (!snapshot || typeof snapshot.snapshotDigest !== "string") throw commandError("UXP_INVALID_ARGUMENT", "snapshot must be the object returned by captionAnimation.preview");
 
+      const lockKey = [context.mediaType, context.trackIndex, context.clipIndex].join(":");
+      if (captionLocks.has(lockKey)) throw commandError("UXP_TARGET_BUSY", "another caption entrance apply is already running on this clip");
+      captionLocks.add(lockKey);
+      try {
+        return await applyCaptionAnimationLocked(context, yOffset, coordinateSpace, snapshot);
+      } finally {
+        captionLocks.delete(lockKey);
+      }
+    }
+
+    async function applyCaptionAnimationLocked(context, yOffset, coordinateSpace, snapshot) {
       const state = await captionState(context, true);
       const enriched = { ...state, contextMediaType: context.mediaType, contextTrackIndex: context.trackIndex, contextClipIndex: context.clipIndex };
       const speed = typeof state.item.getSpeed === "function" ? await state.item.getSpeed() : 1;
@@ -939,23 +964,35 @@
         && pointMatches(readback.positionStart, plan.position[0].value) && pointMatches(readback.positionMid, plan.position[1].value);
       if (!verified) {
         let restored = null;
+        let varyingRestored = null;
         try {
           state.project.lockedAccess(() => {
             const rollbackActions = [];
             for (const key of plan.opacity) rollbackActions.push(opacity.createRemoveKeyframeAction(tick(key.timeSeconds), true));
             for (const key of plan.position) rollbackActions.push(position.createRemoveKeyframeAction(tick(key.timeSeconds), true));
+            if (!state.opacitySnapshot.timeVarying) rollbackActions.push(opacity.createSetTimeVaryingAction(false));
+            if (!state.positionSnapshot.timeVarying) rollbackActions.push(position.createSetTimeVaryingAction(false));
             commitActions(state.project, "Caption entrance rollback", rollbackActions);
           });
           const opacityAfter = Array.from(opacity.getKeyframeListAsTickTimes() || []).map(tickSeconds);
           const positionAfter = Array.from(position.getKeyframeListAsTickTimes() || []).map(tickSeconds);
           const stillThere = opacityAfter.some((seconds) => numbersClose(seconds, plan.opacity[0].timeSeconds) || numbersClose(seconds, plan.opacity[1].timeSeconds))
             || positionAfter.some((seconds) => numbersClose(seconds, plan.position[0].timeSeconds) || numbersClose(seconds, plan.position[1].timeSeconds));
+          let varyingOk = true;
+          try {
+            if (!state.opacitySnapshot.timeVarying && opacity.isTimeVarying()) varyingOk = false;
+            if (!state.positionSnapshot.timeVarying && position.isTimeVarying()) varyingOk = false;
+          } catch (_) { varyingOk = false; }
           restored = !stillThere;
-        } catch (_) { restored = false; }
+          varyingRestored = varyingOk;
+        } catch (_) { restored = false; varyingRestored = false; }
         throw commandError("UXP_APPLY_FAILED", "ROLLBACK: entrance readback did not verify"
           + (restored === true ? "; the keys written by this call were removed and their absence verified"
             : restored === false ? "; the keys written by this call could NOT be fully removed"
-            : "; rollback could not be verified") + ".");
+            : "; rollback could not be verified")
+          + (varyingRestored === true ? "; time-varying flags restored"
+            : varyingRestored === false ? "; time-varying flags could NOT be fully restored"
+            : "") + ".");
       }
 
       return mutationResult(true, {

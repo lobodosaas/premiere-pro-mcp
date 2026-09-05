@@ -505,14 +505,14 @@ describe("advanced stable Premiere UXP workflows", () => {
     const fastPreview = await fast.registry.dispatch("captionAnimation.preview", { ...target });
     fast.trackItem.getSpeed.mockResolvedValue(2);
     await expect(fast.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: fastPreview, confirmApply: true,
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: fastPreview, confirmApply: true, operationId: "retime-op",
     })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
 
     const reversed = advancedHost();
     const reversedPreview = await reversed.registry.dispatch("captionAnimation.preview", { ...target });
     reversed.trackItem.isSpeedReversed.mockResolvedValue(true);
     await expect(reversed.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: reversedPreview, confirmApply: true,
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: reversedPreview, confirmApply: true, operationId: "reverse-op",
     })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
   });
 
@@ -538,7 +538,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(preview.clip).toMatchObject({ projectId: "project-1", sequenceId: "sequence-1" });
     value.project.guid = "project-2";
     await expect(value.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "stale-proj",
     })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
   });
 
@@ -587,7 +587,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     value.positionState.base = { x: 0.7, y: 0.5 };
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "base-op",
     })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
   });
 
@@ -685,7 +685,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     value.trackState.start = 12;
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "stale-track",
     })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
   });
 
@@ -696,7 +696,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "conflict-op",
     })).rejects.toMatchObject({ code: "UXP_KEYS_EXIST" });
   });
 
@@ -718,7 +718,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(preview.clip.oneFrame).toBe(true);
 
     const result = await value.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "oneframe-op",
     });
 
     expect(result).toMatchObject({ applied: false, skipped: true });
@@ -734,10 +734,93 @@ describe("advanced stable Premiere UXP workflows", () => {
     });
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
-      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "rollback-op",
     })).rejects.toMatchObject({ code: "UXP_APPLY_FAILED" });
     expect(value.parameterState.keyframes).toEqual([]);
     expect(value.positionState.keyframes).toEqual([]);
+  });
+
+  it("requires an operation id for caption apply", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_OPERATION_ID_REQUIRED" });
+    expect(value.parameter.createAddKeyframeAction).not.toHaveBeenCalled();
+  });
+
+  it("rejects a reused operation id with a different payload instead of replaying", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const base = { ...target, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "dup-op" };
+
+    await value.registry.dispatch("captionAnimation.apply", { ...base, yOffset: 0.05 });
+    await expect(value.registry.dispatch("captionAnimation.apply", { ...base, yOffset: 0.06 }))
+      .rejects.toMatchObject({ code: "UXP_OPERATION_CONFLICT" });
+  });
+
+  it("replays an identical retried operation without duplicating keys", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const args = { ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "retry-op" };
+
+    const first = await value.registry.dispatch("captionAnimation.apply", args);
+    const second = await value.registry.dispatch("captionAnimation.apply", { ...args });
+    expect(second).toMatchObject({ replayed: true, applied: true });
+    expect(value.parameterState.keyframes).toEqual([10, 15]);
+  });
+
+  it("serializes concurrent applies on the same clip instead of racing them", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const argsFor = (id: string) => ({
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: id,
+    });
+
+    const outcomes = await Promise.allSettled([
+      value.registry.dispatch("captionAnimation.apply", argsFor("race-1")),
+      value.registry.dispatch("captionAnimation.apply", argsFor("race-2")),
+    ]);
+    const fulfilled = outcomes.filter((outcome) => outcome.status === "fulfilled");
+    const busy = outcomes.filter(
+      (outcome) => outcome.status === "rejected" && (outcome.reason as { code?: string }).code === "UXP_TARGET_BUSY",
+    );
+    expect(fulfilled).toHaveLength(1);
+    expect(busy).toHaveLength(1);
+    expect(value.parameterState.keyframes).toEqual([10, 15]);
+  });
+
+  it("does not call an extra key inside the range a completed pattern", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    await value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "pattern-op",
+    });
+    value.parameterState.keyframes.push(12);
+    value.parameterState.keyframeValues.push({ seconds: 12, value: 50 });
+
+    const fresh = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: fresh, confirmApply: true, operationId: "pattern-op-2",
+    })).rejects.toMatchObject({ code: "UXP_KEYS_EXIST" });
+  });
+
+  it("restores the time-varying flags it enabled when compensating", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    value.positionParam.getValueAtTime.mockImplementation(async () => ({ x: 0, y: 0 }));
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "vary-op",
+    })).rejects.toMatchObject({ code: "UXP_APPLY_FAILED", message: expect.stringContaining("time-varying") });
+    expect(value.parameter.isTimeVarying()).toBe(false);
   });
 
   it("keeps direct sequence actions unverified with stable result keys and probes host methods", async () => {
