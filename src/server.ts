@@ -58,6 +58,7 @@ import {
   resolveToolPacks,
   type ToolPackSelection,
 } from "./workflows/tool-packs.js";
+import { readServerBuildInfo, type ServerBuildInfo } from "./build-info.js";
 import { getTelemetry, type Telemetry } from "./telemetry.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
@@ -306,6 +307,7 @@ function collectTools(
   telemetry?: Telemetry,
   toolPacks?: ToolPackSelection,
   cacheable = false,
+  buildInfo?: ServerBuildInfo,
 ): Record<string, ToolDef> {
   const cacheKey = JSON.stringify({
     tempDir: bridgeOptions.tempDir ?? process.env.PREMIERE_TEMP_DIR ?? null,
@@ -366,6 +368,7 @@ function collectTools(
       telemetry,
       uxpBridge,
       toolPacks,
+      buildInfo,
     }),
   );
   if (!uxpBridge && cacheable) toolCatalogCache.set(cacheKey, tools);
@@ -377,6 +380,8 @@ export interface ServerOptions {
   telemetry?: Telemetry;
   /** Overrides PREMIERE_MCP_TOOL_PACKS for this server instance. */
   toolPacks?: string;
+  /** Build snapshot captured at broker/server startup. Read from dist/ when omitted. */
+  buildInfo?: ServerBuildInfo;
 }
 
 export function createServer(
@@ -424,6 +429,7 @@ export function createServer(
     telemetry,
     toolPacks,
     !serverOptions.telemetry,
+    serverOptions.buildInfo ?? readServerBuildInfo(),
   );
 
   // Register each tool with the MCP server

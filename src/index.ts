@@ -2,6 +2,7 @@
 
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createServer } from "./server.js";
+import { readServerBuildInfo } from "./build-info.js";
 import { cleanupTempDir, getTempDir } from "./bridge/file-bridge.js";
 import { getTelemetry } from "./telemetry.js";
 import { execFileSync } from "child_process";
@@ -249,8 +250,9 @@ async function main() {
     }
   }
 
+  const serverBuildInfo = readServerBuildInfo();
   const serverHandle = serveStdio(
-    () => createServer(bridgeOptions, { uxpBridge, telemetry }),
+    () => createServer(bridgeOptions, { uxpBridge, telemetry, buildInfo: serverBuildInfo }),
     {
       onerror: (error) => console.error("[premiere-pro-mcp] MCP stdio error:", error),
     },

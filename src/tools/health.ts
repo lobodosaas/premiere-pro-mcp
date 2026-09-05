@@ -1,6 +1,7 @@
 import { buildToolScript } from "../bridge/script-builder.js";
 import { getTempDir, sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
-import { resolveCapabilities, type CapabilityConfig } from "../security/capabilities.js";
+import { isToolPermitted, resolveCapabilities, type CapabilityConfig } from "../security/capabilities.js";
+import type { ServerBuildInfo } from "../build-info.js";
 import { buildPlatformCapabilityReport } from "../platform-capabilities.js";
 import { buildAdvancedFeatureSupport, type AdvancedFeatureBackend } from "../advanced-feature-support.js";
 import type { CatalogToolDefinition } from "../tool-capability-report.js";
@@ -9,6 +10,7 @@ import { captureActivationEvent, type Telemetry } from "../telemetry.js";
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
 import {
   buildToolPackReport,
+  isToolInSelectedPacks,
   resolveToolPacks,
   type ToolPackSelection,
 } from "../workflows/tool-packs.js";
@@ -17,6 +19,7 @@ export interface HealthToolOptions {
   telemetry?: Telemetry;
   uxpBridge?: UxpWebSocketBridge;
   toolPacks?: ToolPackSelection;
+  buildInfo?: ServerBuildInfo;
 }
 
 const disabledTelemetry: Telemetry = {
@@ -26,6 +29,35 @@ const disabledTelemetry: Telemetry = {
 };
 
 type UxpDiagnostic = NonNullable<FirstRunReport["uxpDiagnostic"]>;
+
+/**
+ * Summarize the connected UXP panel without leaking tokens, paths, or the
+ * full command map. A listener without a panel handshake is reported as
+ * disconnected, never as verified.
+ */
+function summarizeUxpPanel(bridge: UxpWebSocketBridge | undefined): Record<string, unknown> {
+  if (!bridge || typeof bridge.getState !== "function") {
+    return { connected: false, status: "no_bridge" };
+  }
+  try {
+    const state = bridge.getState();
+    if (state.connected) {
+      const hello = state.capabilities as { hostVersion?: unknown; commands?: Record<string, { supported?: unknown }> };
+      const commands = hello?.commands && typeof hello.commands === "object" ? hello.commands : {};
+      return {
+        connected: true,
+        status: state.status,
+        protocolVersion: state.protocolVersion,
+        hostVersion: typeof hello?.hostVersion === "string" ? hello.hostVersion : null,
+        supportedCommandCount: Object.values(commands).filter((command) => command?.supported === true).length,
+        connectedAt: state.connectedAt,
+      };
+    }
+    return { connected: false, status: state.status };
+  } catch {
+    return { connected: false, status: "unknown" };
+  }
+}
 
 function buildUxpDiagnostic(
   bridge: UxpWebSocketBridge | undefined,
@@ -145,12 +177,13 @@ export function getHealthTools(
         },
       },
       handler: async (args: { tool_names?: string[]; tool_offset?: number; tool_limit?: number } = {}) => {
+        const toolPacks = options.toolPacks ?? resolveToolPacks();
         const report = buildPlatformCapabilityReport(
           capabilities,
           process.platform,
           getTempDir(bridgeOptions),
           getToolCatalog(),
-          buildToolPackReport(options.toolPacks ?? resolveToolPacks()),
+          buildToolPackReport(toolPacks),
         );
         const names = Array.isArray(args.tool_names) ? new Set(args.tool_names) : undefined;
         const matchingTools = names
@@ -162,23 +195,45 @@ export function getHealthTools(
           ? Math.min(args.tool_limit as number, 128)
           : matchingTools.length;
         const page = hasExplicitPage ? matchingTools.slice(offset, offset + limit) : matchingTools;
+        // Annotate the pre-filter catalog with effective registration so an
+        // operator can tell "implemented" from "actually listed to this client".
+        const registeredPage = page.map((tool) => ({
+          ...tool,
+          registered: isToolPermitted(tool.name, capabilities)
+            && isToolInSelectedPacks(tool.name, toolPacks),
+        }));
 
         return {
           success: true,
           data: {
             ...report,
+            runtime: {
+              ...report.runtime,
+              build: options.buildInfo ?? {
+                found: false,
+                commit: null,
+                packageVersion: null,
+                builtAt: null,
+                source: "missing",
+              },
+              toolPacks: {
+                selected: toolPacks.fullCatalog ? ["full"] : [...toolPacks.selected],
+                fullCatalog: toolPacks.fullCatalog,
+              },
+              uxp: summarizeUxpPanel(options.uxpBridge),
+            },
             tools: {
               ...report.tools,
-              tools: page,
+              tools: registeredPage,
               ...(names || hasExplicitPage
                 ? {
                     pagination: {
                       offset,
                       limit,
-                      returned: page.length,
+                      returned: registeredPage.length,
                       totalMatching: matchingTools.length,
-                      hasMore: offset + page.length < matchingTools.length,
-                      nextOffset: offset + page.length < matchingTools.length ? offset + page.length : null,
+                      hasMore: offset + registeredPage.length < matchingTools.length,
+                      nextOffset: offset + registeredPage.length < matchingTools.length ? offset + registeredPage.length : null,
                     },
                   }
                 : {}),

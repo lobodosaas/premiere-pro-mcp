@@ -27,6 +27,7 @@ import {
   type UxpConnectionState,
 } from "./uxp-websocket-bridge.js";
 import { getTelemetry, type Telemetry } from "../telemetry.js";
+import { readServerBuildInfo, type ServerBuildInfo } from "../build-info.js";
 
 const BROKER_START_TIMEOUT_MS = 8_000;
 const BROKER_RETRY_DELAY_MS = 100;
@@ -39,17 +40,22 @@ export interface LocalBrokerOptions {
   ipcEndpoint?: string;
   toolPacks?: string;
   telemetry?: Telemetry;
+  /** Build snapshot to advertise; captured from dist/ at startup when omitted. */
+  buildInfo?: ServerBuildInfo;
 }
 
 export interface LocalBrokerState {
   endpoint: string;
   clients: number;
   uxp: UxpConnectionState;
+  build: ServerBuildInfo;
 }
 
 export class LocalBroker extends EventEmitter {
   readonly endpoint: string;
   readonly uxpBridge: UxpWebSocketBridge;
+  /** Build snapshot captured once at broker startup, never re-read. */
+  readonly buildInfo: ServerBuildInfo;
 
   private readonly options: LocalBrokerOptions;
   private readonly telemetry: Telemetry;
@@ -63,6 +69,8 @@ export class LocalBroker extends EventEmitter {
     this.options = options;
     this.endpoint = options.ipcEndpoint ?? getLocalBrokerEndpoint();
     this.telemetry = options.telemetry ?? getTelemetry();
+    const captured = options.buildInfo ?? readServerBuildInfo();
+    this.buildInfo = { capturedAt: new Date().toISOString(), ...captured };
     this.uxpBridge = new UxpWebSocketBridge({
       token: options.uxpToken,
       port: options.uxpPort,
@@ -96,6 +104,7 @@ export class LocalBroker extends EventEmitter {
       endpoint: this.endpoint,
       clients: this.clients.size,
       uxp: this.uxpBridge.getState(),
+      build: this.buildInfo,
     };
   }
 
@@ -128,6 +137,7 @@ export class LocalBroker extends EventEmitter {
         uxpBridge: this.uxpBridge,
         telemetry: this.telemetry,
         toolPacks: this.options.toolPacks,
+        buildInfo: this.buildInfo,
       }),
       {
         transport,
