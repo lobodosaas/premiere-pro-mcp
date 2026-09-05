@@ -703,26 +703,36 @@
 
     function findParamMatching(component, pattern, label) {
       const count = component.getParamCount();
+      const matches = [];
       for (let index = 0; index < count; index++) {
         const candidate = component.getParam(index);
         const name = String(candidate.displayName || "");
-        if (pattern.test(name)) return { param: candidate, index, name };
+        if (pattern.test(name)) matches.push({ param: candidate, index, name });
       }
-      throw commandError("UXP_TARGET_NOT_FOUND", label + " parameter was not found on the caption graphic");
+      if (matches.length > 1) throw commandError("UXP_TARGET_AMBIGUOUS", "multiple " + label + " parameters match on the caption graphic; refusing an ambiguous target");
+      if (matches.length === 0) throw commandError("UXP_TARGET_NOT_FOUND", label + " parameter was not found on the caption graphic");
+      return matches[0];
     }
 
     async function captionTarget(parent, context) {
       const item = await trackItemAt(parent.sequence, context.mediaType, context.trackIndex, context.clipIndex);
       const chain = await item.getComponentChain();
       const count = chain.getComponentCount();
-      let opacityComponent = null, motionComponent = null;
+      const opacityMatches = [], motionMatches = [];
+      let hasGraphicContent = false;
       for (let index = 0; index < count; index++) {
         const component = chain.getComponentAtIndex(index);
         const id = await componentIdentifier(component);
-        if (!opacityComponent && /opacity/i.test(id)) opacityComponent = { component, index, id };
-        if (!motionComponent && /motion|movimento/i.test(id) && !/vector|vetor|graphic/i.test(id)) motionComponent = { component, index, id };
+        if (/opacity/i.test(id)) opacityMatches.push({ component, index, id });
+        if (/motion|movimento/i.test(id) && !/vector|vetor|graphic/i.test(id)) motionMatches.push({ component, index, id });
+        if (id === "AE.ADBE Text" || id === "AE.ADBE Graphic Group") hasGraphicContent = true;
       }
+      if (opacityMatches.length > 1 || motionMatches.length > 1) {
+        throw commandError("UXP_TARGET_AMBIGUOUS", "multiple Opacity or Motion components match on the clip; refusing an ambiguous target");
+      }
+      const opacityComponent = opacityMatches[0] || null, motionComponent = motionMatches[0] || null;
       if (!opacityComponent || !motionComponent) throw commandError("UXP_TARGET_NOT_FOUND", "the clip does not expose the standard Opacity and Motion components");
+      if (!hasGraphicContent) throw commandError("UXP_TARGET_UNSUPPORTED", "the clip has no graphic text content; the caption entrance only applies to caption graphics");
       const opacity = findParamMatching(opacityComponent.component, /opacidade|opacity/i, "Opacity");
       const position = findParamMatching(motionComponent.component, /posição|position/i, "Position");
       const startSeconds = tickSeconds(await item.getStartTime());
@@ -731,17 +741,22 @@
       return { project: parent.project, item, opacityComponent, motionComponent, opacity, position, startSeconds, endSeconds, durationSeconds };
     }
 
+    const MAX_CAPTION_KEYFRAMES = 64;
+
     async function captionParameterSnapshot(entry) {
       const param = entry.param;
       const supported = typeof param.areKeyframesSupported === "function" ? !!await param.areKeyframesSupported() : false;
       const varying = typeof param.isTimeVarying === "function" ? !!param.isTimeVarying() : false;
       const rawTimes = typeof param.getKeyframeListAsTickTimes === "function" ? Array.from(param.getKeyframeListAsTickTimes() || []) : [];
+      if (rawTimes.length > MAX_CAPTION_KEYFRAMES) {
+        throw commandError("UXP_TOO_MANY_KEYS", "the parameter carries more keyframes than can be verified safely; refusing the caption operation");
+      }
       let base = null;
       try { base = pointReadback(keyframeValue(await param.getStartValue())); } catch (_) {}
       return {
         index: entry.componentIndex, componentId: entry.componentId, paramIndex: entry.paramIndex,
         paramName: entry.name, keyframesSupported: supported, timeVarying: varying,
-        existingKeyframeTimesSeconds: rawTimes.slice(0, 64).map(tickSeconds),
+        existingKeyframeTimesSeconds: rawTimes.slice(0, MAX_CAPTION_KEYFRAMES).map(tickSeconds),
         baseValue: base,
       };
     }
@@ -751,9 +766,17 @@
       const target = await captionTarget(parent, context);
       const opacitySnapshot = await captionParameterSnapshot({ param: target.opacity.param, componentIndex: target.opacityComponent.index, componentId: target.opacityComponent.id, paramIndex: target.opacity.index, name: target.opacity.name });
       const positionSnapshot = await captionParameterSnapshot({ param: target.position.param, componentIndex: target.motionComponent.index, componentId: target.motionComponent.id, paramIndex: target.position.index, name: target.position.name });
+      if (!positionSnapshot.baseValue || typeof positionSnapshot.baseValue !== "object") {
+        throw commandError("UXP_TARGET_UNREADABLE", "the current Position value could not be read; refusing to invent a base position");
+      }
       const frameSeconds = await captionFrameSeconds(parent.sequence);
       const oneFrame = target.durationSeconds <= frameSeconds * 1.5;
-      return { ...target, opacitySnapshot, positionSnapshot, frameSeconds, oneFrame };
+      return {
+        ...target,
+        projectId: guidString(parent.project && parent.project.guid),
+        sequenceId: guidString(parent.sequence && parent.sequence.guid),
+        opacitySnapshot, positionSnapshot, frameSeconds, oneFrame,
+      };
     }
 
     function captionPlan(state, yOffset, coordinateSpace) {
@@ -780,9 +803,14 @@
 
     function captionDigestInput(state) {
       return {
-        clip: { mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds },
+        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
       };
+    }
+
+    function sameBaseValue(left, right) {
+      if (!left || !right || typeof left !== "object" || typeof right !== "object") return false;
+      return numbersClose(left.x, right.x) && numbersClose(left.y, right.y);
     }
 
     async function readbackAt(param, seconds) {
@@ -826,7 +854,7 @@
       const digest = planDigest(captionDigestInput(enriched));
       return {
         preview: true,
-        clip: { mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, frameSeconds: state.frameSeconds, oneFrame },
+        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, frameSeconds: state.frameSeconds, oneFrame },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
         plan: {
           timeBasis: plan.timeBasis,
@@ -864,6 +892,15 @@
       }
       const liveDigest = planDigest(captionDigestInput(enriched));
       if (liveDigest !== snapshot.snapshotDigest) throw commandError("UXP_STALE_SNAPSHOT", "the clip changed since preview; request a new captionAnimation.preview before applying");
+      const snapshotClip = snapshot.clip && typeof snapshot.clip === "object" ? snapshot.clip : null;
+      if (!snapshotClip || snapshotClip.projectId !== state.projectId || snapshotClip.sequenceId !== state.sequenceId
+        || snapshotClip.trackIndex !== context.trackIndex || snapshotClip.clipIndex !== context.clipIndex) {
+        throw commandError("UXP_STALE_SNAPSHOT", "the snapshot belongs to a different project, sequence, or clip");
+      }
+      const snapshotBase = snapshot.components && snapshot.components.position ? snapshot.components.position.baseValue : null;
+      if (!sameBaseValue(snapshotBase, state.positionSnapshot.baseValue)) {
+        throw commandError("UXP_STALE_SNAPSHOT", "the live base position changed since preview; request a new captionAnimation.preview before applying");
+      }
 
       const conflicts = existingKeysInsideRange(state, plan);
       if (conflicts.opacity || conflicts.position) {

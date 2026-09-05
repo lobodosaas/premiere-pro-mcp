@@ -167,9 +167,22 @@ function advancedHost() {
     getParamCount: vi.fn(() => 1),
     getParam: vi.fn(() => positionParam),
   };
+  const vectorComponent = {
+    getMatchName: vi.fn(async () => "AE.ADBE Graphic Group"),
+    getDisplayName: vi.fn(async () => "Movimento do vetor"),
+    getParamCount: vi.fn(() => 0),
+    getParam: vi.fn(() => { throw new Error("no params"); }),
+  };
+  const textComponent = {
+    getMatchName: vi.fn(async () => "AE.ADBE Text"),
+    getDisplayName: vi.fn(async () => "Texto"),
+    getParamCount: vi.fn(() => 1),
+    getParam: vi.fn(() => ({ displayName: "Texto de origem" })),
+  };
+  const chainComponents = [component, motionComponent, vectorComponent, textComponent];
   const chain = {
-    getComponentCount: vi.fn(() => 2),
-    getComponentAtIndex: vi.fn((index: number) => (index === 0 ? component : motionComponent)),
+    getComponentCount: vi.fn(() => chainComponents.length),
+    getComponentAtIndex: vi.fn((index: number) => chainComponents[index]),
   };
 
   const trackState = { name: "Interview V", start: 10, end: 20, inPoint: 0, outPoint: 10, disabled: false };
@@ -318,6 +331,7 @@ function advancedHost() {
   return {
     registry: Commands.createCommandRegistry({ ppro, Protocol, workspace, events }),
     project, ppro, workspace, markers, markerValues, root, bin, clip, parameter, positionParam, positionState, trackItem,
+    motionComponent, vectorComponent, textComponent,
     sequence, sequences, settingsState, parameterState, trackState, editor, manager, events,
   };
 }
@@ -514,6 +528,67 @@ describe("advanced stable Premiere UXP workflows", () => {
     value.trackState.end = 10.04;
     const oneFrame = await value.registry.dispatch("captionAnimation.preview", { ...target });
     expect(oneFrame.clip.oneFrame).toBe(true);
+  });
+
+  it("binds the snapshot to the project and sequence identity", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+
+    expect(preview.clip).toMatchObject({ projectId: "project-1", sequenceId: "sequence-1" });
+    value.project.guid = "project-2";
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
+  });
+
+  it("rejects ambiguous Motion components and duplicate Position params", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    value.motionComponent.getParamCount.mockReturnValue(2);
+    value.motionComponent.getParam.mockImplementation(() => value.positionParam);
+
+    await expect(value.registry.dispatch("captionAnimation.preview", { ...target }))
+      .rejects.toMatchObject({ code: "UXP_TARGET_AMBIGUOUS" });
+  });
+
+  it("refuses non-graphic clips that merely expose Opacity and Motion", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    value.textComponent.getMatchName.mockResolvedValue("AE.ADBE Other");
+    value.vectorComponent.getMatchName.mockResolvedValue("AE.ADBE Other");
+
+    await expect(value.registry.dispatch("captionAnimation.preview", { ...target }))
+      .rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
+  });
+
+  it("never invents a base position when the host value is unreadable", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    value.positionParam.getStartValue.mockResolvedValueOnce(null);
+
+    await expect(value.registry.dispatch("captionAnimation.preview", { ...target }))
+      .rejects.toMatchObject({ code: "UXP_TARGET_UNREADABLE" });
+  });
+
+  it("refuses when keyframe enumeration exceeds the safe verification bound", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    value.positionState.keyframes = Array.from({ length: 65 }, (_, index) => 10 + index * 0.1);
+
+    await expect(value.registry.dispatch("captionAnimation.preview", { ...target }))
+      .rejects.toMatchObject({ code: "UXP_TOO_MANY_KEYS" });
+  });
+
+  it("treats a changed base position as a stale snapshot", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    value.positionState.base = { x: 0.7, y: 0.5 };
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
   });
 
   it("reports UXP_COMMAND_UNAVAILABLE when the host lacks a PointF factory", async () => {
