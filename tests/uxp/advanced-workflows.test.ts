@@ -533,6 +533,46 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(result).toMatchObject({ added: true, outcome: "committed_unverified", verified: false });
   });
 
+  it("treats an empty host object as an unavailable readback", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+    value.parameter.getValueAtTime.mockImplementation(async () => ({}));
+
+    const result = await value.registry.dispatch("parameters.set", {
+      ...target, value: 80, timeSeconds: 1, operationId: "empty-read",
+    });
+    expect(result).toMatchObject({ updated: true, outcome: "committed_unverified", verified: false });
+    expect(result.after.value).toBeNull();
+  });
+
+  it("rejects malformed point readbacks instead of coercing them", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+    value.parameter.getValueAtTime.mockImplementation(async () => [null, 0.5]);
+
+    const result = await value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 0.15, value: { x: 0.5, y: 0.5 }, operationId: "badpoint-read",
+    });
+    expect(result).toMatchObject({ added: true, outcome: "committed_unverified", verified: false });
+  });
+
+  it("unwraps a wrapped point base for caption previews", async () => {
+    const value = advancedHost();
+    value.positionParam.getStartValue.mockImplementation(async () => ({ value: { x: 0.5, y: 0.5 } }));
+
+    const result = await previewCaption(value, 0.05);
+    expect(result.components.position.baseValue).toEqual({ x: 0.5, y: 0.5 });
+  });
+
+  it("refuses a caption preview whose position base is an empty object", async () => {
+    const value = advancedHost();
+    value.positionParam.getStartValue.mockImplementation(async () => ({ value: {} }));
+
+    await expect(
+      value.registry.dispatch("captionAnimation.preview", { mediaType: "video", trackIndex: 0, clipIndex: 0 }),
+    ).rejects.toMatchObject({ code: "UXP_TARGET_UNREADABLE" });
+  });
+
   it("resolves remove_keyframe clip_relative against the source in-point", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };

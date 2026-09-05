@@ -819,7 +819,7 @@
       const target = await captionTarget(parent, context);
       const opacitySnapshot = await captionParameterSnapshot({ param: target.opacity.param, componentIndex: target.opacityComponent.index, componentId: target.opacityComponent.id, paramIndex: target.opacity.index, name: target.opacity.name });
       const positionSnapshot = await captionParameterSnapshot({ param: target.position.param, componentIndex: target.motionComponent.index, componentId: target.motionComponent.id, paramIndex: target.position.index, name: target.position.name });
-      if (!positionSnapshot.baseValue || typeof positionSnapshot.baseValue !== "object") {
+      if (!isPoint(positionSnapshot.baseValue)) {
         throw commandError("UXP_TARGET_UNREADABLE", "the current Position value could not be read; refusing to invent a base position");
       }
       const frameSeconds = await captionFrameSeconds(parent.sequence);
@@ -1475,30 +1475,46 @@
       return scalarValue(value);
     }
 
+    // Normalizes 2D readbacks to {x, y} without coercion: only finite
+    // numbers pass through. Anything else is returned untouched so the
+    // caller (normalizeHostValue) can reject it instead of inventing
+    // coordinates — e.g. [null, 0.5] must never become {x: 0, y: 0.5}.
     function pointReadback(value) {
-      // The live host returns 2D values as plain [x, y] arrays from
-      // getValueAtTime/getStartValue (verified on Premiere 26.3.2), never as
-      // PointF instances. Normalize both shapes for numeric comparison.
       if (Array.isArray(value) && value.length === 2) {
-        const ax = Number(value[0]), ay = Number(value[1]);
-        if (Number.isFinite(ax) && Number.isFinite(ay)) return { x: ax, y: ay };
+        const ax = value[0], ay = value[1];
+        if (typeof ax === "number" && typeof ay === "number" && Number.isFinite(ax) && Number.isFinite(ay)) {
+          return { x: ax, y: ay };
+        }
         return value;
       }
-      if (value && typeof value === "object" && !Array.isArray(value) && Number.isFinite(Number(value.x)) && Number.isFinite(Number(value.y))) {
-        return { x: Number(value.x), y: Number(value.y) };
+      if (value && typeof value === "object" && !Array.isArray(value)
+        && typeof value.x === "number" && typeof value.y === "number"
+        && Number.isFinite(value.x) && Number.isFinite(value.y)) {
+        return { x: value.x, y: value.y };
       }
       return value;
     }
 
     // Single shared normalizer for every host value readback. The live host
     // wraps scalars as { value } and returns 2D values as [x, y] arrays or
-    // {x, y} objects (verified on Premiere 26.3.2). Missing or invalid reads
-    // stay null so they can never confirm a value — not even zero.
+    // {x, y} objects (verified on Premiere 26.3.2); it can also return an
+    // empty object when no value is available. Missing or invalid reads stay
+    // null so they can never confirm a value — not even zero. No Number()
+    // coercion anywhere here: null, booleans, and numeric strings are never
+    // converted into coordinates.
     function normalizeHostValue(raw) {
-      if (raw && typeof raw === "object" && !Array.isArray(raw) && Object.prototype.hasOwnProperty.call(raw, "value")) {
+      if (raw && typeof raw === "object" && !Array.isArray(raw) && "value" in Object(raw)) {
         return pointReadback(keyframeValue(raw));
       }
-      return pointReadback(raw);
+      const point = pointReadback(raw);
+      if (raw !== null && typeof raw === "object") return isPoint(point) ? point : null;
+      return point;
+    }
+
+    function isPoint(value) {
+      return !!value && typeof value === "object" && !Array.isArray(value)
+        && typeof value.x === "number" && typeof value.y === "number"
+        && Number.isFinite(value.x) && Number.isFinite(value.y);
     }
 
     function trackItemUpdateMatches(before, after, args) {
@@ -1561,18 +1577,22 @@
   function valuesEqual(left, right) {
     // Point-aware: live 2D readbacks arrive as [x, y] arrays or {x, y}
     // objects (never PointF instances); compare coordinates numerically.
+    // Strictly typed: no Number() coercion, so null/booleans/strings can
+    // never compare equal to a coordinate.
     const normalizePoint = (value) => {
       if (Array.isArray(value) && value.length === 2) {
-        const x = Number(value[0]), y = Number(value[1]);
-        if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+        const x = value[0], y = value[1];
+        if (typeof x === "number" && typeof y === "number" && Number.isFinite(x) && Number.isFinite(y)) return { x, y };
       }
       return value;
     };
     const l = normalizePoint(left), r = normalizePoint(right);
     if (l && r && typeof l === "object" && typeof r === "object"
       && !Array.isArray(l) && !Array.isArray(r)
-      && Number.isFinite(Number(l.x)) && Number.isFinite(Number(l.y))
-      && Number.isFinite(Number(r.x)) && Number.isFinite(Number(r.y))) {
+      && typeof l.x === "number" && typeof l.y === "number"
+      && typeof r.x === "number" && typeof r.y === "number"
+      && Number.isFinite(l.x) && Number.isFinite(l.y)
+      && Number.isFinite(r.x) && Number.isFinite(r.y)) {
       return numbersEqual(l.x, r.x) && numbersEqual(l.y, r.y);
     }
     return typeof right === "number" ? numbersEqual(left, right) : left === right;
