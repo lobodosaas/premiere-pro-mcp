@@ -81,17 +81,29 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             description: "Display name of the property (e.g., 'Scale', 'Position', 'Opacity')",
           },
           value: {
-            type: ["number", "string"],
+            type: ["number", "string", "array"],
+            items: { type: "number" },
+            minItems: 2,
+            maxItems: 2,
             maxLength: 8192,
-            description: "Number or string value to set. Use the exact JSON string reported for a MOGRT text or graphic parameter.",
+            description: "Number, string, or two-element [x, y] array value to set. Use the exact JSON string reported for a MOGRT text or graphic parameter; use [x, y] for 2D properties such as Position.",
           },
         },
         required: ["node_id", "effect_name", "property_name", "value"],
       },
-      handler: async (args: { node_id: string; effect_name: string; property_name: string; value: number | string }) => {
-        const requestedValue = typeof args.value === "string"
-          ? `"${escapeForExtendScript(args.value)}"`
-          : String(args.value);
+      handler: async (args: { node_id: string; effect_name: string; property_name: string; value: number | string | [number, number] }) => {
+        const valueIsArray = Array.isArray(args.value);
+        if (valueIsArray) {
+          const entries: unknown = args.value;
+          if (!Array.isArray(entries) || entries.length !== 2 || !entries.every((entry: unknown) => typeof entry === "number")) {
+            return { success: false, error: "Array values must be a two-element [x, y] array of numbers; no mutation was attempted." };
+          }
+        }
+        const requestedValue = valueIsArray
+          ? "[" + (args.value as [number, number]).join(", ") + "]"
+          : typeof args.value === "string"
+            ? `"${escapeForExtendScript(args.value)}"`
+            : String(args.value);
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -116,6 +128,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!prop) return __error("Property not found: ${escapeForExtendScript(args.property_name)}");
           
           var requestedValue = ${requestedValue};
+          var requestedIsArray = ${valueIsArray};
           try {
             prop.setValue(requestedValue, true);
           } catch (e) {
@@ -129,13 +142,18 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           } catch (eReadback) {
             readbackAvailable = false;
           }
+          var readbackVerified = readbackAvailable && readbackValue === requestedValue;
+          if (readbackAvailable && requestedIsArray) {
+            readbackVerified = readbackValue && typeof readbackValue.length === "number" && readbackValue.length === requestedValue.length &&
+              readbackValue.every(function(entry, index) { return Math.abs(entry - requestedValue[index]) <= 0.0001; });
+          }
           return __result({
             set: true,
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
             value: readbackAvailable ? readbackValue : requestedValue,
             requestedValue: requestedValue,
-            readbackVerified: readbackAvailable && readbackValue === requestedValue,
+            readbackVerified: readbackVerified,
             verification: readbackAvailable
               ? "Premiere parameter readback only; verify playback or exported frames before delivery."
               : "Premiere accepted the parameter write, but this property did not expose a readback value. Verify playback or exported frames before delivery."
@@ -223,7 +241,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
 
     add_keyframe: {
       description:
-        "Add and read back a keyframe on an effect property. This verifies stored parameter data only; render/playback verification remains host-dependent.",
+        "Add and read back a keyframe on an effect property. Accepts a scalar number (e.g. Opacity, Scale) or a two-element [x, y] array for 2D properties (e.g. Position). This verifies stored parameter data only; render/playback verification remains host-dependent.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -244,8 +262,11 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             description: "Time in seconds relative to clip start where to add keyframe",
           },
           value: {
-            type: "number",
-            description: "Value at the keyframe",
+            type: ["number", "string", "array"],
+            items: { type: "number" },
+            minItems: 2,
+            maxItems: 2,
+            description: "Value at the keyframe: a finite number, a two-element [x, y] array of finite numbers for 2D properties such as Position, or the same array as a JSON string (some transports stringify arrays)",
           },
         },
         required: ["node_id", "effect_name", "property_name", "time_seconds", "value"],
@@ -255,11 +276,34 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         effect_name: string;
         property_name: string;
         time_seconds: number;
-        value: number;
+        value: number | string | [number, number];
       }) => {
         if (!Number.isFinite(args.time_seconds) || args.time_seconds < 0) {
           return { success: false, error: "time_seconds must be a finite non-negative time relative to clip start." };
         }
+        const rawValue: unknown = args.value as unknown;
+        // Some MCP transports stringify arrays (e.g. "[0.5, 0.555013]"); accept that form too.
+        let arrayCandidate: unknown = rawValue;
+        if (typeof arrayCandidate === "string") {
+          try {
+            arrayCandidate = JSON.parse(arrayCandidate);
+          } catch {
+            arrayCandidate = null;
+          }
+        }
+        const valueIsValidArray =
+          Array.isArray(arrayCandidate) &&
+          arrayCandidate.length === 2 &&
+          arrayCandidate.every((entry: unknown) => typeof entry === "number" && Number.isFinite(entry));
+        if (!valueIsValidScalar && !valueIsValidArray) {
+          return { success: false, error: "value must be a finite number or a two-element [x, y] array of finite numbers." };
+        }
+        const valueIsArray = valueIsValidArray;
+        const valueLiteral = valueIsArray
+          ? "[" + (arrayCandidate as [number, number]).join(", ") + "]"
+          : String(rawValue);
+        const valueX = valueIsArray ? (arrayCandidate as [number, number])[0] : NaN;
+        const valueY = valueIsArray ? (arrayCandidate as [number, number])[1] : NaN;
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -323,14 +367,23 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!storedAtResolvedTime) {
             return __error("Premiere did not return a keyframe at the resolved property time; storage is not reported as verified.");
           }
-          var setResult = prop.setValueAtKey(time, ${args.value}, true);
+          var requestedIsArray = ${valueIsArray};
+          var setResult = prop.setValueAtKey(time, ${valueLiteral}, true);
           var readBack = null;
           try { readBack = prop.getValueAtKey(time); } catch(eReadBack) {}
-          if (typeof readBack !== "number" || !isFinite(readBack)) {
-            return __error("Premiere did not return a finite numeric keyframe value after writing it; storage is not reported as verified.");
-          }
-          if (Math.abs(readBack - ${args.value}) > 0.0001) {
-            return __error("Premiere returned " + readBack + " after writing keyframe value ${args.value}; storage is not reported as verified.");
+          if (requestedIsArray) {
+            var arrayMatch = readBack && typeof readBack.length === "number" && readBack.length === 2 &&
+              Math.abs(readBack[0] - ${valueX}) <= 0.0001 && Math.abs(readBack[1] - ${valueY}) <= 0.0001;
+            if (!arrayMatch) {
+              return __error("Premiere did not return the requested [x, y] keyframe value after writing it; storage is not reported as verified.");
+            }
+          } else {
+            if (typeof readBack !== "number" || !isFinite(readBack)) {
+              return __error("Premiere did not return a finite numeric keyframe value after writing it; storage is not reported as verified.");
+            }
+            if (Math.abs(readBack - ${valueLiteral}) > 0.0001) {
+              return __error("Premiere returned " + readBack + " after writing keyframe value ${valueLiteral}; storage is not reported as verified.");
+            }
           }
           
           return __result({
@@ -347,7 +400,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             keyframeTimeVerified: true,
             addKeyReturn: typeof addResult === "undefined" ? null : addResult,
             setValueAtKeyReturn: typeof setResult === "undefined" ? null : setResult,
-            value: ${args.value},
+            value: ${valueLiteral},
             readBackValue: readBack
           });
         `);
@@ -356,7 +409,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
     },
 
     remove_keyframe: {
-      description: "Remove a keyframe at a specific time from an effect property",
+      description: "Remove a keyframe at a specific time from an effect property. Time is relative to clip start; removal is verified by readback and never reported from the host call alone.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -374,17 +427,34 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           },
           time_seconds: {
             type: "number",
-            description: "Time in seconds of the keyframe to remove",
+            description: "Time in seconds relative to clip start of the keyframe to remove",
           },
         },
         required: ["node_id", "effect_name", "property_name", "time_seconds"],
       },
       handler: async (args: { node_id: string; effect_name: string; property_name: string; time_seconds: number }) => {
+        if (!Number.isFinite(args.time_seconds) || args.time_seconds < 0) {
+          return { success: false, error: "time_seconds must be a finite non-negative time relative to clip start." };
+        }
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
           
           var clip = result.clip;
+          var relativeSeconds = ${args.time_seconds};
+          var clipInPointSeconds = NaN;
+          var clipDurationSeconds = NaN;
+          try {
+            clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks);
+            clipDurationSeconds = __ticksToSeconds(clip.duration.ticks);
+          } catch(eTiming) {}
+          if (!isFinite(clipInPointSeconds) || !isFinite(clipDurationSeconds) || clipDurationSeconds <= 0) {
+            return __error("Premiere did not provide readable clip timing; no keyframe was removed.");
+          }
+          if (relativeSeconds > clipDurationSeconds) {
+            return __error("time_seconds is outside the visible clip duration; no keyframe was removed.");
+          }
+          var resolvedPropertyTimeSeconds = clipInPointSeconds + relativeSeconds;
           var comp = null;
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "${escapeForExtendScript(args.effect_name)}" || clip.components[i].matchName === "${escapeForExtendScript(args.effect_name)}") {
@@ -404,14 +474,31 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!prop) return __error("Property not found");
           
           var time = new Time();
-          time.ticks = __secondsToTicks(${args.time_seconds}).toString();
+          time.ticks = __secondsToTicks(resolvedPropertyTimeSeconds).toString();
           prop.removeKey(time);
+          var stillPresent = false;
+          var keysAfterRemove = prop.getKeys();
+          if (keysAfterRemove) {
+            for (var keyIndex = 0; keyIndex < keysAfterRemove.length; keyIndex++) {
+              if (String(keysAfterRemove[keyIndex].ticks) === String(time.ticks)) {
+                stillPresent = true;
+                break;
+              }
+            }
+          }
+          if (stillPresent) {
+            return __error("Premiere still returns a keyframe at the resolved property time; removal is not reported as verified.");
+          }
           
           return __result({
             removed: true,
+            removedVerified: true,
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
-            time: ${args.time_seconds}
+            time: ${args.time_seconds},
+            relativeTimeSeconds: relativeSeconds,
+            resolvedPropertyTimeSeconds: resolvedPropertyTimeSeconds,
+            clipInPointSeconds: clipInPointSeconds
           });
         `);
         return sendCommand(script, bridgeOptions);

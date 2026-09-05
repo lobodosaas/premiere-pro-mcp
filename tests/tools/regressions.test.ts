@@ -416,7 +416,7 @@ describe("issue #194 — string-backed MOGRT effect properties", () => {
 
   it("accepts and safely serializes the JSON string exposed by MOGRT text properties", async () => {
     expect(keyframes.set_effect_property.parameters.properties.value).toMatchObject({
-      type: ["number", "string"],
+      type: ["number", "string", "array"],
     });
 
     const script = await scriptFor(keyframes.set_effect_property, {
@@ -428,7 +428,8 @@ describe("issue #194 — string-backed MOGRT effect properties", () => {
 
     expect(script).toContain('var requestedValue = "{\\"textEditValue\\":\\"Hello \\\\\\\"editor\\\\\\\"\\"}";');
     expect(script).toContain("prop.setValue(requestedValue, true)");
-    expect(script).toContain("readbackVerified: readbackAvailable && readbackValue === requestedValue");
+    expect(script).toContain("var readbackVerified = readbackAvailable && readbackValue === requestedValue");
+    expect(script).toContain("readbackVerified: readbackVerified");
   });
 });
 
@@ -715,5 +716,128 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
     expect(range).toContain("workArea,");
     expect(range).not.toContain("var srcIn = undefined");
     expect(range).toContain("var jobId = app.encoder.encodeFile");
+  });
+});
+
+// Caption array keyframes (local fix branch fix/caption-array-keyframes):
+// 2D properties such as Motion > Position carry [x, y] values that the
+// scalar-only keyframe pipeline used to reject or mis-serialize, and
+// remove_keyframe applied raw seconds instead of clip-relative time.
+describe("caption array keyframes — Position [x, y] and relative removal", () => {
+  const keyframes = getKeyframeTools(bridgeOptions);
+
+  it("serializes an [x, y] add_keyframe value as an ExtendScript array literal with element-wise readback", async () => {
+    const script = await scriptFor(keyframes.add_keyframe, {
+      node_id: "caption-graphic-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      time_seconds: 0,
+      value: [0.5, 0.555013],
+    });
+
+    expect(script).toContain("var setResult = prop.setValueAtKey(time, [0.5, 0.555013], true)");
+    expect(script).toContain("var requestedIsArray = true");
+    expect(script).toContain("readBack.length === 2");
+    expect(script).toContain("Premiere did not return the requested [x, y] keyframe value");
+    expect(script).toContain("value: [0.5, 0.555013]");
+  });
+
+  it("keeps the scalar add_keyframe script byte-compatible for numeric values", async () => {
+    const script = await scriptFor(keyframes.add_keyframe, {
+      node_id: "caption-graphic-1",
+      effect_name: "Opacidade",
+      property_name: "Opacidade",
+      time_seconds: 0.15,
+      value: 100,
+    });
+
+    expect(script).toContain("var setResult = prop.setValueAtKey(time, 100, true)");
+    expect(script).toContain('if (typeof readBack !== "number" || !isFinite(readBack))');
+  });
+
+  it.each([
+    ["wrong length", [0.5]],
+    ["three elements", [0.5, 0.5, 0.5]],
+    ["non-finite entry", [0.5, Number.NaN]],
+    ["non-numeric entry", [0.5, "0.5"]],
+  ])("rejects invalid array value (%s) before bridge access", async (_label, value) => {
+    const result = await keyframes.add_keyframe.handler({
+      node_id: "caption-graphic-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      time_seconds: 0,
+      value,
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: "value must be a finite number or a two-element [x, y] array of finite numbers.",
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("resolves remove_keyframe time against the clip in-point and verifies absence", async () => {
+    const script = await scriptFor(keyframes.remove_keyframe, {
+      node_id: "caption-graphic-1",
+      effect_name: "Texto",
+      property_name: "Opacidade",
+      time_seconds: 0.15,
+    });
+
+    expect(script).toContain("var relativeSeconds = 0.15");
+    expect(script).toContain("var resolvedPropertyTimeSeconds = clipInPointSeconds + relativeSeconds");
+    expect(script).toContain("__secondsToTicks(resolvedPropertyTimeSeconds)");
+    expect(script).toContain("relativeSeconds > clipDurationSeconds");
+    expect(script).toContain("var keysAfterRemove = prop.getKeys()");
+    expect(script).toContain("stillPresent");
+    expect(script).toContain("removedVerified: true");
+    expect(script).toContain("resolvedPropertyTimeSeconds: resolvedPropertyTimeSeconds");
+  });
+
+  it.each([-0.5, Number.NaN])("rejects invalid relative remove time %s before bridge access", async (timeSeconds) => {
+    const result = await keyframes.remove_keyframe.handler({
+      node_id: "caption-graphic-1",
+      effect_name: "Texto",
+      property_name: "Opacidade",
+      time_seconds: timeSeconds,
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: "time_seconds must be a finite non-negative time relative to clip start.",
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("serializes an [x, y] set_effect_property value as an array literal with element-wise verification", async () => {
+    expect(keyframes.set_effect_property.parameters.properties.value).toMatchObject({
+      type: ["number", "string", "array"],
+    });
+
+    const script = await scriptFor(keyframes.set_effect_property, {
+      node_id: "clip-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      value: [0.5, 0.555013],
+    });
+
+    expect(script).toContain("var requestedValue = [0.5, 0.555013];");
+    expect(script).toContain("prop.setValue(requestedValue, true)");
+    expect(script).toContain("var requestedIsArray = true");
+  });
+
+  it("rejects malformed set_effect_property arrays before bridge access", async () => {
+    const result = await keyframes.set_effect_property.handler({
+      node_id: "clip-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      value: [0.5],
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: "Array values must be a two-element [x, y] array of numbers; no mutation was attempted.",
+    });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });
