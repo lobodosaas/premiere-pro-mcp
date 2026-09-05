@@ -13,15 +13,16 @@ const ADVANCED_WORKFLOW_TOOLS = [
   "edit_timeline_uxp",
   "manage_sequences_uxp",
   "encode_media_uxp",
+  "animate_caption_clip_uxp",
 ] as const;
 
 describe("advanced stable UXP workflow MCP catalog", () => {
-  it("publishes exactly ten new consolidated tools with closed, bounded schemas", () => {
+  it("publishes exactly eleven consolidated tools with closed, bounded schemas", () => {
     const bridge = { request: vi.fn(), getState: vi.fn() } as unknown as UxpWebSocketBridge;
     const tools = getUxpTools(bridge) as Record<string, { parameters: Record<string, unknown> }>;
 
     expect(Object.keys(tools)).toEqual(expect.arrayContaining(ADVANCED_WORKFLOW_TOOLS));
-    expect(ADVANCED_WORKFLOW_TOOLS).toHaveLength(10);
+    expect(ADVANCED_WORKFLOW_TOOLS).toHaveLength(11);
     for (const name of ADVANCED_WORKFLOW_TOOLS) {
       expect(tools[name].parameters).toMatchObject({
         type: "object",
@@ -29,6 +30,9 @@ describe("advanced stable UXP workflow MCP catalog", () => {
         required: expect.arrayContaining(["action"]),
       });
     }
+    expect(tools.animate_caption_clip_uxp.parameters).toMatchObject({
+      properties: { action: { enum: ["preview", "apply"] } },
+    });
     expect(tools.inspect_project_selection_uxp.parameters).toMatchObject({
       properties: { action: { enum: ["views", "selection"] }, view_id: { maxLength: 128 } },
     });
@@ -223,6 +227,31 @@ describe("advanced stable UXP workflow MCP catalog", () => {
       mediaType: "video", trackIndex: 2, clipIndex: 0, componentIndex: 1, paramIndex: 0,
       timeSeconds: 0.15, timeBasis: "clip_relative",
       value: { x: 0.5, y: 0.555013 }, operationId: "caption-key",
+    });
+  });
+
+  it("maps animate_caption_clip_uxp preview and apply to the caption animation commands", async () => {
+    const request = vi.fn().mockResolvedValue({ preview: true });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    const snapshot = { preview: true, snapshotDigest: "abc123" };
+
+    await tools.animate_caption_clip_uxp.handler({
+      action: "preview", media_type: "video", track_index: 2, clip_index: 0,
+    });
+    await tools.animate_caption_clip_uxp.handler({
+      action: "apply", media_type: "video", track_index: 2, clip_index: 0,
+      y_offset: 0.055013, coordinate_space: "normalized",
+      snapshot, confirm_apply: true, operation_id: "caption-op",
+    });
+
+    expect(request).toHaveBeenNthCalledWith(1, "captionAnimation.preview", {
+      mediaType: "video", trackIndex: 2, clipIndex: 0,
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "captionAnimation.apply", {
+      mediaType: "video", trackIndex: 2, clipIndex: 0,
+      yOffset: 0.055013, coordinateSpace: "normalized",
+      snapshot, confirmApply: true, operationId: "caption-op",
     });
   });
 });

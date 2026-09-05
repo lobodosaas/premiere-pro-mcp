@@ -39,6 +39,8 @@
       "parameters.keyframeRemove": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: removeParameterKeyframe },
       "parameters.keyframeRemoveRange": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: removeParameterKeyframeRange },
       "parameters.keyframeInterpolation": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: setParameterInterpolation },
+      "captionAnimation.preview": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: previewCaptionAnimation },
+      "captionAnimation.apply": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: applyCaptionAnimation },
       "trackItem.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: inspectTrackItem },
       "trackItem.update": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: updateTrackItem },
       "timeline.insert": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseSequenceEditor, handler: insertTimelineItem },
@@ -665,6 +667,244 @@
       let verified = false, readback = null;
       try { const keyframe = context.param.getKeyframePtr(tick(timeSeconds)); readback = await keyframe.getTemporalInterpolationMode(); verified = readback === mode; } catch (_) {}
       return mutationResult(verified, { updated: true, interpolation: modeName, interpolationValue: readback }, "keyframe_interpolation_readback", "Set keyframe interpolation");
+    }
+
+    // Caption entrance animation (Opacity 0->100 + Motion Position rise).
+    // Preview is read-only and returns a digest-bound snapshot; apply re-reads
+    // the live state, refuses drift, writes four keyframes in ONE documented
+    // transaction, and compensates only its own keys on a partial failure.
+    const CAPTION_ONE_FRAME_MAX_SECONDS = 0.05;
+
+    function planDigest(value) {
+      const text = JSON.stringify(value);
+      let hash = 5381;
+      for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+      return (hash >>> 0).toString(16);
+    }
+
+    function captionContext(args, mutation) {
+      const allowed = ["mediaType", "trackIndex", "clipIndex"];
+      if (mutation) allowed.push("yOffset", "coordinateSpace", "snapshot", "confirmApply", "operationId");
+      assertObject(args); assertOnlyKeys(args, allowed);
+      const mediaType = enumValue(args.mediaType, "mediaType", ["video", "audio"]), trackIndex = nonNegativeInt(args.trackIndex, "trackIndex"), clipIndex = nonNegativeInt(args.clipIndex, "clipIndex");
+      return { mediaType, trackIndex, clipIndex };
+    }
+
+    function findParamMatching(component, pattern, label) {
+      const count = component.getParamCount();
+      for (let index = 0; index < count; index++) {
+        const candidate = component.getParam(index);
+        const name = String(candidate.displayName || "");
+        if (pattern.test(name)) return { param: candidate, index, name };
+      }
+      throw commandError("UXP_TARGET_NOT_FOUND", label + " parameter was not found on the caption graphic");
+    }
+
+    async function captionTarget(parent, context) {
+      const item = await trackItemAt(parent.sequence, context.mediaType, context.trackIndex, context.clipIndex);
+      const chain = await item.getComponentChain();
+      const count = chain.getComponentCount();
+      let opacityComponent = null, motionComponent = null;
+      for (let index = 0; index < count; index++) {
+        const component = chain.getComponentAtIndex(index);
+        const id = await componentIdentifier(component);
+        if (!opacityComponent && /opacity/i.test(id)) opacityComponent = { component, index, id };
+        if (!motionComponent && /motion|movimento/i.test(id) && !/vector|vetor|graphic/i.test(id)) motionComponent = { component, index, id };
+      }
+      if (!opacityComponent || !motionComponent) throw commandError("UXP_TARGET_NOT_FOUND", "the clip does not expose the standard Opacity and Motion components");
+      const opacity = findParamMatching(opacityComponent.component, /opacidade|opacity/i, "Opacity");
+      const position = findParamMatching(motionComponent.component, /posição|position/i, "Position");
+      const startSeconds = tickSeconds(await item.getStartTime());
+      const endSeconds = tickSeconds(await item.getEndTime());
+      const durationSeconds = endSeconds - startSeconds;
+      return { project: parent.project, item, opacityComponent, motionComponent, opacity, position, startSeconds, endSeconds, durationSeconds };
+    }
+
+    async function captionParameterSnapshot(entry) {
+      const param = entry.param;
+      const supported = typeof param.areKeyframesSupported === "function" ? !!await param.areKeyframesSupported() : false;
+      const varying = typeof param.isTimeVarying === "function" ? !!param.isTimeVarying() : false;
+      const rawTimes = typeof param.getKeyframeListAsTickTimes === "function" ? Array.from(param.getKeyframeListAsTickTimes() || []) : [];
+      let base = null;
+      try { base = pointReadback(keyframeValue(await param.getStartValue())); } catch (_) {}
+      return {
+        index: entry.componentIndex, componentId: entry.componentId, paramIndex: entry.paramIndex,
+        paramName: entry.name, keyframesSupported: supported, timeVarying: varying,
+        existingKeyframeTimesSeconds: rawTimes.slice(0, 64).map(tickSeconds),
+        baseValue: base,
+      };
+    }
+
+    async function captionState(context, mutation) {
+      const parent = await activeContext(mutation);
+      const target = await captionTarget(parent, context);
+      const opacitySnapshot = await captionParameterSnapshot({ param: target.opacity.param, componentIndex: target.opacityComponent.index, componentId: target.opacityComponent.id, paramIndex: target.opacity.index, name: target.opacity.name });
+      const positionSnapshot = await captionParameterSnapshot({ param: target.position.param, componentIndex: target.motionComponent.index, componentId: target.motionComponent.id, paramIndex: target.position.index, name: target.position.name });
+      return { ...target, opacitySnapshot, positionSnapshot };
+    }
+
+    function captionPlan(state, yOffset, coordinateSpace) {
+      const midSeconds = state.durationSeconds * 0.5;
+      const base = state.positionSnapshot.baseValue && typeof state.positionSnapshot.baseValue === "object" ? state.positionSnapshot.baseValue : { x: 0.5, y: 0.5 };
+      return {
+        timeBasis: "clip_relative",
+        yOffset, coordinateSpace,
+        resolvedStartSeconds: state.startSeconds,
+        resolvedMidSeconds: state.startSeconds + midSeconds,
+        relativeMidSeconds: midSeconds,
+        opacity: [
+          { timeSeconds: state.startSeconds, value: 0 },
+          { timeSeconds: state.startSeconds + midSeconds, value: 100 },
+        ],
+        position: [
+          { timeSeconds: state.startSeconds, value: { x: base.x, y: base.y + yOffset } },
+          { timeSeconds: state.startSeconds + midSeconds, value: { x: base.x, y: base.y } },
+        ],
+      };
+    }
+
+    function captionDigestInput(state) {
+      return {
+        clip: { mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds },
+        components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
+      };
+    }
+
+    async function readbackAt(param, seconds) {
+      if (typeof param.getValueAtTime !== "function") return null;
+      try { return pointReadback(await param.getValueAtTime(tick(seconds))); } catch (_) { return null; }
+    }
+
+    function numbersClose(left, right) { return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) <= 0.0001; }
+
+    function pointMatches(actual, expected) {
+      return !!actual && typeof actual === "object" && numbersClose(actual.x, expected.x) && numbersClose(actual.y, expected.y);
+    }
+
+    async function patternAlreadyApplied(state, plan) {
+      const opacity = state.opacity.param, position = state.position.param;
+      const hasKeys = (times) => [plan.resolvedStartSeconds, plan.resolvedMidSeconds]
+        .every((expected) => times.some((seconds) => numbersClose(seconds, expected)));
+      if (!hasKeys(state.opacitySnapshot.existingKeyframeTimesSeconds) || !hasKeys(state.positionSnapshot.existingKeyframeTimesSeconds)) return false;
+      const [opacityStart, opacityMid, positionStart, positionMid] = await Promise.all([
+        readbackAt(opacity, plan.resolvedStartSeconds), readbackAt(opacity, plan.resolvedMidSeconds),
+        readbackAt(position, plan.resolvedStartSeconds), readbackAt(position, plan.resolvedMidSeconds),
+      ]);
+      if (!positionMid || typeof positionMid !== "object") return false;
+      const expectedStart = { x: positionMid.x, y: positionMid.y + plan.yOffset };
+      return numbersClose(opacityStart, 0) && numbersClose(opacityMid, 100)
+        && pointMatches(positionStart, expectedStart) && pointMatches(positionMid, { x: positionMid.x, y: positionMid.y });
+    }
+
+    function existingKeysInsideRange(state, plan) {
+      const start = plan.resolvedStartSeconds, mid = plan.resolvedMidSeconds;
+      const inRange = (times) => times.some((seconds) => seconds != null && seconds >= start - 0.0001 && seconds <= mid + 0.0001);
+      return { opacity: inRange(state.opacitySnapshot.existingKeyframeTimesSeconds), position: inRange(state.positionSnapshot.existingKeyframeTimesSeconds) };
+    }
+
+    async function previewCaptionAnimation(args) {
+      const context = captionContext(args, false);
+      const state = await captionState(context, false);
+      const enriched = { ...state, contextMediaType: context.mediaType, contextTrackIndex: context.trackIndex, contextClipIndex: context.clipIndex };
+      const oneFrame = state.durationSeconds <= CAPTION_ONE_FRAME_MAX_SECONDS;
+      const plan = captionPlan(enriched, null, null);
+      const digest = planDigest(captionDigestInput(enriched));
+      return {
+        preview: true,
+        clip: { mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, oneFrame },
+        components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
+        plan: {
+          timeBasis: plan.timeBasis,
+          resolvedStartSeconds: plan.resolvedStartSeconds,
+          resolvedMidSeconds: plan.resolvedMidSeconds,
+          relativeMidSeconds: plan.relativeMidSeconds,
+        },
+        oneFrame,
+        snapshotDigest: digest,
+      };
+    }
+
+    async function applyCaptionAnimation(args) {
+      const context = captionContext(args, true);
+      const yOffset = finiteNumber(args.yOffset, "yOffset", -1, 1);
+      const coordinateSpace = boundedString(String(args.coordinateSpace ?? ""), "coordinateSpace", 32);
+      if (args.confirmApply !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", "caption entrance apply requires confirmApply=true after reviewing the preview");
+      const snapshot = args.snapshot && typeof args.snapshot === "object" && !Array.isArray(args.snapshot) ? args.snapshot : null;
+      if (!snapshot || typeof snapshot.snapshotDigest !== "string") throw commandError("UXP_INVALID_ARGUMENT", "snapshot must be the object returned by captionAnimation.preview");
+
+      const state = await captionState(context, true);
+      const enriched = { ...state, contextMediaType: context.mediaType, contextTrackIndex: context.trackIndex, contextClipIndex: context.clipIndex };
+      if (state.durationSeconds <= CAPTION_ONE_FRAME_MAX_SECONDS) {
+        return { applied: false, skipped: true, reason: "clip is at most one frame; the entrance animation was skipped and the current appearance preserved", outcome: "verified", operation: { mutatesProject: false } };
+      }
+
+      const plan = captionPlan(enriched, yOffset, coordinateSpace);
+      if (await patternAlreadyApplied(state, plan)) {
+        return { applied: true, noop: true, outcome: "verified", operation: { mutatesProject: false } };
+      }
+      const liveDigest = planDigest(captionDigestInput(enriched));
+      if (liveDigest !== snapshot.snapshotDigest) throw commandError("UXP_STALE_SNAPSHOT", "the clip changed since preview; request a new captionAnimation.preview before applying");
+
+      const conflicts = existingKeysInsideRange(state, plan);
+      if (conflicts.opacity || conflicts.position) {
+        throw commandError("UXP_KEYS_EXIST", "conflicting keyframes already exist inside the animation range on " + (conflicts.opacity && conflicts.position ? "both parameters" : conflicts.opacity ? "Opacity" : "Position") + "; remove them or choose another clip");
+      }
+
+      const opacity = state.opacity.param, position = state.position.param;
+      try {
+        state.project.lockedAccess(() => {
+          const actions = [];
+          if (!state.opacitySnapshot.timeVarying) actions.push(opacity.createSetTimeVaryingAction(true));
+          for (const key of plan.opacity) {
+            const keyframe = opacity.createKeyframe(key.value);
+            keyframe.position = tick(key.timeSeconds);
+            actions.push(opacity.createAddKeyframeAction(keyframe));
+          }
+          if (!state.positionSnapshot.timeVarying) actions.push(position.createSetTimeVaryingAction(true));
+          for (const key of plan.position) {
+            const keyframe = position.createKeyframe(pointValue({ x: key.value.x, y: key.value.y }));
+            keyframe.position = tick(key.timeSeconds);
+            actions.push(position.createAddKeyframeAction(keyframe));
+          }
+          commitActions(state.project, "Caption entrance animation", actions);
+        });
+      } catch (error) {
+        throw commandError("UXP_APPLY_FAILED", "caption entrance transaction failed before commit: " + (error && error.message ? error.message : String(error)));
+      }
+
+      const readback = {
+        opacityStart: await readbackAt(opacity, plan.opacity[0].timeSeconds),
+        opacityMid: await readbackAt(opacity, plan.opacity[1].timeSeconds),
+        positionStart: await readbackAt(position, plan.position[0].timeSeconds),
+        positionMid: await readbackAt(position, plan.position[1].timeSeconds),
+      };
+      const verified = numbersClose(readback.opacityStart, 0) && numbersClose(readback.opacityMid, 100)
+        && pointMatches(readback.positionStart, plan.position[0].value) && pointMatches(readback.positionMid, plan.position[1].value);
+      if (!verified) {
+        const rollbackActions = [];
+        for (const key of plan.opacity) rollbackActions.push(opacity.createRemoveKeyframeAction(tick(key.timeSeconds), true));
+        for (const key of plan.position) rollbackActions.push(position.createRemoveKeyframeAction(tick(key.timeSeconds), true));
+        let restored = null;
+        try {
+          state.project.lockedAccess(() => commitActions(state.project, "Caption entrance rollback", rollbackActions));
+          const opacityAfter = Array.from(opacity.getKeyframeListAsTickTimes() || []).map(tickSeconds);
+          const positionAfter = Array.from(position.getKeyframeListAsTickTimes() || []).map(tickSeconds);
+          const stillThere = opacityAfter.some((seconds) => numbersClose(seconds, plan.opacity[0].timeSeconds) || numbersClose(seconds, plan.opacity[1].timeSeconds))
+            || positionAfter.some((seconds) => numbersClose(seconds, plan.position[0].timeSeconds) || numbersClose(seconds, plan.position[1].timeSeconds));
+          restored = !stillThere;
+        } catch (_) { restored = false; }
+        throw commandError("UXP_APPLY_FAILED", "ROLLBACK: entrance readback did not verify"
+          + (restored === true ? "; the keys written by this call were removed and their absence verified"
+            : restored === false ? "; the keys written by this call could NOT be fully removed"
+            : "; rollback could not be verified") + ".");
+      }
+
+      return mutationResult(true, {
+        applied: true, noop: false, timeBasis: plan.timeBasis,
+        yOffset, coordinateSpace,
+        resolvedStartSeconds: plan.resolvedStartSeconds, resolvedMidSeconds: plan.resolvedMidSeconds,
+        readback,
+      }, "caption_entrance_readback", "Caption entrance animation");
     }
 
     async function trackItemContext(args, mutation) {

@@ -302,6 +302,43 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
       },
     },
 
+    animate_caption_clip_uxp: {
+      description: "Preview or apply the saved caption entrance pattern (Opacity 0->100 plus a Motion Position rise, keys at visible start and mid-duration) on one caption graphic clip. Preview is read-only and returns a digest-bound snapshot; apply revalidates the target, refuses stale snapshots and conflicting keys, skips one-frame clips, writes the four keyframes in a single UXP transaction, and compensates its own keys if verification fails. yOffset is caller-supplied and interpreted in the declared coordinate_space; the space itself is never converted.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["preview", "apply"] },
+          media_type: { type: "string", enum: ["video", "audio"] },
+          track_index: { type: "integer", minimum: 0 },
+          clip_index: { type: "integer", minimum: 0 },
+          y_offset: { type: "number", minimum: -1, maximum: 1 },
+          coordinate_space: { type: "string", minLength: 1, maxLength: 32 },
+          snapshot: { type: "object" },
+          confirm_apply: { type: "boolean" },
+          operation_id: operationId,
+        },
+        required: ["action", "media_type", "track_index", "clip_index"],
+      },
+      handler: async (args: AdvancedArgs) => {
+        const common = compact({
+          mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+        });
+        if (args.action === "preview") return invoke(bridge, "captionAnimation.preview", common);
+        if (args.action === "apply") {
+          return invoke(bridge, "captionAnimation.apply", {
+            ...common,
+            ...compact({
+              yOffset: args.y_offset, coordinateSpace: args.coordinate_space,
+              snapshot: args.snapshot, confirmApply: args.confirm_apply,
+            }),
+            ...operation(args),
+          });
+        }
+        return invalidAction(args.action);
+      },
+    },
+
     transform_track_item_uxp: {
       description: "Inspect or atomically move, trim, rename, and enable/disable one audio or video track item with stale-position guards and readback. " +
         "CAUTION: do not mix source trims (in_seconds/out_seconds) with timeline repositioning (start_seconds/end_seconds) in ONE call — Premiere may recompute the out point and commit an unverified state. Apply the trim first, verify the readback, then reposition in a second call.",

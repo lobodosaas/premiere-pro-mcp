@@ -187,6 +187,10 @@ const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, reado
     remove_keyframe_range: ["edit"],
     set_interpolation: ["edit"],
   },
+  animate_caption_clip_uxp: {
+    preview: ["inspect"],
+    apply: ["edit"],
+  },
   transform_track_item_uxp: {
     inspect: ["inspect"],
     update: ["edit"],

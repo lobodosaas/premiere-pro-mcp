@@ -135,7 +135,42 @@ function advancedHost() {
     getParamCount: vi.fn(() => 1),
     getParam: vi.fn(() => parameter),
   };
-  const chain = { getComponentCount: vi.fn(() => 1), getComponentAtIndex: vi.fn(() => component) };
+
+  const positionState = { keyframes: [] as number[], keyframeValues: [] as Array<{ seconds: number; value: unknown }>, base: { x: 0.5, y: 0.5 } };
+  const positionParam = {
+    displayName: "Posição",
+    areKeyframesSupported: vi.fn(async () => true),
+    isTimeVarying: vi.fn(() => positionState.keyframes.length > 0),
+    getKeyframeListAsTickTimes: vi.fn(() => positionState.keyframes.map((seconds) => ({ seconds }))),
+    getStartValue: vi.fn(async () => ({ value: positionState.keyframeValues[0]?.value ?? positionState.base })),
+    getValueAtTime: vi.fn(async (time: { seconds: number }) => {
+      const match = positionState.keyframeValues.find((entry) => Math.abs(entry.seconds - time.seconds) < 1e-6);
+      return match ? match.value : positionState.base;
+    }),
+    createKeyframe: vi.fn((value: unknown) => ({ value, position: null as { seconds: number } | null })),
+    createSetValueAction: vi.fn(() => ({ apply: () => undefined })),
+    createSetTimeVaryingAction: vi.fn(() => ({ apply: () => undefined })),
+    createAddKeyframeAction: vi.fn((keyframe: { value: unknown; position: { seconds: number } }) => ({ apply: () => {
+      positionState.keyframes.push(keyframe.position.seconds);
+      positionState.keyframeValues.push({ seconds: keyframe.position.seconds, value: keyframe.value });
+    } })),
+    createRemoveKeyframeAction: vi.fn((time: { seconds: number }) => ({ apply: () => {
+      positionState.keyframes = positionState.keyframes.filter((value) => value !== time.seconds);
+      positionState.keyframeValues = positionState.keyframeValues.filter((entry) => entry.seconds !== time.seconds);
+    } })),
+    createRemoveKeyframeRangeAction: vi.fn(() => ({ apply: () => undefined })),
+    createSetInterpolationAtKeyframeAction: vi.fn(() => ({ apply: () => undefined })),
+  };
+  const motionComponent = {
+    getMatchName: vi.fn(async () => "AE.ADBE Motion"),
+    getDisplayName: vi.fn(async () => "Movimento"),
+    getParamCount: vi.fn(() => 1),
+    getParam: vi.fn(() => positionParam),
+  };
+  const chain = {
+    getComponentCount: vi.fn(() => 2),
+    getComponentAtIndex: vi.fn((index: number) => (index === 0 ? component : motionComponent)),
+  };
 
   const trackState = { name: "Interview V", start: 10, end: 20, inPoint: 0, outPoint: 10, disabled: false };
   const trackItem = {
@@ -282,7 +317,7 @@ function advancedHost() {
   const events = Events.createEventJournal({ capacity: 16 });
   return {
     registry: Commands.createCommandRegistry({ ppro, Protocol, workspace, events }),
-    project, ppro, workspace, markers, markerValues, root, bin, clip, parameter,
+    project, ppro, workspace, markers, markerValues, root, bin, clip, parameter, positionParam, positionState,
     sequence, sequences, settingsState, parameterState, trackState, editor, manager, events,
   };
 }
@@ -463,6 +498,130 @@ describe("advanced stable Premiere UXP workflows", () => {
     await expect(value.registry.dispatch("parameters.keyframeAdd", {
       ...target, timeSeconds: 11, timeBasis: "clip_relative", value: 100,
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+  });
+
+  it("previews a caption entrance plan without mutating the host", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+
+    const result = await value.registry.dispatch("captionAnimation.preview", { ...target });
+
+    expect(result).toMatchObject({
+      preview: true,
+      clip: { startSeconds: 10, endSeconds: 20, durationSeconds: 10, oneFrame: false },
+      components: {
+        opacity: { index: 0, componentId: "ADBE Opacity", paramName: "Opacity" },
+        position: { index: 1, componentId: "AE.ADBE Motion", paramName: "Posição" },
+      },
+      plan: {
+        timeBasis: "clip_relative",
+        resolvedStartSeconds: 10,
+        resolvedMidSeconds: 15,
+      },
+    });
+    expect(typeof result.snapshotDigest).toBe("string");
+    expect(value.parameter.createKeyframe).not.toHaveBeenCalled();
+    expect(value.positionParam.createKeyframe).not.toHaveBeenCalled();
+  });
+
+  it("applies the entrance pattern in one transaction and verifies the readback", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+
+    const result = await value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized",
+      snapshot: preview, confirmApply: true, operationId: "caption-apply-1",
+    });
+
+    expect(result).toMatchObject({ applied: true, noop: false, outcome: "verified" });
+    expect(value.parameterState.keyframeValues.map((entry) => entry.seconds).sort()).toEqual([10, 15]);
+    expect(value.parameterState.keyframeValues.find((entry) => entry.seconds === 10)?.value).toBe(0);
+    expect(value.parameterState.keyframeValues.find((entry) => entry.seconds === 15)?.value).toBe(100);
+    expect(value.positionState.keyframes.sort()).toEqual([10, 15]);
+    const startValue = value.positionState.keyframeValues.find((entry) => entry.seconds === 10)?.value as { x: number; y: number };
+    const midValue = value.positionState.keyframeValues.find((entry) => entry.seconds === 15)?.value as { x: number; y: number };
+    expect(startValue).toEqual({ x: 0.5, y: 0.555013 });
+    expect(midValue).toEqual({ x: 0.5, y: 0.5 });
+  });
+
+  it("returns a verified no-op when the pattern is already fully applied", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    await value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "caption-apply-1",
+    });
+    const mutationsBefore = value.parameter.createAddKeyframeAction.mock.calls.length;
+
+    const second = await value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "caption-apply-2",
+    });
+
+    expect(second).toMatchObject({ applied: true, noop: true, outcome: "verified" });
+    expect(value.parameter.createAddKeyframeAction.mock.calls.length).toBe(mutationsBefore);
+  });
+
+  it("rejects a stale snapshot instead of writing against a changed target", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    value.trackState.start = 12;
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
+  });
+
+  it("rejects conflicting existing keyframes inside the animation range", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    value.parameterState.keyframes = [13];
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_KEYS_EXIST" });
+  });
+
+  it("requires explicit confirmation before mutating", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview,
+    })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+  });
+
+  it("skips one-frame clips while preserving their current appearance", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    value.trackState.end = 10.02;
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    expect(preview.clip.oneFrame).toBe(true);
+
+    const result = await value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+    });
+
+    expect(result).toMatchObject({ applied: false, skipped: true });
+    expect(value.parameter.createAddKeyframeAction).not.toHaveBeenCalled();
+  });
+
+  it("compensates its own keys when the position write fails and reports the rollback", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    value.positionParam.createAddKeyframeAction.mockImplementationOnce(() => {
+      throw new Error("host rejected point keyframe");
+    });
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_APPLY_FAILED" });
+    expect(value.parameterState.keyframes).toEqual([]);
+    expect(value.positionState.keyframes).toEqual([]);
   });
 
   it("keeps direct sequence actions unverified with stable result keys and probes host methods", async () => {
