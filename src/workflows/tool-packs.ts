@@ -8,6 +8,7 @@ export const WORKFLOW_TOOL_PACK_NAMES = [
   "inspection",
   "delivery",
   "captions",
+  "animation",
 ] as const;
 
 export type WorkflowToolPackName = (typeof WORKFLOW_TOOL_PACK_NAMES)[number];
@@ -126,6 +127,24 @@ export const WORKFLOW_TOOL_PACKS: readonly WorkflowToolPack[] = [
       "inspect_sequence_review_report",
       "export_sequence_review_frames",
       "export_sequence_clip_review_frames",
+    ],
+  },
+  {
+    name: "animation",
+    title: "Effect animation and caption entrance",
+    description:
+      "Effect property inspection plus keyframe creation, removal, interpolation, and the caption entrance preview/apply workflow. Authority still applies: mutating calls require 'edit'.",
+    tools: [
+      "get_effect_properties",
+      "get_keyframes",
+      "add_keyframe",
+      "remove_keyframe",
+      "remove_keyframe_range",
+      "set_keyframe_interpolation",
+      "get_value_at_time",
+      "set_effect_property",
+      "automate_effect_parameters_uxp",
+      "animate_caption_clip_uxp",
     ],
   },
 ];
