@@ -282,6 +282,7 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           return { success: false, error: "time_seconds must be a finite non-negative time relative to clip start." };
         }
         const rawValue: unknown = args.value as unknown;
+        const valueIsValidScalar = typeof rawValue === "number" && Number.isFinite(rawValue);
         // Some MCP transports stringify arrays (e.g. "[0.5, 0.555013]"); accept that form too.
         let arrayCandidate: unknown = rawValue;
         if (typeof arrayCandidate === "string") {
