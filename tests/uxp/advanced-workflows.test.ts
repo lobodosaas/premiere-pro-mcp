@@ -185,7 +185,7 @@ function advancedHost() {
     getComponentAtIndex: vi.fn((index: number) => chainComponents[index]),
   };
 
-  const trackState = { name: "Interview V", start: 10, end: 20, inPoint: 0, outPoint: 10, disabled: false };
+  const trackState = { name: "Interview V", start: 10, end: 20, inPoint: 3600, outPoint: 3610, disabled: false };
   const trackItem = {
     getComponentChain: vi.fn(async () => chain),
     getName: vi.fn(async () => trackState.name),
@@ -608,8 +608,8 @@ describe("advanced stable Premiere UXP workflows", () => {
       ...target, timeSeconds: 0.15, timeBasis: "clip_relative", value: 100, operationId: "rel-key",
     });
 
-    expect(result).toMatchObject({ added: true, outcome: "verified", timeBasis: "clip_relative", timeSeconds: 10.15 });
-    expect(value.parameterState.keyframes).toContain(10.15);
+    expect(result).toMatchObject({ added: true, outcome: "verified", timeBasis: "clip_relative", timeSeconds: 3600.15 });
+    expect(value.parameterState.keyframes).toContain(3600.15);
 
     await expect(value.registry.dispatch("parameters.keyframeAdd", {
       ...target, timeSeconds: 11, timeBasis: "clip_relative", value: 100,
@@ -631,8 +631,9 @@ describe("advanced stable Premiere UXP workflows", () => {
       },
       plan: {
         timeBasis: "clip_relative",
-        resolvedStartSeconds: 10,
-        resolvedMidSeconds: 15,
+        resolvedStartSeconds: 3600,
+        resolvedMidSeconds: 3605,
+        relativeMidSeconds: 5,
       },
     });
     expect(typeof result.snapshotDigest).toBe("string");
@@ -651,12 +652,12 @@ describe("advanced stable Premiere UXP workflows", () => {
     });
 
     expect(result).toMatchObject({ applied: true, noop: false, outcome: "verified" });
-    expect(value.parameterState.keyframeValues.map((entry) => entry.seconds).sort()).toEqual([10, 15]);
-    expect(value.parameterState.keyframeValues.find((entry) => entry.seconds === 10)?.value).toBe(0);
-    expect(value.parameterState.keyframeValues.find((entry) => entry.seconds === 15)?.value).toBe(100);
-    expect(value.positionState.keyframes.sort()).toEqual([10, 15]);
-    const startValue = value.positionState.keyframeValues.find((entry) => entry.seconds === 10)?.value as { x: number; y: number };
-    const midValue = value.positionState.keyframeValues.find((entry) => entry.seconds === 15)?.value as { x: number; y: number };
+    expect(value.parameterState.keyframeValues.map((entry) => entry.seconds).sort()).toEqual([3600, 3605]);
+    expect(value.parameterState.keyframeValues.find((entry) => entry.seconds === 3600)?.value).toBe(0);
+    expect(value.parameterState.keyframeValues.find((entry) => entry.seconds === 3605)?.value).toBe(100);
+    expect(value.positionState.keyframes.sort()).toEqual([3600, 3605]);
+    const startValue = value.positionState.keyframeValues.find((entry) => entry.seconds === 3600)?.value as { x: number; y: number };
+    const midValue = value.positionState.keyframeValues.find((entry) => entry.seconds === 3605)?.value as { x: number; y: number };
     expect(startValue).toEqual({ x: 0.5, y: 0.555013 });
     expect(midValue).toEqual({ x: 0.5, y: 0.5 });
   });
@@ -692,7 +693,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("rejects conflicting existing keyframes inside the animation range", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    value.parameterState.keyframes = [13];
+    value.parameterState.keyframes = [3602];
     const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
@@ -771,7 +772,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     const first = await value.registry.dispatch("captionAnimation.apply", args);
     const second = await value.registry.dispatch("captionAnimation.apply", { ...args });
     expect(second).toMatchObject({ replayed: true, applied: true });
-    expect(value.parameterState.keyframes).toEqual([10, 15]);
+    expect(value.parameterState.keyframes).toEqual([3600, 3605]);
   });
 
   it("serializes concurrent applies on the same clip instead of racing them", async () => {
@@ -792,7 +793,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     );
     expect(fulfilled).toHaveLength(1);
     expect(busy).toHaveLength(1);
-    expect(value.parameterState.keyframes).toEqual([10, 15]);
+    expect(value.parameterState.keyframes).toEqual([3600, 3605]);
   });
 
   it("does not call an extra key inside the range a completed pattern", async () => {
@@ -802,8 +803,8 @@ describe("advanced stable Premiere UXP workflows", () => {
     await value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "pattern-op",
     });
-    value.parameterState.keyframes.push(12);
-    value.parameterState.keyframeValues.push({ seconds: 12, value: 50 });
+    value.parameterState.keyframes.push(3602);
+    value.parameterState.keyframeValues.push({ seconds: 3602, value: 50 });
 
     const fresh = await value.registry.dispatch("captionAnimation.preview", { ...target });
     await expect(value.registry.dispatch("captionAnimation.apply", {
@@ -821,6 +822,37 @@ describe("advanced stable Premiere UXP workflows", () => {
       ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "vary-op",
     })).rejects.toMatchObject({ code: "UXP_APPLY_FAILED", message: expect.stringContaining("time-varying") });
     expect(value.parameter.isTimeVarying()).toBe(false);
+  });
+
+  it("reports success by readback when the transaction throws after writing", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    value.project.lockedAccess.mockImplementationOnce((callback: () => void) => {
+      callback();
+      throw new Error("commit blew up after applying");
+    });
+
+    const result = await value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "postmortem-op",
+    });
+    expect(result).toMatchObject({ applied: true, noop: false, outcome: "verified" });
+    expect(String((result as { note?: unknown }).note)).toContain("verified by readback");
+  });
+
+  it("compensates when the transaction throws before writing anything", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    value.project.lockedAccess.mockImplementationOnce(() => {
+      throw new Error("host rejected the whole transaction");
+    });
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "txfail-op",
+    })).rejects.toMatchObject({ code: "UXP_APPLY_FAILED", message: expect.stringContaining("host rejected the whole transaction") });
+    expect(value.parameterState.keyframes).toEqual([]);
+    expect(value.positionState.keyframes).toEqual([]);
   });
 
   it("keeps direct sequence actions unverified with stable result keys and probes host methods", async () => {

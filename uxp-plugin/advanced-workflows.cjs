@@ -614,12 +614,19 @@
       if (timeBasis === null) throw commandError("UXP_INVALID_ARGUMENT", "timeBasis must be timeline_seconds or clip_relative");
       let timeSeconds = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400);
       if (timeBasis === "clip_relative") {
+        // Keyframe property times live in the source (in-point) domain, not
+        // on the timeline: verified on Premiere 26.3.2, where a graphic at
+        // timeline 0-0.3s with in-point 3600s carries keys at 3600/3600.15.
+        const inPointSeconds = typeof context.item.getInPoint === "function" ? tickSeconds(await context.item.getInPoint()) : null;
         const startSeconds = tickSeconds(await context.item.getStartTime());
         const endSeconds = tickSeconds(await context.item.getEndTime());
         const durationSeconds = endSeconds - startSeconds;
+        if (inPointSeconds === null || !Number.isFinite(inPointSeconds)) {
+          throw commandError("UXP_TARGET_UNREADABLE", "the clip source in-point could not be read; refusing to guess the keyframe time domain");
+        }
         if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw commandError("UXP_TARGET_UNSUPPORTED", "Premiere did not provide a readable clip duration");
         if (timeSeconds < 0 || timeSeconds > durationSeconds) throw commandError("UXP_INVALID_ARGUMENT", "timeSeconds is outside the visible clip duration");
-        timeSeconds = startSeconds + timeSeconds;
+        timeSeconds = inPointSeconds + timeSeconds;
       }
       const time = tick(timeSeconds, "timeSeconds"), before = await parameterSnapshot(context);
       if (!before.keyframesSupported) throw commandError("UXP_TARGET_UNSUPPORTED", "This parameter does not support keyframes");
@@ -738,7 +745,11 @@
       const startSeconds = tickSeconds(await item.getStartTime());
       const endSeconds = tickSeconds(await item.getEndTime());
       const durationSeconds = endSeconds - startSeconds;
-      return { project: parent.project, item, opacityComponent, motionComponent, opacity, position, startSeconds, endSeconds, durationSeconds };
+      const inPointSeconds = typeof item.getInPoint === "function" ? tickSeconds(await item.getInPoint()) : null;
+      if (inPointSeconds === null || !Number.isFinite(inPointSeconds)) {
+        throw commandError("UXP_TARGET_UNREADABLE", "the clip source in-point could not be read; refusing to guess the keyframe time domain");
+      }
+      return { project: parent.project, item, opacityComponent, motionComponent, opacity, position, startSeconds, endSeconds, durationSeconds, inPointSeconds };
     }
 
     const MAX_CAPTION_KEYFRAMES = 64;
@@ -782,28 +793,29 @@
     function captionPlan(state, yOffset, coordinateSpace) {
       // Rounded to whole microseconds (frame-accurate at any real frame
       // rate) so binary floating-point noise never leaks into comparisons.
+      // Resolved times use the source in-point domain, where keyframes live.
       const midSeconds = Math.round(state.durationSeconds * 0.5 * 1000000) / 1000000;
       const base = state.positionSnapshot.baseValue && typeof state.positionSnapshot.baseValue === "object" ? state.positionSnapshot.baseValue : { x: 0.5, y: 0.5 };
       return {
         timeBasis: "clip_relative",
         yOffset, coordinateSpace,
-        resolvedStartSeconds: state.startSeconds,
-        resolvedMidSeconds: state.startSeconds + midSeconds,
+        resolvedStartSeconds: state.inPointSeconds,
+        resolvedMidSeconds: state.inPointSeconds + midSeconds,
         relativeMidSeconds: midSeconds,
         opacity: [
-          { timeSeconds: state.startSeconds, value: 0 },
-          { timeSeconds: state.startSeconds + midSeconds, value: 100 },
+          { timeSeconds: state.inPointSeconds, value: 0 },
+          { timeSeconds: state.inPointSeconds + midSeconds, value: 100 },
         ],
         position: [
-          { timeSeconds: state.startSeconds, value: { x: base.x, y: base.y + yOffset } },
-          { timeSeconds: state.startSeconds + midSeconds, value: { x: base.x, y: base.y } },
+          { timeSeconds: state.inPointSeconds, value: { x: base.x, y: base.y + yOffset } },
+          { timeSeconds: state.inPointSeconds + midSeconds, value: { x: base.x, y: base.y } },
         ],
       };
     }
 
     function captionDigestInput(state) {
       return {
-        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds },
+        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, inPointSeconds: state.inPointSeconds },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
       };
     }
@@ -861,7 +873,7 @@
       const digest = planDigest(captionDigestInput(enriched));
       return {
         preview: true,
-        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, frameSeconds: state.frameSeconds, oneFrame },
+        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, inPointSeconds: state.inPointSeconds, frameSeconds: state.frameSeconds, oneFrame },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
         plan: {
           timeBasis: plan.timeBasis,
@@ -933,6 +945,18 @@
       }
 
       const opacity = state.opacity.param, position = state.position.param;
+      const verifyEntrance = async () => {
+        const readback = {
+          opacityStart: await readbackAt(opacity, plan.opacity[0].timeSeconds),
+          opacityMid: await readbackAt(opacity, plan.opacity[1].timeSeconds),
+          positionStart: await readbackAt(position, plan.position[0].timeSeconds),
+          positionMid: await readbackAt(position, plan.position[1].timeSeconds),
+        };
+        const verified = numbersClose(readback.opacityStart, 0) && numbersClose(readback.opacityMid, 100)
+          && pointMatches(readback.positionStart, plan.position[0].value) && pointMatches(readback.positionMid, plan.position[1].value);
+        return { readback, verified };
+      };
+      let transactionError = null;
       try {
         state.project.lockedAccess(() => {
           const actions = [];
@@ -951,17 +975,24 @@
           commitActions(state.project, "Caption entrance animation", actions);
         });
       } catch (error) {
-        throw commandError("UXP_APPLY_FAILED", "caption entrance transaction failed before commit: " + (error && error.message ? error.message : String(error)));
+        // An exception during the transaction does not prove nothing changed:
+        // fall through to readback verification and, when unverified, to the
+        // compensated rollback below instead of assuming a clean state.
+        transactionError = error;
       }
 
-      const readback = {
-        opacityStart: await readbackAt(opacity, plan.opacity[0].timeSeconds),
-        opacityMid: await readbackAt(opacity, plan.opacity[1].timeSeconds),
-        positionStart: await readbackAt(position, plan.position[0].timeSeconds),
-        positionMid: await readbackAt(position, plan.position[1].timeSeconds),
-      };
-      const verified = numbersClose(readback.opacityStart, 0) && numbersClose(readback.opacityMid, 100)
-        && pointMatches(readback.positionStart, plan.position[0].value) && pointMatches(readback.positionMid, plan.position[1].value);
+      const { readback, verified } = await verifyEntrance();
+      if (verified) {
+        return mutationResult(true, {
+          applied: true, noop: false, timeBasis: plan.timeBasis,
+          yOffset, coordinateSpace,
+          resolvedStartSeconds: plan.resolvedStartSeconds, resolvedMidSeconds: plan.resolvedMidSeconds,
+          readback,
+          note: transactionError
+            ? "the transaction call reported an error, but all four keyframes verified by readback"
+            : undefined,
+        }, "caption_entrance_readback", "Caption entrance animation");
+      }
       if (!verified) {
         let restored = null;
         let varyingRestored = null;
@@ -986,7 +1017,14 @@
           restored = !stillThere;
           varyingRestored = varyingOk;
         } catch (_) { restored = false; varyingRestored = false; }
-        throw commandError("UXP_APPLY_FAILED", "ROLLBACK: entrance readback did not verify"
+        throw commandError("UXP_APPLY_FAILED", "ROLLBACK: "
+          + (transactionError
+            ? "the transaction reported an error (" + (transactionError.message ? transactionError.message : String(transactionError)) + ") and "
+            : "")
+          + "entrance readback did not verify"
+          + (restored === true ? "; the keys written by this call were removed and their absence verified"
+            : restored === false ? "; the keys written by this call could NOT be fully removed"
+            : "; rollback could not be verified")
           + (restored === true ? "; the keys written by this call were removed and their absence verified"
             : restored === false ? "; the keys written by this call could NOT be fully removed"
             : "; rollback could not be verified")
@@ -1382,6 +1420,14 @@
     }
 
     function pointReadback(value) {
+      // The live host returns 2D values as plain [x, y] arrays from
+      // getValueAtTime/getStartValue (verified on Premiere 26.3.2), never as
+      // PointF instances. Normalize both shapes for numeric comparison.
+      if (Array.isArray(value) && value.length === 2) {
+        const ax = Number(value[0]), ay = Number(value[1]);
+        if (Number.isFinite(ax) && Number.isFinite(ay)) return { x: ax, y: ay };
+        return value;
+      }
       if (value && typeof value === "object" && !Array.isArray(value) && Number.isFinite(Number(value.x)) && Number.isFinite(Number(value.y))) {
         return { x: Number(value.x), y: Number(value.y) };
       }
@@ -1443,12 +1489,21 @@
   function requireExternalWrite(value) { if (value !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", "Encoding writes external files and may overwrite an existing output; pass confirmExternalWrite=true after review"); }
   function numbersEqual(left, right) { return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) < 0.000001; }
   function valuesEqual(left, right) {
-    // PointF-aware: readbacks arrive as {x, y}; compare coordinates numerically.
-    if (left && right && typeof left === "object" && typeof right === "object"
-      && !Array.isArray(left) && !Array.isArray(right)
-      && Number.isFinite(Number(left.x)) && Number.isFinite(Number(left.y))
-      && Number.isFinite(Number(right.x)) && Number.isFinite(Number(right.y))) {
-      return numbersEqual(left.x, right.x) && numbersEqual(left.y, right.y);
+    // Point-aware: live 2D readbacks arrive as [x, y] arrays or {x, y}
+    // objects (never PointF instances); compare coordinates numerically.
+    const normalizePoint = (value) => {
+      if (Array.isArray(value) && value.length === 2) {
+        const x = Number(value[0]), y = Number(value[1]);
+        if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+      }
+      return value;
+    };
+    const l = normalizePoint(left), r = normalizePoint(right);
+    if (l && r && typeof l === "object" && typeof r === "object"
+      && !Array.isArray(l) && !Array.isArray(r)
+      && Number.isFinite(Number(l.x)) && Number.isFinite(Number(l.y))
+      && Number.isFinite(Number(r.x)) && Number.isFinite(Number(r.y))) {
+      return numbersEqual(l.x, r.x) && numbersEqual(l.y, r.y);
     }
     return typeof right === "number" ? numbersEqual(left, right) : left === right;
   }

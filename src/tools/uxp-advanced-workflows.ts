@@ -265,7 +265,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     automate_effect_parameters_uxp: {
-      description: "Inspect or transactionally set scalar or 2D point ({x, y}) effect parameters and add, remove, range-remove, or interpolate keyframes through documented UXP actions; time_basis selects raw property time (default) or clip-relative resolution.",
+      description: "Inspect or transactionally set scalar or 2D point ({x, y}) effect parameters and add, remove, range-remove, or interpolate keyframes through documented UXP actions; time_basis selects raw property time (default) or clip-relative resolution against the source in-point domain where keyframes live.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
