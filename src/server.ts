@@ -187,18 +187,37 @@ function debugLog(message: string): void {
 }
 
 function jsonSchemaPropToZod(prop: Record<string, unknown>): z.ZodTypeAny {
-  const propType = prop.type as string | undefined;
+  const propType = prop.type as string | string[] | undefined;
+
+  // Union of member types, e.g. ["number", "string", "array"] for
+  // coordinate values. Each member inherits the shared constraints
+  // (items/minItems/maxItems/maxLength) that apply to it.
+  if (Array.isArray(propType)) {
+    const options = propType.map((member) =>
+      jsonSchemaPropToZod({ ...prop, type: member }),
+    );
+    if (options.length === 0) return z.unknown();
+    if (options.length === 1) return options[0];
+    return z.union(options as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
+  }
 
   if (propType === "string") {
     if (prop.enum && Array.isArray(prop.enum) && prop.enum.length > 0) {
       const enumValues = prop.enum as [string, ...string[]];
       return z.enum(enumValues);
     }
-    return z.string();
+    const schema = z.string();
+    return typeof prop.maxLength === "number"
+      ? schema.max(prop.maxLength)
+      : schema;
   }
 
   if (propType === "number") {
     return z.number();
+  }
+
+  if (propType === "integer") {
+    return z.number().int();
   }
 
   if (propType === "boolean") {
@@ -212,7 +231,10 @@ function jsonSchemaPropToZod(prop: Record<string, unknown>): z.ZodTypeAny {
       Object.keys(itemSchema).length > 0
         ? jsonSchemaPropToZod(itemSchema)
         : z.unknown();
-    return z.array(itemZod);
+    let schema = z.array(itemZod);
+    if (typeof prop.minItems === "number") schema = schema.min(prop.minItems);
+    if (typeof prop.maxItems === "number") schema = schema.max(prop.maxItems);
+    return schema;
   }
 
   if (propType === "object") {

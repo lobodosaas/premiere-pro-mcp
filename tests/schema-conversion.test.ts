@@ -27,6 +27,14 @@ const ALL_TYPES_TOOL = {
           items: { type: "string" },
           description: "An array",
         },
+        coord_param: {
+          type: ["number", "string", "array"],
+          items: { type: "number" },
+          minItems: 2,
+          maxItems: 2,
+          maxLength: 8192,
+          description: "Number, string, or two-element [x, y] array",
+        },
         obj_param: { type: "object", description: "An object" },
         enum_param: {
           type: "string",
@@ -34,8 +42,9 @@ const ALL_TYPES_TOOL = {
           description: "An enum",
         },
         optional_str: { type: "string", description: "Optional string" },
+        int_param: { type: "integer", description: "An integer" },
       },
-      required: ["str_param", "num_param"],
+      required: ["str_param", "num_param", "coord_param"],
     },
     handler: vi.fn().mockResolvedValue({ success: true, data: {} }),
   },
@@ -149,6 +158,51 @@ describe("Schema Conversion (jsonSchemaToZodShape)", () => {
     const server = createServer({});
     expect(server).toBeDefined();
   });
+
+  it("announces integers as integers, not unknown", () => {
+    const server = createServer({});
+    const registered = (server as unknown as { _registeredTools: Record<string, { inputSchema: z.ZodTypeAny }> })._registeredTools["test_all_types"];
+    const shape = (registered.inputSchema as unknown as { shape: Record<string, z.ZodTypeAny> }).shape;
+    expect(shape?.int_param).toBeDefined();
+    expect(shape.int_param).not.toBeInstanceOf(z.ZodUnknown);
+    expect(shape.int_param.safeParse(3).success).toBe(true);
+    expect(shape.int_param.safeParse(1.5).success).toBe(false);
+  });
+});
+
+function coordField() {
+  const server = createServer({});
+  const registered = (server as unknown as { _registeredTools: Record<string, { inputSchema: z.ZodTypeAny }> })._registeredTools["test_all_types"];
+  expect(registered).toBeDefined();
+  const shape = (registered.inputSchema as unknown as { shape: Record<string, z.ZodTypeAny> }).shape;
+  expect(shape?.coord_param).toBeDefined();
+  return shape.coord_param;
+}
+
+describe("Union coordinate schema (caption motion)", () => {
+  it("announces a constrained schema, not unknown", () => {
+    const field = coordField();
+    expect(field).not.toBeInstanceOf(z.ZodUnknown);
+  });
+
+  it("accepts a finite number", () => {
+    expect(coordField().safeParse(0.5).success).toBe(true);
+  });
+
+  it("accepts a graphic-param string", () => {
+    expect(coordField().safeParse("hello").success).toBe(true);
+  });
+
+  it("accepts a two-element [x, y] array of finite numbers", () => {
+    expect(coordField().safeParse([0.5, 0.555013]).success).toBe(true);
+  });
+
+  it.each([[0.5], [0.5, 0.5, 0.5], [0.5, "x"], {}, [Number.NaN, 0.5], [0.5, Number.POSITIVE_INFINITY]])(
+    "rejects malformed coordinate %p before the bridge",
+    (value) => {
+      expect(coordField().safeParse(value).success).toBe(false);
+    },
+  );
 });
 
 describe("Server tool registration callback", () => {
