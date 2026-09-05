@@ -359,7 +359,7 @@ describe("issue #189 — Premiere 26.3 capability boundaries and macOS presets",
     expect(keyframeScript).toContain("relativeSeconds >= clipDurationSeconds");
     expect(keyframeScript).not.toContain("clipDurationSeconds + 0.0001");
     expect(keyframeScript).toContain("var addResult = prop.addKey(time)");
-    expect(keyframeScript).toContain("var setResult = prop.setValueAtKey(time, 105, true)");
+    expect(keyframeScript).toContain("prop.setValueAtKey(time, 105, true)");
     expect(keyframeScript).not.toContain("if (addResult !== 0)");
     expect(keyframeScript).not.toContain("if (setResult !== 0)");
     expect(keyframeScript).toContain("var keysAfterAdd = prop.getKeys()");
@@ -371,7 +371,7 @@ describe("issue #189 — Premiere 26.3 capability boundaries and macOS presets",
     const boundsCheck = keyframeScript.indexOf("relativeSeconds >= clipDurationSeconds");
     const mutation = keyframeScript.indexOf("prop.setTimeVarying(true)");
     const keyTimeReadback = keyframeScript.indexOf("var keysAfterAdd = prop.getKeys()");
-    const valueMutation = keyframeScript.indexOf("var setResult = prop.setValueAtKey");
+    const valueMutation = keyframeScript.indexOf("setResult = prop.setValueAtKey");
     expect(boundsCheck).toBeGreaterThan(-1);
     expect(mutation).toBeGreaterThan(boundsCheck);
     expect(keyTimeReadback).toBeGreaterThan(mutation);
@@ -428,8 +428,8 @@ describe("issue #194 — string-backed MOGRT effect properties", () => {
 
     expect(script).toContain('var requestedValue = "{\\"textEditValue\\":\\"Hello \\\\\\\"editor\\\\\\\"\\"}";');
     expect(script).toContain("prop.setValue(requestedValue, true)");
-    expect(script).toContain("var readbackVerified = readbackAvailable && readbackValue === requestedValue");
-    expect(script).toContain("readbackVerified: readbackVerified");
+    expect(script).toContain("readbackMatches(requestedValue, readbackValue)");
+    expect(script).toContain("readbackVerified: true");
   });
 });
 
@@ -735,7 +735,8 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
       value: [0.5, 0.555013],
     });
 
-    expect(script).toContain("var setResult = prop.setValueAtKey(time, [0.5, 0.555013], true)");
+    expect(script).toContain("var setResult = null");
+    expect(script).toContain("prop.setValueAtKey(time, [0.5, 0.555013], true)");
     expect(script).toContain("var requestedIsArray = true");
     expect(script).toContain("readBack.length === 2");
     expect(script).toContain("Premiere did not return the requested [x, y] keyframe value");
@@ -751,7 +752,7 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
       value: 100,
     });
 
-    expect(script).toContain("var setResult = prop.setValueAtKey(time, 100, true)");
+    expect(script).toContain("prop.setValueAtKey(time, 100, true)");
     expect(script).toContain('if (typeof readBack !== "number" || !isFinite(readBack))');
   });
 
@@ -838,6 +839,99 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
       success: false,
       error: "Array values must be a two-element [x, y] array of numbers; no mutation was attempted.",
     });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("compares array readback with an ES3-safe loop instead of Array.prototype.every", async () => {
+    const script = await scriptFor(keyframes.set_effect_property, {
+      node_id: "clip-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      value: [0.5, 0.555013],
+    });
+
+    expect(script).not.toMatch(/\.every\(/);
+    expect(script).toContain("readbackMatches(requestedValue, readbackValue");
+  });
+
+  it("snapshots the previous value before writing and restores it when verification fails", async () => {
+    const script = await scriptFor(keyframes.set_effect_property, {
+      node_id: "clip-1",
+      effect_name: "Opacidade",
+      property_name: "Opacidade",
+      value: 100,
+    });
+
+    expect(script).toContain("var previousValue = null");
+    expect(script).toContain("prop.setValue(previousValue, true)");
+    expect(script).toContain("ROLLBACK");
+    expect(script).toContain("previousValueRestored");
+  });
+
+  it("removes only its own keyframe when add_keyframe value verification fails", async () => {
+    const script = await scriptFor(keyframes.add_keyframe, {
+      node_id: "caption-graphic-1",
+      effect_name: "Opacidade",
+      property_name: "Opacidade",
+      time_seconds: 0.15,
+      value: 100,
+    });
+
+    expect(script).toContain("ROLLBACK");
+    expect(script).toContain("prop.removeKey(time)");
+    expect(script).toContain("keyframeRemoved");
+  });
+
+  it("reports relative and resolved key times from get_keyframes", async () => {
+    const script = await scriptFor(keyframes.get_keyframes, {
+      node_id: "caption-graphic-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+    });
+
+    expect(script).toContain("clipInPointSeconds");
+    expect(script).toContain("relativeTimeSeconds");
+    expect(script).toContain("resolvedPropertyTimeSeconds");
+  });
+
+  it("accepts clip_relative time basis on get_value_at_time and annotates the result", async () => {
+    const script = await scriptFor(keyframes.get_value_at_time, {
+      node_id: "caption-graphic-1",
+      effect_name: "Opacidade",
+      property_name: "Opacidade",
+      time_seconds: 0.15,
+      time_basis: "clip_relative",
+    });
+
+    expect(script).toContain("clipInPointSeconds + relativeSeconds");
+    expect(script).toContain("timeBasis:");
+  });
+
+  it("keeps get_value_at_time default basis property-absolute (legacy behavior)", async () => {
+    const script = await scriptFor(keyframes.get_value_at_time, {
+      node_id: "caption-graphic-1",
+      effect_name: "Opacidade",
+      property_name: "Opacidade",
+      time_seconds: 0.15,
+    });
+
+    expect(script).toContain("var timeBasis = \"property\"");
+    expect(script).not.toContain("var timeBasis = \"clip_relative\"");
+  });
+
+  it.each([
+    ["bogus"],
+    ["relative"],
+  ])("rejects unknown time_basis %p before bridge access", async (basis) => {
+    const result = await keyframes.get_value_at_time.handler({
+      node_id: "caption-graphic-1",
+      effect_name: "Opacidade",
+      property_name: "Opacidade",
+      time_seconds: 0.15,
+      time_basis: basis as never,
+    });
+
+    expect(result.success).toBe(false);
     expect(mockedSendCommand).not.toHaveBeenCalled();
   });
 });

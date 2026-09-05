@@ -25,7 +25,8 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!result) return __error("Clip not found");
           
           var clip = result.clip;
-          var effectName = "${escapeForExtendScript(args.effect_name)}";
+          var clipInPointSeconds = NaN;
+          try { clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks); } catch(eInPoint) {}
           var comp = null;
           
           for (var i = 0; i < clip.components.numItems; i++) {
@@ -129,6 +130,21 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var requestedValue = ${requestedValue};
           var requestedIsArray = ${valueIsArray};
+          function readbackMatches(requested, actual) {
+            if (!requestedIsArray) return actual === requested;
+            if (!actual || typeof actual.length !== "number" || actual.length !== requested.length) return false;
+            for (var matchIndex = 0; matchIndex < requested.length; matchIndex++) {
+              if (Math.abs(actual[matchIndex] - requested[matchIndex]) > 0.0001) return false;
+            }
+            return true;
+          }
+          var previousValue = null;
+          var previousAvailable = true;
+          try {
+            previousValue = prop.getValue();
+          } catch (ePrevious) {
+            previousAvailable = false;
+          }
           try {
             prop.setValue(requestedValue, true);
           } catch (e) {
@@ -142,21 +158,34 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           } catch (eReadback) {
             readbackAvailable = false;
           }
-          var readbackVerified = readbackAvailable && readbackValue === requestedValue;
-          if (readbackAvailable && requestedIsArray) {
-            readbackVerified = readbackValue && typeof readbackValue.length === "number" && readbackValue.length === requestedValue.length &&
-              readbackValue.every(function(entry, index) { return Math.abs(entry - requestedValue[index]) <= 0.0001; });
+          var readbackVerified = readbackAvailable && readbackMatches(requestedValue, readbackValue);
+          if (!readbackVerified) {
+            var previousValueRestored = null;
+            if (previousAvailable) {
+              var restored = false;
+              try {
+                prop.setValue(previousValue, true);
+                restored = readbackMatches(previousValue, prop.getValue());
+              } catch (eRestore) {}
+              previousValueRestored = restored;
+            }
+            return __error("ROLLBACK: " + (readbackAvailable
+              ? "Premiere readback did not match the requested value"
+              : "Premiere readback was unavailable after the write")
+              + (previousValueRestored === true
+                ? "; the previous value was restored and verified"
+                : previousValueRestored === false
+                  ? "; the PREVIOUS VALUE COULD NOT BE RESTORED"
+                  : "; no previous value snapshot was readable") + ".");
           }
           return __result({
             set: true,
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
-            value: readbackAvailable ? readbackValue : requestedValue,
+            value: readbackValue,
             requestedValue: requestedValue,
-            readbackVerified: readbackVerified,
-            verification: readbackAvailable
-              ? "Premiere parameter readback only; verify playback or exported frames before delivery."
-              : "Premiere accepted the parameter write, but this property did not expose a readback value. Verify playback or exported frames before delivery."
+            readbackVerified: true,
+            verification: "Premiere parameter readback verified; verify playback or exported frames before delivery."
           });
         `);
         return sendCommand(script, bridgeOptions);
@@ -221,9 +250,12 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
               var time = keys[k];
               var val = null;
               try { val = prop.getValueAtKey(time); } catch(e) {}
+              var resolvedSeconds = __ticksToSeconds(time.ticks);
               keyframes.push({
-                time: __ticksToSeconds(time.ticks),
-                value: val
+                time: resolvedSeconds,
+                value: val,
+                resolvedPropertyTimeSeconds: resolvedSeconds,
+                relativeTimeSeconds: isFinite(clipInPointSeconds) ? resolvedSeconds - clipInPointSeconds : null
               });
             }
           }
@@ -354,6 +386,21 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var time = new Time();
           time.ticks = __secondsToTicks(resolvedPropertyTimeSeconds).toString();
+          function rollbackAddedKey(reason) {
+            var keyframeRemoved = false;
+            try { prop.removeKey(time); } catch (eRollback) {}
+            var stillPresent = false;
+            var keysAfterRollback = prop.getKeys();
+            if (keysAfterRollback) {
+              for (var rollbackIndex = 0; rollbackIndex < keysAfterRollback.length; rollbackIndex++) {
+                if (String(keysAfterRollback[rollbackIndex].ticks) === String(time.ticks)) { stillPresent = true; break; }
+              }
+            }
+            keyframeRemoved = !stillPresent;
+            return __error("ROLLBACK: " + reason + (keyframeRemoved
+              ? "; the keyframe added by this call was removed and its absence verified"
+              : "; the keyframe added by this call could NOT be removed") + ".");
+          }
           var addResult = prop.addKey(time);
           var storedAtResolvedTime = false;
           var keysAfterAdd = prop.getKeys();
@@ -366,24 +413,29 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             }
           }
           if (!storedAtResolvedTime) {
-            return __error("Premiere did not return a keyframe at the resolved property time; storage is not reported as verified.");
+            return rollbackAddedKey("Premiere did not return a keyframe at the resolved property time");
           }
           var requestedIsArray = ${valueIsArray};
-          var setResult = prop.setValueAtKey(time, ${valueLiteral}, true);
+          var setResult = null;
+          try {
+            setResult = prop.setValueAtKey(time, ${valueLiteral}, true);
+          } catch (eSetValue) {
+            return rollbackAddedKey("Premiere rejected the keyframe value write: " + eSetValue.toString());
+          }
           var readBack = null;
           try { readBack = prop.getValueAtKey(time); } catch(eReadBack) {}
           if (requestedIsArray) {
             var arrayMatch = readBack && typeof readBack.length === "number" && readBack.length === 2 &&
               Math.abs(readBack[0] - ${valueX}) <= 0.0001 && Math.abs(readBack[1] - ${valueY}) <= 0.0001;
             if (!arrayMatch) {
-              return __error("Premiere did not return the requested [x, y] keyframe value after writing it; storage is not reported as verified.");
+              return rollbackAddedKey("Premiere did not return the requested [x, y] keyframe value after writing it");
             }
           } else {
             if (typeof readBack !== "number" || !isFinite(readBack)) {
-              return __error("Premiere did not return a finite numeric keyframe value after writing it; storage is not reported as verified.");
+              return rollbackAddedKey("Premiere did not return a finite numeric keyframe value after writing it");
             }
             if (Math.abs(readBack - ${valueLiteral}) > 0.0001) {
-              return __error("Premiere returned " + readBack + " after writing keyframe value ${valueLiteral}; storage is not reported as verified.");
+              return rollbackAddedKey("Premiere returned " + readBack + " after writing keyframe value ${valueLiteral}");
             }
           }
           
@@ -531,6 +583,11 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "End of the range in seconds",
           },
+          time_basis: {
+            type: "string",
+            enum: ["property", "clip_relative"],
+            description: "Interpretation of start_seconds/end_seconds. 'property' (default, legacy) treats them as raw property times; 'clip_relative' resolves them as clip in-point + seconds.",
+          },
         },
         required: ["node_id", "effect_name", "property_name", "start_seconds", "end_seconds"],
       },
@@ -540,12 +597,27 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         property_name: string;
         start_seconds: number;
         end_seconds: number;
+        time_basis?: "property" | "clip_relative";
       }) => {
+        if (args.time_basis !== undefined && args.time_basis !== "property" && args.time_basis !== "clip_relative") {
+          return { success: false, error: 'time_basis must be "property" or "clip_relative".' };
+        }
+        const timeBasis = args.time_basis ?? "property";
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
           
           var clip = result.clip;
+          var timeBasis = "${timeBasis}";
+          var clipInPointSeconds = NaN;
+          if (timeBasis === "clip_relative") {
+            try { clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks); } catch (eInPoint) {}
+            if (!isFinite(clipInPointSeconds)) {
+              return __error("Premiere did not provide a readable clip in-point; cannot resolve clip_relative times.");
+            }
+          }
+          var resolvedStartSeconds = timeBasis === "clip_relative" ? clipInPointSeconds + (${args.start_seconds}) : ${args.start_seconds};
+          var resolvedEndSeconds = timeBasis === "clip_relative" ? clipInPointSeconds + (${args.end_seconds}) : ${args.end_seconds};
           var comp = null;
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "${escapeForExtendScript(args.effect_name)}" || clip.components[i].matchName === "${escapeForExtendScript(args.effect_name)}") {
@@ -565,16 +637,19 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!prop) return __error("Property not found");
           
           var startTime = new Time();
-          startTime.ticks = __secondsToTicks(${args.start_seconds}).toString();
+          startTime.ticks = __secondsToTicks(resolvedStartSeconds).toString();
           var endTime = new Time();
-          endTime.ticks = __secondsToTicks(${args.end_seconds}).toString();
+          endTime.ticks = __secondsToTicks(resolvedEndSeconds).toString();
           prop.removeKeyRange(startTime, endTime);
           
           return __result({
             removed: true,
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
-            range: { start: ${args.start_seconds}, end: ${args.end_seconds} }
+            range: { start: ${args.start_seconds}, end: ${args.end_seconds} },
+            timeBasis: timeBasis,
+            resolvedStartPropertyTimeSeconds: resolvedStartSeconds,
+            resolvedEndPropertyTimeSeconds: resolvedEndSeconds
           });
         `);
         return sendCommand(script, bridgeOptions);
@@ -607,6 +682,11 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             enum: ["linear", "hold", "bezier"],
             description: "Interpolation type",
           },
+          time_basis: {
+            type: "string",
+            enum: ["property", "clip_relative"],
+            description: "Interpretation of time_seconds. 'property' (default, legacy) treats it as raw property time; 'clip_relative' resolves it as clip in-point + time_seconds.",
+          },
         },
         required: ["node_id", "effect_name", "property_name", "time_seconds", "interpolation"],
       },
@@ -616,7 +696,12 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
         property_name: string;
         time_seconds: number;
         interpolation: string;
+        time_basis?: "property" | "clip_relative";
       }) => {
+        if (args.time_basis !== undefined && args.time_basis !== "property" && args.time_basis !== "clip_relative") {
+          return { success: false, error: 'time_basis must be "property" or "clip_relative".' };
+        }
+        const timeBasis = args.time_basis ?? "property";
         const interpMap: Record<string, number> = { linear: 0, hold: 4, bezier: 5 };
         const interpType = interpMap[args.interpolation] ?? 0;
 
@@ -625,6 +710,16 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!result) return __error("Clip not found");
           
           var clip = result.clip;
+          var timeBasis = "${timeBasis}";
+          var relativeSeconds = ${args.time_seconds};
+          var clipInPointSeconds = NaN;
+          if (timeBasis === "clip_relative") {
+            try { clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks); } catch (eInPoint) {}
+            if (!isFinite(clipInPointSeconds)) {
+              return __error("Premiere did not provide a readable clip in-point; cannot resolve a clip_relative time.");
+            }
+          }
+          var resolvedPropertyTimeSeconds = timeBasis === "clip_relative" ? clipInPointSeconds + relativeSeconds : relativeSeconds;
           var comp = null;
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "${escapeForExtendScript(args.effect_name)}" || clip.components[i].matchName === "${escapeForExtendScript(args.effect_name)}") {
@@ -644,13 +739,15 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!prop) return __error("Property not found");
           
           var time = new Time();
-          time.ticks = __secondsToTicks(${args.time_seconds}).toString();
+          time.ticks = __secondsToTicks(resolvedPropertyTimeSeconds).toString();
           prop.setInterpolationTypeAtKey(time, ${interpType}, true);
           
           return __result({
             set: true,
             interpolation: "${args.interpolation}",
-            time: ${args.time_seconds}
+            time: ${args.time_seconds},
+            timeBasis: timeBasis,
+            resolvedPropertyTimeSeconds: resolvedPropertyTimeSeconds
           });
         `);
         return sendCommand(script, bridgeOptions);
@@ -678,15 +775,34 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "Time in seconds to query the value at",
           },
+          time_basis: {
+            type: "string",
+            enum: ["property", "clip_relative"],
+            description: "Interpretation of time_seconds. 'property' (default, legacy) treats it as raw property time; 'clip_relative' resolves it as clip in-point + time_seconds.",
+          },
         },
         required: ["node_id", "effect_name", "property_name", "time_seconds"],
       },
-      handler: async (args: { node_id: string; effect_name: string; property_name: string; time_seconds: number }) => {
+      handler: async (args: { node_id: string; effect_name: string; property_name: string; time_seconds: number; time_basis?: "property" | "clip_relative" }) => {
+        if (args.time_basis !== undefined && args.time_basis !== "property" && args.time_basis !== "clip_relative") {
+          return { success: false, error: 'time_basis must be "property" or "clip_relative".' };
+        }
+        const timeBasis = args.time_basis ?? "property";
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
           
           var clip = result.clip;
+          var timeBasis = "${timeBasis}";
+          var relativeSeconds = ${args.time_seconds};
+          var clipInPointSeconds = NaN;
+          if (timeBasis === "clip_relative") {
+            try { clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks); } catch (eInPoint) {}
+            if (!isFinite(clipInPointSeconds)) {
+              return __error("Premiere did not provide a readable clip in-point; cannot resolve a clip_relative time.");
+            }
+          }
+          var resolvedPropertyTimeSeconds = timeBasis === "clip_relative" ? clipInPointSeconds + relativeSeconds : relativeSeconds;
           var comp = null;
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "${escapeForExtendScript(args.effect_name)}" || clip.components[i].matchName === "${escapeForExtendScript(args.effect_name)}") {
@@ -706,13 +822,15 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!prop) return __error("Property not found");
           
           var time = new Time();
-          time.ticks = __secondsToTicks(${args.time_seconds}).toString();
+          time.ticks = __secondsToTicks(resolvedPropertyTimeSeconds).toString();
           var value = prop.getValueAtTime(time);
           
           return __result({
             effect: "${escapeForExtendScript(args.effect_name)}",
             property: "${escapeForExtendScript(args.property_name)}",
             time: ${args.time_seconds},
+            timeBasis: timeBasis,
+            resolvedPropertyTimeSeconds: resolvedPropertyTimeSeconds,
             value: value
           });
         `);
