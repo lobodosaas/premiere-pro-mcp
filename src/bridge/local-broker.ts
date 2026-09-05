@@ -70,7 +70,7 @@ export class LocalBroker extends EventEmitter {
     this.endpoint = options.ipcEndpoint ?? getLocalBrokerEndpoint();
     this.telemetry = options.telemetry ?? getTelemetry();
     const captured = options.buildInfo ?? readServerBuildInfo();
-    this.buildInfo = { capturedAt: new Date().toISOString(), ...captured };
+    this.buildInfo = Object.freeze({ capturedAt: new Date().toISOString(), ...captured });
     this.uxpBridge = new UxpWebSocketBridge({
       token: options.uxpToken,
       port: options.uxpPort,

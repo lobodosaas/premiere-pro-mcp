@@ -42,13 +42,14 @@ function summarizeUxpPanel(bridge: UxpWebSocketBridge | undefined): Record<strin
   try {
     const state = bridge.getState();
     if (state.connected) {
-      const hello = state.capabilities as { hostVersion?: unknown; commands?: Record<string, { supported?: unknown }> };
+      const hello = state.capabilities as { hostVersion?: unknown; panelVersion?: unknown; commands?: Record<string, { supported?: unknown }> };
       const commands = hello?.commands && typeof hello.commands === "object" ? hello.commands : {};
       return {
         connected: true,
         status: state.status,
         protocolVersion: state.protocolVersion,
         hostVersion: typeof hello?.hostVersion === "string" ? hello.hostVersion : null,
+        panelVersion: typeof hello?.panelVersion === "string" ? hello.panelVersion : null,
         supportedCommandCount: Object.values(commands).filter((command) => command?.supported === true).length,
         connectedAt: state.connectedAt,
       };

@@ -1,4 +1,7 @@
 "use strict";
+// Keep in sync with uxp-plugin/manifest.json "version"; enforced by
+// tests/uxp/panel-version.test.ts so a stale panel can be told apart.
+const PANEL_VERSION = "1.14.4";
 const { entrypoints, host, storage } = require("uxp");
 const ppro = require("premierepro");
 const Protocol = globalThis.PremiereMcpProtocol;
@@ -79,6 +82,7 @@ async function capabilities() {
     "captions.delete": { supported: false, reason: "No documented Premiere UXP caption deletion API." }
   });
   value.hostVersion = host && host.version || null;
+  value.panelVersion = PANEL_VERSION;
   Object.assign(value, {
     events: {
       host: supportedHostEvents().map((event) => event.name),

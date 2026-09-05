@@ -75,6 +75,31 @@ describe("write-build-info script", () => {
     expect(typeof info.builtAt).toBe("string");
     expect(typeof info.packageVersion).toBe("string");
   });
+
+  it("records sha256 hashes of the shipped server and panel artifacts", async () => {
+    const directory = await tempDir();
+    execFileSync(process.execPath, [
+      fileURLToPath(new URL("../scripts/write-build-info.mjs", import.meta.url)),
+      "--out",
+      directory,
+    ], { cwd: fileURLToPath(new URL("..", import.meta.url)), stdio: "pipe" });
+    const info = readServerBuildInfo(directory);
+    expect(info.found).toBe(true);
+    expect(info.files?.["dist/index.js"]).toMatch(/^[0-9a-f]{64}$/);
+    expect(info.files?.["uxp-plugin/advanced-workflows.cjs"]).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("rejects build records with malformed artifact hashes", async () => {
+    const directory = await tempDir();
+    await writeFile(path.join(directory, "build-info.json"), JSON.stringify({
+      schemaVersion: 1,
+      commit: "abc123",
+      packageVersion: "1.14.4",
+      builtAt: "2026-01-01T00:00:00.000Z",
+      files: { "dist/index.js": "not-a-hash" },
+    }));
+    expect(readServerBuildInfo(directory).found).toBe(false);
+  });
 });
 
 describe("get_capabilities runtime identity", () => {
@@ -163,6 +188,57 @@ describe("get_capabilities runtime identity", () => {
     const result = await tools.get_capabilities.handler({});
     expect(result.data.runtime.uxp).toMatchObject({ connected: false, status: "listening" });
   });
+
+  it("echoes the connected panel version separately from the server build", async () => {
+    const fakeBridge = {
+      getState: () => ({
+        status: "connected",
+        connected: true,
+        protocolVersion: 2,
+        connectedAt: "2026-01-01T00:00:00.000Z",
+        capabilities: { panelVersion: "9.9.9", commands: {} },
+      }),
+    };
+    const tools = getHealthTools(
+      { tempDir: await tempDir() },
+      undefined,
+      () => ({}),
+      {
+        uxpBridge: fakeBridge as never,
+        buildInfo: { found: true, commit: "srv", packageVersion: "1.0.0", builtAt: "2026-01-01T00:00:00.000Z", source: "test" },
+      },
+    );
+    const result = await tools.get_capabilities.handler({});
+    expect(result.data.runtime.uxp).toMatchObject({ connected: true, panelVersion: "9.9.9" });
+    expect(result.data.runtime.build).toMatchObject({ commit: "srv" });
+  });
+
+  it("registers animation tools only under the animation pack", async () => {
+    const catalog = () => ({
+      ping: { description: "Ping." },
+      add_keyframe: { description: "Add a keyframe." },
+      animate_caption_clip_uxp: { description: "Caption entrance." },
+    });
+    const capabilities = { capabilities: new Set(["inspect", "edit"]), source: "explicit" } as const;
+
+    const withAnimation = getHealthTools({ tempDir: await tempDir() }, capabilities, catalog, {
+      toolPacks: resolveToolPacks("essential,animation"),
+    });
+    const animated = new Map(
+      (await withAnimation.get_capabilities.handler({})).data.tools.tools.map((tool: { name: string }) => [tool.name, tool]),
+    );
+    expect(animated.get("add_keyframe")).toMatchObject({ registered: true });
+    expect(animated.get("animate_caption_clip_uxp")).toMatchObject({ registered: true });
+
+    const essentialOnly = getHealthTools({ tempDir: await tempDir() }, capabilities, catalog, {
+      toolPacks: resolveToolPacks("essential"),
+    });
+    const narrowed = new Map(
+      (await essentialOnly.get_capabilities.handler({})).data.tools.tools.map((tool: { name: string }) => [tool.name, tool]),
+    );
+    expect(narrowed.get("add_keyframe")).toMatchObject({ registered: false });
+    expect(narrowed.get("animate_caption_clip_uxp")).toMatchObject({ registered: false });
+  });
 });
 
 describe("broker build capture", () => {
@@ -185,6 +261,24 @@ describe("broker build capture", () => {
     expect(broker.buildInfo).toMatchObject({ found: true, commit: "deadbee" });
     expect(typeof broker.buildInfo.capturedAt).toBe("string");
     expect(broker.state().build).toMatchObject({ commit: "deadbee" });
+  });
+
+  it("freezes the captured build snapshot against later mutation", async () => {
+    const broker = await startLocalBroker({
+      bridgeOptions: { tempDir: await tempDir() },
+      uxpToken: TOKEN,
+      uxpPort: 0,
+      ipcEndpoint: getLocalBrokerEndpoint({ username: `build-frozen-${randomUUID()}` }),
+      buildInfo: {
+        found: true,
+        commit: "deadbee",
+        packageVersion: "9.9.9",
+        builtAt: "2026-01-01T00:00:00.000Z",
+        source: "test",
+      },
+    });
+    brokers.push(broker);
+    expect(Object.isFrozen(broker.buildInfo)).toBe(true);
   });
 
   it("falls back to reading build info from the running module directory when nothing is injected", async () => {

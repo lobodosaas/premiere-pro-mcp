@@ -8,6 +8,8 @@ export interface ServerBuildInfo {
   commit: string | null;
   packageVersion: string | null;
   builtAt: string | null;
+  /** sha256 hashes of shipped artifacts, when the record carries them. */
+  files?: Record<string, string> | null;
   /** Where the record came from: file path, "injected", or "missing". */
   source: string;
   /** ISO timestamp of when the running process captured this record. */
@@ -18,6 +20,16 @@ const BUILD_INFO_FILENAME = "build-info.json";
 
 function asNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function asArtifactHashes(value: unknown): Record<string, string> | null | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>);
+  for (const [name, hash] of entries) {
+    if (typeof name !== "string" || typeof hash !== "string" || !/^[0-9a-f]{64}$/.test(hash)) return null;
+  }
+  return Object.fromEntries(entries) as Record<string, string>;
 }
 
 /**
@@ -43,8 +55,11 @@ export function readServerBuildInfo(distDir?: string): ServerBuildInfo {
     const commit = asNonEmptyString(record.commit);
     const packageVersion = asNonEmptyString(record.packageVersion);
     const builtAt = asNonEmptyString(record.builtAt);
-    if (!commit || !packageVersion || !builtAt) throw new Error("incomplete record");
-    return { found: true, commit, packageVersion, builtAt, source: file };
+    const files = asArtifactHashes(record.files);
+    if (!commit || !packageVersion || !builtAt || files === null) throw new Error("incomplete record");
+    const info: ServerBuildInfo = { found: true, commit, packageVersion, builtAt, source: file };
+    if (files !== undefined) info.files = files;
+    return info;
   } catch {
     return { found: false, commit: null, packageVersion: null, builtAt: null, source: file };
   }

@@ -12,6 +12,7 @@
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
+    "dist/build-info.json",
     "dist/resources/adobe-uxp-coverage.json",
     "cep-plugin",
     "artifacts/MCPBridgeCEP.zxp",
