@@ -108,6 +108,28 @@
       return Number.isFinite(seconds) ? seconds : null;
     }
 
+    // Resolves an optional clip_relative time against the source in-point
+    // domain where keyframes live. timeline_seconds (default) keeps the raw
+    // legacy behavior. Every parameter operation that accepts time_basis
+    // shares this resolver so inspection, insertion, removal, and
+    // interpolation can never disagree about which key they address.
+    async function resolveParameterTime(context, timeSeconds, timeBasis) {
+      const basis = timeBasis === undefined || timeBasis === "timeline_seconds" ? "timeline_seconds"
+        : timeBasis === "clip_relative" ? "clip_relative" : null;
+      if (basis === null) throw commandError("UXP_INVALID_ARGUMENT", "timeBasis must be timeline_seconds or clip_relative");
+      if (basis === "timeline_seconds") return { timeSeconds, timeBasis: basis };
+      const inPointSeconds = typeof context.item.getInPoint === "function" ? tickSeconds(await context.item.getInPoint()) : null;
+      const startSeconds = tickSeconds(await context.item.getStartTime());
+      const endSeconds = tickSeconds(await context.item.getEndTime());
+      const durationSeconds = endSeconds - startSeconds;
+      if (inPointSeconds === null || !Number.isFinite(inPointSeconds)) {
+        throw commandError("UXP_TARGET_UNREADABLE", "the clip source in-point could not be read; refusing to guess the keyframe time domain");
+      }
+      if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw commandError("UXP_TARGET_UNSUPPORTED", "Premiere did not provide a readable clip duration");
+      if (timeSeconds < 0 || timeSeconds > durationSeconds) throw commandError("UXP_INVALID_ARGUMENT", "timeSeconds is outside the visible clip duration");
+      return { timeSeconds: inPointSeconds + timeSeconds, timeBasis: basis };
+    }
+
     function guidString(value) {
       if (value == null) return "";
       try { return typeof value.toString === "function" ? String(value.toString()) : String(value); } catch (_) { return ""; }
@@ -569,9 +591,8 @@
       const rawTimes = typeof context.param.getKeyframeListAsTickTimes === "function" ? Array.from(context.param.getKeyframeListAsTickTimes() || []) : [];
       const times = rawTimes.slice(0, MAX_KEYFRAMES).map(tickSeconds);
       let value = null;
-      if (timeSeconds != null && typeof context.param.getValueAtTime === "function") value = await context.param.getValueAtTime(tick(finiteNumber(timeSeconds, "timeSeconds", 0, 86400), "timeSeconds"));
-      else if (typeof context.param.getStartValue === "function") value = keyframeValue(await context.param.getStartValue());
-      value = pointReadback(value);
+      if (timeSeconds != null && typeof context.param.getValueAtTime === "function") value = normalizeHostValue(await context.param.getValueAtTime(tick(finiteNumber(timeSeconds, "timeSeconds", 0, 86400), "timeSeconds")));
+      else if (typeof context.param.getStartValue === "function") value = normalizeHostValue(keyframeValue(await context.param.getStartValue()));
       return {
         mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex,
         componentIndex: context.componentIndex, componentId: context.componentId, paramIndex: context.paramIndex,
@@ -642,32 +663,42 @@
     }
 
     async function removeParameterKeyframe(args) {
-      const context = await parameterContext(args, true), timeSeconds = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400);
+      const context = await parameterContext(args, true);
+      const resolved = await resolveParameterTime(context, finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), args.timeBasis);
+      const timeSeconds = resolved.timeSeconds;
       const beforeTimes = completeKeyframeTimes(context.param);
       const existed = beforeTimes.some((seconds) => numbersEqual(seconds, timeSeconds));
-      if (!existed) return verifiedNoopResult({ removed: false, unchanged: true, timeSeconds, after: await parameterSnapshot(context) }, "parameter_keyframe_absence_preflight");
+      if (!existed) return verifiedNoopResult({ removed: false, unchanged: true, timeSeconds, timeBasis: resolved.timeBasis, after: await parameterSnapshot(context) }, "parameter_keyframe_absence_preflight");
       context.project.lockedAccess(() => {
         commitActions(context.project, "Remove effect keyframe", [context.param.createRemoveKeyframeAction(tick(timeSeconds, "timeSeconds"), true)]);
       });
       const afterTimes = completeKeyframeTimes(context.param), after = await parameterSnapshot(context), verified = !afterTimes.some((seconds) => numbersEqual(seconds, timeSeconds));
-      return mutationResult(verified, { removed: verified, removalRequested: true, timeSeconds, after }, "complete_parameter_keyframe_absence_readback", "Remove effect keyframe");
+      return mutationResult(verified, { removed: verified, removalRequested: true, timeSeconds, timeBasis: resolved.timeBasis, requestedTimeSeconds: finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), after }, "complete_parameter_keyframe_absence_readback", "Remove effect keyframe");
     }
 
     async function removeParameterKeyframeRange(args) {
-      const context = await parameterContext(args, true), start = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), end = finiteNumber(args.endSeconds, "endSeconds", 0, 86400);
+      const context = await parameterContext(args, true);
+      const requestedStart = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), requestedEnd = finiteNumber(args.endSeconds, "endSeconds", 0, 86400);
+      if (requestedEnd < requestedStart) throw commandError("UXP_INVALID_ARGUMENT", "endSeconds must be greater than or equal to timeSeconds");
+      const resolvedStart = await resolveParameterTime(context, requestedStart, args.timeBasis);
+      const resolvedEnd = await resolveParameterTime(context, requestedEnd, args.timeBasis);
+      const start = resolvedStart.timeSeconds, end = resolvedEnd.timeSeconds;
       if (end < start) throw commandError("UXP_INVALID_ARGUMENT", "endSeconds must be greater than or equal to timeSeconds");
       const beforeTimes = completeKeyframeTimes(context.param);
       const existed = beforeTimes.some((seconds) => seconds != null && seconds >= start && seconds <= end);
-      if (!existed) return verifiedNoopResult({ removed: false, unchanged: true, startSeconds: start, endSeconds: end, after: await parameterSnapshot(context) }, "parameter_keyframe_range_absence_preflight");
+      if (!existed) return verifiedNoopResult({ removed: false, unchanged: true, startSeconds: start, endSeconds: end, timeBasis: resolvedStart.timeBasis, after: await parameterSnapshot(context) }, "parameter_keyframe_range_absence_preflight");
       context.project.lockedAccess(() => {
         commitActions(context.project, "Remove effect keyframe range", [context.param.createRemoveKeyframeRangeAction(tick(start), tick(end), true)]);
       });
       const afterTimes = completeKeyframeTimes(context.param), after = await parameterSnapshot(context), verified = !afterTimes.some((seconds) => seconds != null && seconds >= start && seconds <= end);
-      return mutationResult(verified, { removed: verified, removalRequested: true, startSeconds: start, endSeconds: end, after }, "complete_parameter_keyframe_range_readback", "Remove effect keyframe range");
+      return mutationResult(verified, { removed: verified, removalRequested: true, startSeconds: start, endSeconds: end, timeBasis: resolvedStart.timeBasis, requestedStartSeconds: requestedStart, requestedEndSeconds: requestedEnd, after }, "complete_parameter_keyframe_range_readback", "Remove effect keyframe range");
     }
 
     async function setParameterInterpolation(args) {
-      const context = await parameterContext(args, true), timeSeconds = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), modeName = enumValue(args.interpolation, "interpolation", ["linear", "hold", "bezier", "time"]), constants = ppro.Constants && ppro.Constants.InterpolationMode || {};
+      const context = await parameterContext(args, true);
+      const resolved = await resolveParameterTime(context, finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), args.timeBasis);
+      const timeSeconds = resolved.timeSeconds;
+      const modeName = enumValue(args.interpolation, "interpolation", ["linear", "hold", "bezier", "time"]), constants = ppro.Constants && ppro.Constants.InterpolationMode || {};
       const mode = constants[modeName.toUpperCase()];
       if (mode == null) throw commandError("UXP_COMMAND_UNAVAILABLE", "Interpolation constants are unavailable");
       context.project.lockedAccess(() => {
@@ -675,7 +706,7 @@
       });
       let verified = false, readback = null;
       try { const keyframe = context.param.getKeyframePtr(tick(timeSeconds)); readback = await keyframe.getTemporalInterpolationMode(); verified = readback === mode; } catch (_) {}
-      return mutationResult(verified, { updated: true, interpolation: modeName, interpolationValue: readback }, "keyframe_interpolation_readback", "Set keyframe interpolation");
+      return mutationResult(verified, { updated: true, interpolation: modeName, interpolationValue: readback, timeBasis: resolved.timeBasis, requestedTimeSeconds: finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), timeSeconds }, "keyframe_interpolation_readback", "Set keyframe interpolation");
     }
 
     // Caption entrance animation (Opacity 0->100 + Motion Position rise).
@@ -701,11 +732,22 @@
     }
 
     function captionContext(args, mutation) {
-      const allowed = ["mediaType", "trackIndex", "clipIndex"];
-      if (mutation) allowed.push("yOffset", "coordinateSpace", "snapshot", "confirmApply", "operationId");
+      const allowed = ["mediaType", "trackIndex", "clipIndex", "yOffset", "coordinateSpace"];
+      if (mutation) allowed.push("snapshot", "confirmApply", "operationId");
       assertObject(args); assertOnlyKeys(args, allowed);
       const mediaType = enumValue(args.mediaType, "mediaType", ["video", "audio"]), trackIndex = nonNegativeInt(args.trackIndex, "trackIndex"), clipIndex = nonNegativeInt(args.clipIndex, "clipIndex");
       return { mediaType, trackIndex, clipIndex };
+    }
+
+    // Optional plan inputs shared by preview and apply. Absent values stay
+    // null so a preview that omits them can never match an apply that
+    // provides them: the digest binds exactly what was previewed.
+    function captionPlanInputs(args) {
+      const yOffset = args.yOffset === undefined || args.yOffset === null ? null : finiteNumber(args.yOffset, "yOffset", -1, 1);
+      const coordinateSpace = args.coordinateSpace === undefined || args.coordinateSpace === null
+        ? null
+        : boundedString(String(args.coordinateSpace), "coordinateSpace", 32);
+      return { yOffset, coordinateSpace };
     }
 
     function findParamMatching(component, pattern, label) {
@@ -763,7 +805,7 @@
         throw commandError("UXP_TOO_MANY_KEYS", "the parameter carries more keyframes than can be verified safely; refusing the caption operation");
       }
       let base = null;
-      try { base = pointReadback(keyframeValue(await param.getStartValue())); } catch (_) {}
+      try { base = normalizeHostValue(await param.getStartValue()); } catch (_) {}
       return {
         index: entry.componentIndex, componentId: entry.componentId, paramIndex: entry.paramIndex,
         paramName: entry.name, keyframesSupported: supported, timeVarying: varying,
@@ -813,10 +855,15 @@
       };
     }
 
-    function captionDigestInput(state) {
+    function captionDigestInput(state, plan) {
       return {
         clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, inPointSeconds: state.inPointSeconds },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
+        plan: {
+          timeBasis: plan.timeBasis, yOffset: plan.yOffset, coordinateSpace: plan.coordinateSpace,
+          resolvedStartSeconds: plan.resolvedStartSeconds, resolvedMidSeconds: plan.resolvedMidSeconds,
+          relativeMidSeconds: plan.relativeMidSeconds, opacity: plan.opacity, position: plan.position,
+        },
       };
     }
 
@@ -827,10 +874,13 @@
 
     async function readbackAt(param, seconds) {
       if (typeof param.getValueAtTime !== "function") return null;
-      try { return pointReadback(await param.getValueAtTime(tick(seconds))); } catch (_) { return null; }
+      try { return normalizeHostValue(await param.getValueAtTime(tick(seconds))); } catch (_) { return null; }
     }
 
-    function numbersClose(left, right) { return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) <= 0.0001; }
+    function numbersClose(left, right) {
+      if (left == null || right == null) return false;
+      return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) <= 0.0001;
+    }
 
     function pointMatches(actual, expected) {
       return !!actual && typeof actual === "object" && numbersClose(actual.x, expected.x) && numbersClose(actual.y, expected.y);
@@ -866,20 +916,25 @@
 
     async function previewCaptionAnimation(args) {
       const context = captionContext(args, false);
+      const inputs = captionPlanInputs(args);
       const state = await captionState(context, false);
       const enriched = { ...state, contextMediaType: context.mediaType, contextTrackIndex: context.trackIndex, contextClipIndex: context.clipIndex };
       const oneFrame = state.oneFrame;
-      const plan = captionPlan(enriched, null, null);
-      const digest = planDigest(captionDigestInput(enriched));
+      const plan = captionPlan(enriched, inputs.yOffset, inputs.coordinateSpace);
+      const digest = planDigest(captionDigestInput(enriched, plan));
       return {
         preview: true,
         clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, inPointSeconds: state.inPointSeconds, frameSeconds: state.frameSeconds, oneFrame },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
         plan: {
           timeBasis: plan.timeBasis,
+          yOffset: plan.yOffset,
+          coordinateSpace: plan.coordinateSpace,
           resolvedStartSeconds: plan.resolvedStartSeconds,
           resolvedMidSeconds: plan.resolvedMidSeconds,
           relativeMidSeconds: plan.relativeMidSeconds,
+          opacity: plan.opacity,
+          position: plan.position,
         },
         oneFrame,
         snapshotDigest: digest,
@@ -927,7 +982,7 @@
       if (await patternAlreadyApplied(state, plan)) {
         return { applied: true, noop: true, outcome: "verified", operation: { mutatesProject: false } };
       }
-      const liveDigest = planDigest(captionDigestInput(enriched));
+      const liveDigest = planDigest(captionDigestInput(enriched, plan));
       if (liveDigest !== snapshot.snapshotDigest) throw commandError("UXP_STALE_SNAPSHOT", "the clip changed since preview; request a new captionAnimation.preview before applying");
       const snapshotClip = snapshot.clip && typeof snapshot.clip === "object" ? snapshot.clip : null;
       if (!snapshotClip || snapshotClip.projectId !== state.projectId || snapshotClip.sequenceId !== state.sequenceId
@@ -952,9 +1007,12 @@
           positionStart: await readbackAt(position, plan.position[0].timeSeconds),
           positionMid: await readbackAt(position, plan.position[1].timeSeconds),
         };
-        const verified = numbersClose(readback.opacityStart, 0) && numbersClose(readback.opacityMid, 100)
-          && pointMatches(readback.positionStart, plan.position[0].value) && pointMatches(readback.positionMid, plan.position[1].value);
-        return { readback, verified };
+        const diverged = [];
+        if (!numbersClose(readback.opacityStart, 0)) diverged.push("opacity@" + plan.opacity[0].timeSeconds + ": expected 0, read " + JSON.stringify(readback.opacityStart));
+        if (!numbersClose(readback.opacityMid, 100)) diverged.push("opacity@" + plan.opacity[1].timeSeconds + ": expected 100, read " + JSON.stringify(readback.opacityMid));
+        if (!pointMatches(readback.positionStart, plan.position[0].value)) diverged.push("position@" + plan.position[0].timeSeconds + ": expected " + JSON.stringify(plan.position[0].value) + ", read " + JSON.stringify(readback.positionStart));
+        if (!pointMatches(readback.positionMid, plan.position[1].value)) diverged.push("position@" + plan.position[1].timeSeconds + ": expected " + JSON.stringify(plan.position[1].value) + ", read " + JSON.stringify(readback.positionMid));
+        return { readback, verified: diverged.length === 0, diverged };
       };
       let transactionError = null;
       try {
@@ -981,7 +1039,7 @@
         transactionError = error;
       }
 
-      const { readback, verified } = await verifyEntrance();
+      const { readback, verified, diverged } = await verifyEntrance();
       if (verified) {
         return mutationResult(true, {
           applied: true, noop: false, timeBasis: plan.timeBasis,
@@ -1022,9 +1080,7 @@
             ? "the transaction reported an error (" + (transactionError.message ? transactionError.message : String(transactionError)) + ") and "
             : "")
           + "entrance readback did not verify"
-          + (restored === true ? "; the keys written by this call were removed and their absence verified"
-            : restored === false ? "; the keys written by this call could NOT be fully removed"
-            : "; rollback could not be verified")
+          + (diverged.length ? " (diverged: " + diverged.join("; ") + ")" : "")
           + (restored === true ? "; the keys written by this call were removed and their absence verified"
             : restored === false ? "; the keys written by this call could NOT be fully removed"
             : "; rollback could not be verified")
@@ -1434,6 +1490,17 @@
       return value;
     }
 
+    // Single shared normalizer for every host value readback. The live host
+    // wraps scalars as { value } and returns 2D values as [x, y] arrays or
+    // {x, y} objects (verified on Premiere 26.3.2). Missing or invalid reads
+    // stay null so they can never confirm a value — not even zero.
+    function normalizeHostValue(raw) {
+      if (raw && typeof raw === "object" && !Array.isArray(raw) && Object.prototype.hasOwnProperty.call(raw, "value")) {
+        return pointReadback(keyframeValue(raw));
+      }
+      return pointReadback(raw);
+    }
+
     function trackItemUpdateMatches(before, after, args) {
       if (args.startSeconds != null && !numbersEqual(after.startSeconds, args.startSeconds)) return false;
       if (args.endSeconds != null && !numbersEqual(after.endSeconds, args.endSeconds)) return false;
@@ -1487,7 +1554,10 @@
   function assertExpected(actual, expected, code, label) { if (expected != null && actual !== expected) throw commandError(code, label + " no longer matches the expected value"); }
   function assertExpectedNumber(actual, expected, code, label) { if (expected != null && !numbersEqual(actual, expected)) throw commandError(code, label + " no longer matches the expected value"); }
   function requireExternalWrite(value) { if (value !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", "Encoding writes external files and may overwrite an existing output; pass confirmExternalWrite=true after review"); }
-  function numbersEqual(left, right) { return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) < 0.000001; }
+  function numbersEqual(left, right) {
+    if (left == null || right == null) return false;
+    return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) < 0.000001;
+  }
   function valuesEqual(left, right) {
     // Point-aware: live 2D readbacks arrive as [x, y] arrays or {x, y}
     // objects (never PointF instances); compare coordinates numerically.

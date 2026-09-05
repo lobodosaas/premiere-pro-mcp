@@ -336,6 +336,20 @@ function advancedHost() {
   };
 }
 
+type CaptionHost = ReturnType<typeof advancedHost>;
+const previewCaption = (
+  value: CaptionHost,
+  yOffset: number | null = 0.05,
+  coordinateSpace: string | null = "normalized",
+) =>
+  value.registry.dispatch("captionAnimation.preview", {
+    mediaType: "video",
+    trackIndex: 0,
+    clipIndex: 0,
+    ...(yOffset === null ? {} : { yOffset }),
+    ...(coordinateSpace === null ? {} : { coordinateSpace }),
+  });
+
 describe("advanced stable Premiere UXP workflows", () => {
   it("advertises all ten groups from runtime probes and labels filesystem boundaries", async () => {
     const value = advancedHost();
@@ -498,6 +512,49 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(value.parameter.createKeyframe).not.toHaveBeenCalled();
   });
 
+  it("recognizes host-wrapped scalar readbacks as plain values", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+    value.parameter.getValueAtTime.mockImplementation(async () => ({ value: 80 }));
+
+    await expect(value.registry.dispatch("parameters.set", {
+      ...target, value: 80, timeSeconds: 1, operationId: "wrap-set",
+    })).resolves.toMatchObject({ updated: true, outcome: "verified", after: { value: 80 } });
+  });
+
+  it("never confirms a value from an unavailable readback, not even zero", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+    value.parameter.getValueAtTime.mockImplementation(async () => null);
+
+    const result = await value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 0.15, value: 0, operationId: "null-read",
+    });
+    expect(result).toMatchObject({ added: true, outcome: "committed_unverified", verified: false });
+  });
+
+  it("resolves remove_keyframe clip_relative against the source in-point", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+    value.parameterState.keyframes = [3600.15];
+    value.parameterState.keyframeValues = [{ seconds: 3600.15, value: 100 }];
+
+    await expect(value.registry.dispatch("parameters.keyframeRemove", {
+      ...target, timeSeconds: 0.15, timeBasis: "clip_relative", operationId: "rel-remove",
+    })).resolves.toMatchObject({ removed: true, outcome: "verified", timeSeconds: 3600.15, timeBasis: "clip_relative" });
+    expect(value.parameterState.keyframes).toEqual([]);
+  });
+
+  it("resolves set_interpolation clip_relative against the source in-point", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+
+    const result = await value.registry.dispatch("parameters.keyframeInterpolation", {
+      ...target, timeSeconds: 0.15, timeBasis: "clip_relative", interpolation: "linear", operationId: "rel-interp",
+    });
+    expect(result).toMatchObject({ timeBasis: "clip_relative", requestedTimeSeconds: 0.15, timeSeconds: 3600.15 });
+  });
+
   it("rejects retimed or reversed caption clips until supported", async () => {
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
 
@@ -533,7 +590,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("binds the snapshot to the project and sequence identity", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
 
     expect(preview.clip).toMatchObject({ projectId: "project-1", sequenceId: "sequence-1" });
     value.project.guid = "project-2";
@@ -583,12 +640,23 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("treats a changed base position as a stale snapshot", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     value.positionState.base = { x: 0.7, y: 0.5 };
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "base-op",
     })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
+  });
+
+  it("rejects an apply whose yOffset differs from the previewed plan", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+    const preview = await previewCaption(value, 0.05);
+
+    await expect(value.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.09, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "offset-op",
+    })).rejects.toMatchObject({ code: "UXP_STALE_SNAPSHOT" });
+    expect(value.parameter.createAddKeyframeAction).not.toHaveBeenCalled();
   });
 
   it("reports UXP_COMMAND_UNAVAILABLE when the host lacks a PointF factory", async () => {
@@ -618,9 +686,8 @@ describe("advanced stable Premiere UXP workflows", () => {
 
   it("previews a caption entrance plan without mutating the host", async () => {
     const value = advancedHost();
-    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
 
-    const result = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const result = await previewCaption(value, 0.05);
 
     expect(result).toMatchObject({
       preview: true,
@@ -631,11 +698,19 @@ describe("advanced stable Premiere UXP workflows", () => {
       },
       plan: {
         timeBasis: "clip_relative",
+        yOffset: 0.05,
+        coordinateSpace: "normalized",
         resolvedStartSeconds: 3600,
         resolvedMidSeconds: 3605,
         relativeMidSeconds: 5,
+        opacity: [
+          { timeSeconds: 3600, value: 0 },
+          { timeSeconds: 3605, value: 100 },
+        ],
       },
     });
+    expect(result.plan.position[0].value.y).toBeCloseTo(0.55, 9);
+    expect(result.plan.position[1].value).toEqual({ x: 0.5, y: 0.5 });
     expect(typeof result.snapshotDigest).toBe("string");
     expect(value.parameter.createKeyframe).not.toHaveBeenCalled();
     expect(value.positionParam.createKeyframe).not.toHaveBeenCalled();
@@ -644,7 +719,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("applies the entrance pattern in one transaction and verifies the readback", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value, 0.055013);
 
     const result = await value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.055013, coordinateSpace: "normalized",
@@ -665,7 +740,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("returns a verified no-op when the pattern is already fully applied", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value, 0.055013);
     await value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "caption-apply-1",
     });
@@ -682,7 +757,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("rejects a stale snapshot instead of writing against a changed target", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     value.trackState.start = 12;
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
@@ -694,7 +769,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
     value.parameterState.keyframes = [3602];
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "conflict-op",
@@ -704,7 +779,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("requires explicit confirmation before mutating", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview,
@@ -715,7 +790,7 @@ describe("advanced stable Premiere UXP workflows", () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
     value.trackState.end = 10.02;
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     expect(preview.clip.oneFrame).toBe(true);
 
     const result = await value.registry.dispatch("captionAnimation.apply", {
@@ -729,7 +804,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("compensates its own keys when the position write fails and reports the rollback", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value, 0.055013);
     value.positionParam.createAddKeyframeAction.mockImplementationOnce(() => {
       throw new Error("host rejected point keyframe");
     });
@@ -744,7 +819,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("requires an operation id for caption apply", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.055013, coordinateSpace: "normalized", snapshot: preview, confirmApply: true,
@@ -755,7 +830,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("rejects a reused operation id with a different payload instead of replaying", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     const base = { ...target, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "dup-op" };
 
     await value.registry.dispatch("captionAnimation.apply", { ...base, yOffset: 0.05 });
@@ -766,7 +841,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("replays an identical retried operation without duplicating keys", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     const args = { ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "retry-op" };
 
     const first = await value.registry.dispatch("captionAnimation.apply", args);
@@ -778,7 +853,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("serializes concurrent applies on the same clip instead of racing them", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     const argsFor = (id: string) => ({
       ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: id,
     });
@@ -799,14 +874,14 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("does not call an extra key inside the range a completed pattern", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     await value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: preview, confirmApply: true, operationId: "pattern-op",
     });
     value.parameterState.keyframes.push(3602);
     value.parameterState.keyframeValues.push({ seconds: 3602, value: 50 });
 
-    const fresh = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const fresh = await previewCaption(value);
     await expect(value.registry.dispatch("captionAnimation.apply", {
       ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: fresh, confirmApply: true, operationId: "pattern-op-2",
     })).rejects.toMatchObject({ code: "UXP_KEYS_EXIST" });
@@ -815,7 +890,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("restores the time-varying flags it enabled when compensating", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value, 0.055013);
     value.positionParam.getValueAtTime.mockImplementation(async () => ({ x: 0, y: 0 }));
 
     await expect(value.registry.dispatch("captionAnimation.apply", {
@@ -827,7 +902,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("reports success by readback when the transaction throws after writing", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     value.project.lockedAccess.mockImplementationOnce((callback: () => void) => {
       callback();
       throw new Error("commit blew up after applying");
@@ -843,7 +918,7 @@ describe("advanced stable Premiere UXP workflows", () => {
   it("compensates when the transaction throws before writing anything", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
-    const preview = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    const preview = await previewCaption(value);
     value.project.lockedAccess.mockImplementationOnce(() => {
       throw new Error("host rejected the whole transaction");
     });
