@@ -324,7 +324,12 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         const common = compact({
           mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
         });
-        if (args.action === "preview") return invoke(bridge, "captionAnimation.preview", common);
+        if (args.action === "preview") {
+          return invoke(bridge, "captionAnimation.preview", {
+            ...common,
+            ...compact({ yOffset: args.y_offset, coordinateSpace: args.coordinate_space }),
+          });
+        }
         if (args.action === "apply") {
           return invoke(bridge, "captionAnimation.apply", {
             ...common,

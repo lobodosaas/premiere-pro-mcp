@@ -238,6 +238,7 @@ describe("advanced stable UXP workflow MCP catalog", () => {
 
     await tools.animate_caption_clip_uxp.handler({
       action: "preview", media_type: "video", track_index: 2, clip_index: 0,
+      y_offset: 0.055013, coordinate_space: "normalized",
     });
     await tools.animate_caption_clip_uxp.handler({
       action: "apply", media_type: "video", track_index: 2, clip_index: 0,
@@ -247,6 +248,7 @@ describe("advanced stable UXP workflow MCP catalog", () => {
 
     expect(request).toHaveBeenNthCalledWith(1, "captionAnimation.preview", {
       mediaType: "video", trackIndex: 2, clipIndex: 0,
+      yOffset: 0.055013, coordinateSpace: "normalized",
     });
     expect(request).toHaveBeenNthCalledWith(2, "captionAnimation.apply", {
       mediaType: "video", trackIndex: 2, clipIndex: 0,
