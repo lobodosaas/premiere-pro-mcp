@@ -881,12 +881,14 @@
       const verified = numbersClose(readback.opacityStart, 0) && numbersClose(readback.opacityMid, 100)
         && pointMatches(readback.positionStart, plan.position[0].value) && pointMatches(readback.positionMid, plan.position[1].value);
       if (!verified) {
-        const rollbackActions = [];
-        for (const key of plan.opacity) rollbackActions.push(opacity.createRemoveKeyframeAction(tick(key.timeSeconds), true));
-        for (const key of plan.position) rollbackActions.push(position.createRemoveKeyframeAction(tick(key.timeSeconds), true));
         let restored = null;
         try {
-          state.project.lockedAccess(() => commitActions(state.project, "Caption entrance rollback", rollbackActions));
+          state.project.lockedAccess(() => {
+            const rollbackActions = [];
+            for (const key of plan.opacity) rollbackActions.push(opacity.createRemoveKeyframeAction(tick(key.timeSeconds), true));
+            for (const key of plan.position) rollbackActions.push(position.createRemoveKeyframeAction(tick(key.timeSeconds), true));
+            commitActions(state.project, "Caption entrance rollback", rollbackActions);
+          });
           const opacityAfter = Array.from(opacity.getKeyframeListAsTickTimes() || []).map(tickSeconds);
           const positionAfter = Array.from(position.getKeyframeListAsTickTimes() || []).map(tickSeconds);
           const stillThere = opacityAfter.some((seconds) => numbersClose(seconds, plan.opacity[0].timeSeconds) || numbersClose(seconds, plan.opacity[1].timeSeconds))

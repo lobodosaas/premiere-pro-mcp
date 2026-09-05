@@ -11,8 +11,8 @@ descriptions, action enums, authority visibility, and counts stay aligned with t
 | Registered core actions | 321 | CEP/local server catalog; host and authority checks still apply |
 | Default-profile core actions | 319 | Advertised with `inspect,edit,export,filesystem` |
 | Restricted core actions | 2 | Require explicit `unsafe-script` authority |
-| Authenticated UXP additions | 54 | Advertised only while a compatible authenticated UXP panel is connected |
-| Default profile with UXP | 373 | 319 core plus 54 UXP tools |
+| Authenticated UXP additions | 55 | Advertised only while a compatible authenticated UXP panel is connected |
+| Default profile with UXP | 374 | 319 core plus 55 UXP tools |
 
 ## How to read support
 
@@ -37,7 +37,7 @@ operation” when the tool has no enum-based mode.
 | `add_adjustment_layer` | Default profile | Single operation | Add an adjustment layer to the active sequence via QE DOM. The layer is added at the playhead position on the specified track. |
 | `add_audio_keyframes` | Default profile | Single operation | Add audio level keyframes to create fades or level changes |
 | `add_custom_metadata_field` | Default profile | Single operation | Add a custom metadata field to the project's metadata schema. This creates a schema/column definition only; it does not set a per-item value. Use set_metadata with complete Project Metadata XML and readback to update a value. |
-| `add_keyframe` | Default profile | Single operation | Add and read back a keyframe on an effect property. This verifies stored parameter data only; render/playback verification remains host-dependent. |
+| `add_keyframe` | Default profile | Single operation | Add and read back a keyframe on an effect property. Accepts a scalar number (e.g. Opacity, Scale) or a two-element [x, y] array for 2D properties (e.g. Position). This verifies stored parameter data only; render/playback verification remains host-dependent. |
 | `add_marker` | Default profile | Single operation | Add a marker to the active sequence or a clip |
 | `add_marker_to_project_item` | Default profile | `type`: `Comment`, `Chapter`, `Segmentation`, `WebLink` | Add a marker to a project item (source clip marker). |
 | `add_text_overlay` | Default profile | `caption_format`: `608`, `708`, `subtitle`, `teletext` | Unavailable: Premiere does not expose a supported scripting API to create caption clips directly from raw text. Import an .srt/.vtt and use create_caption_track, or use a MOGRT/PNG overlay for title graphics. |
@@ -181,7 +181,7 @@ operation” when the tool has no enum-based mode.
 | `get_track_info` | Default profile | `track_type`: `video`, `audio` | Get detailed information about a specific track: name, clip count, muted, locked, targeted, and list of all clips. |
 | `get_unused_media` | Default profile | Single operation | Find all project items that are NOT used in any sequence. Useful for cleaning up projects. |
 | `get_used_media_report` | Default profile | Single operation | Get a report of all media files used in a sequence: which source files are used, how many times each appears, on which tracks, and whether any sources are offline. |
-| `get_value_at_time` | Default profile | Single operation | Get the interpolated value of an effect property at a specific time |
+| `get_value_at_time` | Default profile | `time_basis`: `property`, `clip_relative` | Get the interpolated value of an effect property at a specific time |
 | `get_version_info` | Default profile | Single operation | Get Premiere Pro version and build information. |
 | `get_work_area` | Default profile | Single operation | Get the current work area in and out points |
 | `get_workspaces` | Default profile | Single operation | List all available workspace layouts in Premiere Pro |
@@ -255,8 +255,8 @@ operation” when the tool has no enum-based mode.
 | `remove_effect` | Default profile | Single operation | Remove an effect from a clip by its index or name. Returns a capability error when the host cannot remove an individual component. |
 | `remove_effect_by_name` | Default profile | Single operation | Remove all instances of a specific effect from a clip by display name. Returns a capability error when the host cannot remove individual components. |
 | `remove_from_timeline` | Default profile | Single operation | Remove a clip from the timeline |
-| `remove_keyframe` | Default profile | Single operation | Remove a keyframe at a specific time from an effect property |
-| `remove_keyframe_range` | Default profile | Single operation | Remove all keyframes in a time range from an effect property |
+| `remove_keyframe` | Default profile | Single operation | Remove a keyframe at a specific time from an effect property. Time is relative to clip start; removal is verified by readback and never reported from the host call alone. |
+| `remove_keyframe_range` | Default profile | `time_basis`: `property`, `clip_relative` | Remove all keyframes in a time range from an effect property |
 | `remove_selected_clips` | Default profile | Single operation | Remove all currently selected clips from the timeline. |
 | `rename_bin` | Default profile | Single operation | Rename a bin (folder) in the project panel |
 | `rename_clip` | Default profile | Single operation | Rename a clip on the timeline. Uses QE DOM. |
@@ -302,7 +302,7 @@ operation” when the tool has no enum-based mode.
 | `set_frame_blend` | Default profile | Single operation | Enable or disable frame blending on a clip. Uses QE DOM. |
 | `set_graphics_white_luminance` | Default profile | Single operation | Set the graphics white luminance value (HDR setting) for the project |
 | `set_item_in_out` | Default profile | Single operation | Set in and/or out points on a project item in the project panel (marks source range for editing). |
-| `set_keyframe_interpolation` | Default profile | `interpolation`: `linear`, `hold`, `bezier` | Set the interpolation type of a keyframe (Linear, Hold, or Bezier) |
+| `set_keyframe_interpolation` | Default profile | `interpolation`: `linear`, `hold`, `bezier`; `time_basis`: `property`, `clip_relative` | Set the interpolation type of a keyframe (Linear, Hold, or Bezier) |
 | `set_metadata` | Default profile | Single operation | Replace project metadata XML on a project item and verify the exact readback. Partial field/value writes are intentionally rejected because Premiere requires a complete Project Metadata XML payload. |
 | `set_offline` | Default profile | Single operation | Set a project item offline, or ask Premiere to refresh it back online when offline is false. |
 | `set_override_frame_rate` | Default profile | Single operation | Override the frame rate of a project item (useful for image sequences or misinterpreted media) |
@@ -364,9 +364,10 @@ authenticated and the connected host advertises the required command capabilitie
 | MCP tool | Availability | Actions or modes | Description |
 | --- | --- | --- | --- |
 | `add_video_transition_uxp` | Connected UXP | `position`: `start`, `end` | Add an installed native video transition to one video clip through an undoable UXP transaction. List match names first; transaction acceptance is not a visual timeline readback. |
+| `animate_caption_clip_uxp` | Connected UXP | `preview`, `apply` | Preview or apply the saved caption entrance pattern (Opacity 0->100 plus a Motion Position rise, keys at visible start and mid-duration) on one caption graphic clip. Preview is read-only and returns a digest-bound snapshot; apply revalidates the target, refuses stale snapshots and conflicting keys, skips one-frame clips, writes the four keyframes in a single UXP transaction, and compensates its own keys if verification fails. yOffset is caller-supplied and interpreted in the declared coordinate_space; the space itself is never converted. |
 | `apply_editorial_organization_plan` | Connected UXP | Single operation | Apply selected organization recommendations through documented UXP bin transactions only. Requires the unchanged server-issued plan, its opaque preview confirmation token, and stable source/parent guards; individual host transactions may be partially committed and are never silently retried or rolled back. |
 | `audition_source_monitor_uxp` | Connected UXP | `state`, `open_project_item`, `open_file`, `set_position`, `play`, `close`, `close_all` | Open a selected project item or approved file, inspect/set position, play at bounded speed, or close Source Monitor media through documented UXP APIs. |
-| `automate_effect_parameters_uxp` | Connected UXP | `inspect`, `set_value`, `add_keyframe`, `remove_keyframe`, `remove_keyframe_range`, `set_interpolation` | Inspect or transactionally set scalar effect parameters and add, remove, range-remove, or interpolate keyframes through documented UXP actions. |
+| `automate_effect_parameters_uxp` | Connected UXP | `inspect`, `set_value`, `add_keyframe`, `remove_keyframe`, `remove_keyframe_range`, `set_interpolation` | Inspect or transactionally set scalar or 2D point ({x, y}) effect parameters and add, remove, range-remove, or interpolate keyframes through documented UXP actions; time_basis selects raw property time (default) or clip-relative resolution. |
 | `batch_selected_clips_uxp` | Connected UXP | `inspect`, `add_effect`, `remove_effect` | Inspect the current timeline selection or apply one native effect add/remove across up to 64 same-type selected clips as a single compound transaction. |
 | `configure_encoder_uxp` | Connected UXP | Single operation | Launch or configure Adobe Media Encoder and optionally start its queued batch using Premiere 26.3+. |
 | `create_sequence_with_preset_uxp` | Connected UXP | Single operation | Create and verify a sequence from a preset path using the documented Premiere 26.3+ UXP API. |

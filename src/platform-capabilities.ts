@@ -370,6 +370,8 @@ export function buildPlatformCapabilityReport(
           "parameters.keyframeRemove",
           "parameters.keyframeRemoveRange",
           "parameters.keyframeInterpolation",
+          "captionAnimation.preview",
+          "captionAnimation.apply",
           "trackItem.inspect",
           "trackItem.update",
           "timeline.insert",

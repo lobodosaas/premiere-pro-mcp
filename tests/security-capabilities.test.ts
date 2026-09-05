@@ -113,6 +113,7 @@ describe("capability profiles", () => {
     ["transform_track_item_uxp", "inspect"],
     ["manage_sequences_uxp", "inspect"],
     ["encode_media_uxp", "preflight"],
+    ["animate_caption_clip_uxp", "preview"],
   ])("keeps %s:%s available to inspect-only profiles", (toolName, action) => {
     expect(capabilitiesForToolInvocation(toolName, { action })).toEqual(["inspect"]);
     expect(isToolPermitted(toolName, resolveCapabilities("inspect"))).toBe(true);
@@ -134,8 +135,16 @@ describe("capability profiles", () => {
     ["transform_track_item_uxp", "update", ["edit"]],
     ["manage_sequences_uxp", "delete", ["edit"]],
     ["encode_media_uxp", "sequence", ["export", "filesystem"]],
+    ["animate_caption_clip_uxp", "apply", ["edit"]],
   ] as const)("requires exact mutation authority for %s:%s", (toolName, action, required) => {
     expect(capabilitiesForToolInvocation(toolName, { action })).toEqual(required);
+  });
+
+  it("falls back to the classifier for unknown actions, unknown tools, and malformed args", () => {
+    expect(capabilitiesForToolInvocation("manage_markers_uxp", { action: "unknown_action" })).toEqual(["edit"]);
+    expect(capabilitiesForToolInvocation("totally_unknown_tool", { action: "anything" })).toEqual(["edit"]);
+    expect(capabilitiesForToolInvocation("manage_markers_uxp", "not-an-object" as never)).toEqual(["edit"]);
+    expect(capabilitiesForToolInvocation("manage_markers_uxp", null)).toEqual(["edit"]);
   });
 
   it("requires filesystem authority only for preset-based encoder preflight", async () => {

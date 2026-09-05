@@ -254,4 +254,17 @@ describe("advanced stable UXP workflow MCP catalog", () => {
       snapshot, confirmApply: true, operationId: "caption-op",
     });
   });
+
+  it("rejects unknown animate_caption_clip_uxp actions before bridge access", async () => {
+    const request = vi.fn();
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+
+    const result = await tools.animate_caption_clip_uxp.handler({
+      action: "destroy_everything", media_type: "video", track_index: 0, clip_index: 0,
+    });
+
+    expect(result).toEqual({ success: false, error: "Unsupported workflow action: destroy_everything" });
+    expect(request).not.toHaveBeenCalled();
+  });
 });

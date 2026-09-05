@@ -42,6 +42,10 @@ describe("readServerBuildInfo", () => {
     expect(readServerBuildInfo(directory).found).toBe(false);
     await writeFile(path.join(directory, "build-info.json"), JSON.stringify({ commit: 42 }));
     expect(readServerBuildInfo(directory).found).toBe(false);
+    await writeFile(path.join(directory, "build-info.json"), JSON.stringify([1, 2]));
+    expect(readServerBuildInfo(directory).found).toBe(false);
+    await writeFile(path.join(directory, "build-info.json"), JSON.stringify({ commit: "a", packageVersion: "b" }));
+    expect(readServerBuildInfo(directory).found).toBe(false);
   });
 
   it("parses a valid build-info.json", async () => {
@@ -101,7 +105,63 @@ describe("get_capabilities runtime identity", () => {
     const entries = new Map(result.data.tools.tools.map((tool: { name: string }) => [tool.name, tool]));
     expect(entries.get("ping")).toMatchObject({ registered: true });
     expect(entries.get("add_keyframe")).toMatchObject({ registered: false });
-    expect(result.data.runtime.uxp).toMatchObject({ connected: false });
+    expect(result.data.runtime.uxp).toMatchObject({ connected: false, status: "no_bridge" });
+  });
+
+  it("summarizes a connected UXP panel without leaking tokens or command payloads", async () => {
+    const fakeBridge = {
+      getState: () => ({
+        status: "connected",
+        connected: true,
+        protocolVersion: 2,
+        connectedAt: "2026-01-01T00:00:00.000Z",
+        capabilities: {
+          hostVersion: "26.3.2",
+          commands: {
+            "parameters.set": { supported: true },
+            "captions.create": { supported: false },
+          },
+        },
+      }),
+    };
+    const tools = getHealthTools(
+      { tempDir: await tempDir() },
+      { capabilities: new Set(["inspect"]), source: "explicit" },
+      () => ({}),
+      { uxpBridge: fakeBridge as never },
+    );
+    const result = await tools.get_capabilities.handler({});
+    expect(result.data.runtime.uxp).toMatchObject({
+      connected: true,
+      protocolVersion: 2,
+      hostVersion: "26.3.2",
+      supportedCommandCount: 1,
+      connectedAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("degrades UXP panel diagnostics when state reading fails", async () => {
+    const throwing = { getState: () => { throw new Error("boom"); } };
+    const tools = getHealthTools(
+      { tempDir: await tempDir() },
+      undefined,
+      () => ({}),
+      { uxpBridge: throwing as never },
+    );
+    const result = await tools.get_capabilities.handler({});
+    expect(result.data.runtime.uxp).toMatchObject({ connected: false, status: "unknown" });
+  });
+
+  it("treats a listening-only bridge as disconnected", async () => {
+    const listening = { getState: () => ({ status: "listening", connected: false }) };
+    const tools = getHealthTools(
+      { tempDir: await tempDir() },
+      undefined,
+      () => ({}),
+      { uxpBridge: listening as never },
+    );
+    const result = await tools.get_capabilities.handler({});
+    expect(result.data.runtime.uxp).toMatchObject({ connected: false, status: "listening" });
   });
 });
 
@@ -125,5 +185,21 @@ describe("broker build capture", () => {
     expect(broker.buildInfo).toMatchObject({ found: true, commit: "deadbee" });
     expect(typeof broker.buildInfo.capturedAt).toBe("string");
     expect(broker.state().build).toMatchObject({ commit: "deadbee" });
+  });
+
+  it("falls back to reading build info from the running module directory when nothing is injected", async () => {
+    const broker = await startLocalBroker({
+      bridgeOptions: { tempDir: await tempDir() },
+      uxpToken: TOKEN,
+      uxpPort: 0,
+      ipcEndpoint: getLocalBrokerEndpoint({ username: `build-fallback-${randomUUID()}` }),
+    });
+    brokers.push(broker);
+    // Under vitest the module runs from src/ (no build-info.json sibling), so
+    // the graceful-missing path is exercised; a broker launched from dist/
+    // reports found:true with the build commit instead.
+    expect(broker.buildInfo.found).toBe(false);
+    expect(typeof broker.buildInfo.capturedAt).toBe("string");
+    expect(broker.state().build).toMatchObject({ found: false });
   });
 });

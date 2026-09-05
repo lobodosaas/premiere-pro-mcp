@@ -919,6 +919,19 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
     expect(script).not.toContain("var timeBasis = \"clip_relative\"");
   });
 
+  it("accepts an explicit property basis identical to the legacy default", async () => {
+    const script = await scriptFor(keyframes.get_value_at_time, {
+      node_id: "caption-graphic-1",
+      effect_name: "Opacidade",
+      property_name: "Opacidade",
+      time_seconds: 0.15,
+      time_basis: "property",
+    });
+
+    expect(script).toContain("var timeBasis = \"property\"");
+    expect(script).not.toContain("var timeBasis = \"clip_relative\"");
+  });
+
   it.each([
     ["bogus"],
     ["relative"],
@@ -931,6 +944,45 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
       time_basis: basis as never,
     });
 
+    expect(result.success).toBe(false);
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
+  it("accepts clip_relative basis on remove_keyframe_range and set_keyframe_interpolation", async () => {
+    const rangeScript = await scriptFor(keyframes.remove_keyframe_range, {
+      node_id: "caption-graphic-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      start_seconds: 0,
+      end_seconds: 0.15,
+      time_basis: "clip_relative",
+    });
+    expect(rangeScript).toContain("clipInPointSeconds + (0)");
+    expect(rangeScript).toContain("clipInPointSeconds + (0.15)");
+    expect(rangeScript).toContain("resolvedStartPropertyTimeSeconds: resolvedStartSeconds");
+
+    const interpScript = await scriptFor(keyframes.set_keyframe_interpolation, {
+      node_id: "caption-graphic-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      time_seconds: 0.15,
+      interpolation: "linear",
+      time_basis: "clip_relative",
+    });
+    expect(interpScript).toContain("clipInPointSeconds + relativeSeconds");
+    expect(interpScript).toContain("timeBasis: timeBasis");
+  });
+
+  it.each([
+    ["remove_keyframe_range", { start_seconds: 0, end_seconds: 0.15, time_basis: "bogus" }],
+    ["set_keyframe_interpolation", { time_seconds: 0.15, interpolation: "linear", time_basis: "bogus" }],
+  ] as const)("rejects unknown basis on %s before bridge access", async (tool, extra) => {
+    const result = await (keyframes[tool] as never as { handler: (args: Record<string, unknown>) => Promise<{ success: boolean }> }).handler({
+      node_id: "caption-graphic-1",
+      effect_name: "Movimento",
+      property_name: "Posição",
+      ...extra,
+    });
     expect(result.success).toBe(false);
     expect(mockedSendCommand).not.toHaveBeenCalled();
   });
