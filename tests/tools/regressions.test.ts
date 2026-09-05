@@ -761,6 +761,8 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
     ["three elements", [0.5, 0.5, 0.5]],
     ["non-finite entry", [0.5, Number.NaN]],
     ["non-numeric entry", [0.5, "0.5"]],
+    ["unparsable string", "not-json{{{"],
+    ["parsed non-array", '{"a":1}'],
   ])("rejects invalid array value (%s) before bridge access", async (_label, value) => {
     const result = await keyframes.add_keyframe.handler({
       node_id: "caption-graphic-1",
