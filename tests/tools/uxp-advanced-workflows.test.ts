@@ -206,4 +206,23 @@ describe("advanced stable UXP workflow MCP catalog", () => {
     })));
     expect(request).not.toHaveBeenCalled();
   });
+
+  it("forwards point values and clip_relative time basis on parameter automation", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+
+    await tools.automate_effect_parameters_uxp.handler({
+      action: "add_keyframe", media_type: "video", track_index: 2, clip_index: 0,
+      component_index: 1, param_index: 0, time_seconds: 0.15,
+      time_basis: "clip_relative", value: { x: 0.5, y: 0.555013 },
+      operation_id: "caption-key",
+    });
+
+    expect(request).toHaveBeenCalledWith("parameters.keyframeAdd", {
+      mediaType: "video", trackIndex: 2, clipIndex: 0, componentIndex: 1, paramIndex: 0,
+      timeSeconds: 0.15, timeBasis: "clip_relative",
+      value: { x: 0.5, y: 0.555013 }, operationId: "caption-key",
+    });
+  });
 });

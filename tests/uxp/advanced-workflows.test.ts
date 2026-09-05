@@ -101,20 +101,32 @@ function advancedHost() {
     createRemoveMarkerAction: vi.fn((marker: ReturnType<typeof makeMarker>) => ({ apply: () => markerValues.splice(markerValues.indexOf(marker), 1) })),
   };
 
-  const parameterState = { value: 50, varying: false, keyframes: [] as number[] };
+  const parameterState = { value: 50, varying: false, keyframes: [] as number[], keyframeValues: [] as Array<{ seconds: number; value: unknown }> };
   const parameter = {
     displayName: "Opacity",
     areKeyframesSupported: vi.fn(async () => true),
     isTimeVarying: vi.fn(() => parameterState.varying),
     getKeyframeListAsTickTimes: vi.fn(() => parameterState.keyframes.map((seconds) => ({ seconds }))),
     getStartValue: vi.fn(async () => ({ value: parameterState.value })),
-    getValueAtTime: vi.fn(async () => parameterState.value),
+    getValueAtTime: vi.fn(async (time: { seconds: number }) => {
+      const match = parameterState.keyframeValues.find((entry) => Math.abs(entry.seconds - time.seconds) < 1e-6);
+      return match ? match.value : parameterState.value;
+    }),
     createKeyframe: vi.fn((value: number) => ({ value, position: null as { seconds: number } | null })),
     createSetValueAction: vi.fn((keyframe: { value: number }) => ({ apply: () => { parameterState.value = keyframe.value; } })),
     createSetTimeVaryingAction: vi.fn((value: boolean) => ({ apply: () => { parameterState.varying = value; } })),
-    createAddKeyframeAction: vi.fn((keyframe: { position: { seconds: number } }) => ({ apply: () => parameterState.keyframes.push(keyframe.position.seconds) })),
-    createRemoveKeyframeAction: vi.fn((time: { seconds: number }) => ({ apply: () => { parameterState.keyframes = parameterState.keyframes.filter((value) => value !== time.seconds); } })),
-    createRemoveKeyframeRangeAction: vi.fn((start: { seconds: number }, end: { seconds: number }) => ({ apply: () => { parameterState.keyframes = parameterState.keyframes.filter((value) => value < start.seconds || value > end.seconds); } })),
+    createAddKeyframeAction: vi.fn((keyframe: { value: unknown; position: { seconds: number } }) => ({ apply: () => {
+      parameterState.keyframes.push(keyframe.position.seconds);
+      parameterState.keyframeValues.push({ seconds: keyframe.position.seconds, value: keyframe.value });
+    } })),
+    createRemoveKeyframeAction: vi.fn((time: { seconds: number }) => ({ apply: () => {
+      parameterState.keyframes = parameterState.keyframes.filter((value) => value !== time.seconds);
+      parameterState.keyframeValues = parameterState.keyframeValues.filter((entry) => entry.seconds !== time.seconds);
+    } })),
+    createRemoveKeyframeRangeAction: vi.fn((start: { seconds: number }, end: { seconds: number }) => ({ apply: () => {
+      parameterState.keyframes = parameterState.keyframes.filter((value) => value < start.seconds || value > end.seconds);
+      parameterState.keyframeValues = parameterState.keyframeValues.filter((entry) => entry.seconds < start.seconds || entry.seconds > end.seconds);
+    } })),
     createSetInterpolationAtKeyframeAction: vi.fn(() => ({ apply: () => undefined })),
   };
   const component = {
@@ -246,6 +258,7 @@ function advancedHost() {
     FolderItem: { cast: vi.fn((item: MutableItem) => { if (!item.isFolder) throw new Error("not folder"); return item; }) },
     ClipProjectItem: { cast: vi.fn((item: MutableItem) => { if (!item.isClip) throw new Error("not clip"); return item; }) },
     TickTime: { createWithSeconds: vi.fn((seconds: number) => ({ seconds })) },
+    PointF: class PointF { x: number; y: number; constructor(x: number, y: number) { this.x = x; this.y = y; } },
     FrameRate: { createWithValue: vi.fn((value: number) => ({ value })) },
     RectF: class RectF { width = 0; height = 0; },
     Guid: { fromString: vi.fn((value: string) => value) },
@@ -269,7 +282,7 @@ function advancedHost() {
   const events = Events.createEventJournal({ capacity: 16 });
   return {
     registry: Commands.createCommandRegistry({ ppro, Protocol, workspace, events }),
-    project, ppro, workspace, markers, markerValues, root, bin, clip,
+    project, ppro, workspace, markers, markerValues, root, bin, clip, parameter,
     sequence, sequences, settingsState, parameterState, trackState, editor, manager, events,
   };
 }
@@ -390,6 +403,66 @@ describe("advanced stable Premiere UXP workflows", () => {
     value.parameterState.keyframes = Array.from({ length: 257 }, (_, index) => index);
     await expect(value.registry.dispatch("parameters.keyframeRemove", { ...target, timeSeconds: 1 }))
       .rejects.toMatchObject({ code: "UXP_PROJECT_TOO_LARGE" });
+  });
+
+  it("adds a PointF keyframe from an {x, y} value and verifies the point readback numerically", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+
+    const result = await value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 0.15, value: { x: 0.5, y: 0.555013 }, operationId: "point-key",
+    });
+
+    expect(result).toMatchObject({
+      added: true, outcome: "verified",
+      value: { x: 0.5, y: 0.555013 },
+      after: { value: { x: 0.5, y: 0.555013 } },
+    });
+    const created = value.parameter.createKeyframe.mock.calls[0][0];
+    expect(created).toBeInstanceOf(value.ppro.PointF);
+    expect(created.x).toBeCloseTo(0.5);
+    expect(created.y).toBeCloseTo(0.555013);
+  });
+
+  it("rejects malformed point values before any host mutation", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+
+    await expect(value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 0.15, value: { x: 0.5 },
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 0.15, value: { x: Number.NaN, y: 1 },
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("parameters.set", {
+      ...target, value: [0.5, 0.5],
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(value.parameter.createKeyframe).not.toHaveBeenCalled();
+  });
+
+  it("reports UXP_COMMAND_UNAVAILABLE when the host lacks a PointF factory", async () => {
+    const value = advancedHost();
+    delete (value.ppro as Record<string, unknown>).PointF;
+    await expect(value.registry.dispatch("parameters.keyframeAdd", {
+      mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0,
+      timeSeconds: 0.15, value: { x: 1, y: 2 },
+    })).rejects.toMatchObject({ code: "UXP_COMMAND_UNAVAILABLE" });
+  });
+
+  it("resolves clip_relative keyframe time against the clip start and validates duration", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+
+    const result = await value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 0.15, timeBasis: "clip_relative", value: 100, operationId: "rel-key",
+    });
+
+    expect(result).toMatchObject({ added: true, outcome: "verified", timeBasis: "clip_relative", timeSeconds: 10.15 });
+    expect(value.parameterState.keyframes).toContain(10.15);
+
+    await expect(value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 11, timeBasis: "clip_relative", value: 100,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
   });
 
   it("keeps direct sequence actions unverified with stable result keys and probes host methods", async () => {

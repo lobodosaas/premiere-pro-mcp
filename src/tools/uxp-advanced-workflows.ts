@@ -265,7 +265,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     automate_effect_parameters_uxp: {
-      description: "Inspect or transactionally set scalar effect parameters and add, remove, range-remove, or interpolate keyframes through documented UXP actions.",
+      description: "Inspect or transactionally set scalar or 2D point ({x, y}) effect parameters and add, remove, range-remove, or interpolate keyframes through documented UXP actions; time_basis selects raw property time (default) or clip-relative resolution.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -276,9 +276,10 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           param_index: { type: "integer", minimum: 0 },
           expected_component_id: { type: "string", minLength: 1, maxLength: 256 },
           expected_param_name: { type: "string", maxLength: 255 },
-          value: { type: ["number", "string", "boolean"] },
+          value: { type: ["number", "string", "boolean", "object"] },
           time_seconds: { type: "number", minimum: 0, maximum: 86400 },
           end_seconds: { type: "number", minimum: 0, maximum: 86400 },
+          time_basis: { type: "string", enum: ["timeline_seconds", "clip_relative"] },
           interpolation: { type: "string", enum: ["linear", "hold", "bezier", "time"] },
           operation_id: operationId,
         },
@@ -297,7 +298,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           set_interpolation: "parameters.keyframeInterpolation",
         };
         if (!args.action || !commands[args.action]) return invalidAction(args.action);
-        return invoke(bridge, commands[args.action], { ...common, ...compact({ value: args.value, endSeconds: args.end_seconds, interpolation: args.interpolation }), ...operation(args) });
+        return invoke(bridge, commands[args.action], { ...common, ...compact({ value: args.value, endSeconds: args.end_seconds, timeBasis: args.time_basis, interpolation: args.interpolation }), ...operation(args) });
       },
     },
 

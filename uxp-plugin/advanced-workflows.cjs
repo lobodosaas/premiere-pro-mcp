@@ -540,7 +540,7 @@
 
     async function parameterContext(args, mutation) {
       const allowed = ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName", "timeSeconds"];
-      if (mutation) allowed.push("value", "endSeconds", "interpolation", "operationId");
+      if (mutation) allowed.push("value", "endSeconds", "interpolation", "operationId", "timeBasis");
       assertObject(args); assertOnlyKeys(args, allowed);
       const mediaType = enumValue(args.mediaType, "mediaType", ["video", "audio"]), trackIndex = nonNegativeInt(args.trackIndex, "trackIndex"), clipIndex = nonNegativeInt(args.clipIndex, "clipIndex"), componentIndex = nonNegativeInt(args.componentIndex, "componentIndex"), paramIndex = nonNegativeInt(args.paramIndex, "paramIndex");
       const context = await activeContext(mutation), item = await trackItemAt(context.sequence, mediaType, trackIndex, clipIndex), chain = await item.getComponentChain();
@@ -569,6 +569,7 @@
       let value = null;
       if (timeSeconds != null && typeof context.param.getValueAtTime === "function") value = await context.param.getValueAtTime(tick(finiteNumber(timeSeconds, "timeSeconds", 0, 86400), "timeSeconds"));
       else if (typeof context.param.getStartValue === "function") value = keyframeValue(await context.param.getStartValue());
+      value = pointReadback(value);
       return {
         mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex,
         componentIndex: context.componentIndex, componentId: context.componentId, paramIndex: context.paramIndex,
@@ -594,7 +595,7 @@
     }
 
     async function setParameterValue(args) {
-      const context = await parameterContext(args, true), value = scalarValue(args.value), before = await parameterSnapshot(context, args.timeSeconds);
+      const context = await parameterContext(args, true), value = effectValue(args.value), before = await parameterSnapshot(context, args.timeSeconds);
       if (before.timeVarying) throw commandError("UXP_TARGET_UNSUPPORTED", "Use add_keyframe to change a time-varying parameter");
       context.project.lockedAccess(() => {
         const keyframe = context.param.createKeyframe(value);
@@ -605,7 +606,18 @@
     }
 
     async function addParameterKeyframe(args) {
-      const context = await parameterContext(args, true), value = scalarValue(args.value), timeSeconds = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), time = tick(timeSeconds, "timeSeconds"), before = await parameterSnapshot(context);
+      const context = await parameterContext(args, true), value = effectValue(args.value);
+      const timeBasis = args.timeBasis === "clip_relative" ? "clip_relative" : "timeline_seconds";
+      let timeSeconds = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400);
+      if (timeBasis === "clip_relative") {
+        const startSeconds = tickSeconds(await context.item.getStartTime());
+        const endSeconds = tickSeconds(await context.item.getEndTime());
+        const durationSeconds = endSeconds - startSeconds;
+        if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw commandError("UXP_TARGET_UNSUPPORTED", "Premiere did not provide a readable clip duration");
+        if (timeSeconds < 0 || timeSeconds > durationSeconds) throw commandError("UXP_INVALID_ARGUMENT", "timeSeconds is outside the visible clip duration");
+        timeSeconds = startSeconds + timeSeconds;
+      }
+      const time = tick(timeSeconds, "timeSeconds"), before = await parameterSnapshot(context);
       if (!before.keyframesSupported) throw commandError("UXP_TARGET_UNSUPPORTED", "This parameter does not support keyframes");
       context.project.lockedAccess(() => {
         const actions = [], keyframe = context.param.createKeyframe(value);
@@ -615,7 +627,7 @@
         commitActions(context.project, "Add effect keyframe", actions);
       });
       const after = await parameterSnapshot(context, timeSeconds), verified = after.keyframeTimesSeconds.some((seconds) => numbersEqual(seconds, timeSeconds)) && valuesEqual(after.value, value);
-      return mutationResult(verified, { added: true, before, after }, "parameter_keyframe_readback", "Add effect keyframe");
+      return mutationResult(verified, { added: true, timeBasis: timeBasis, requestedTimeSeconds: finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400), timeSeconds: timeSeconds, value: pointReadback(value), before, after }, "parameter_keyframe_readback", "Add effect keyframe");
     }
 
     async function removeParameterKeyframe(args) {
@@ -1008,6 +1020,30 @@
     function keyframeValue(value) { return value && value.value && Object.prototype.hasOwnProperty.call(value.value, "value") ? value.value.value : value && value.value !== undefined ? value.value : null; }
     function scalarValue(value) { if (typeof value !== "number" && typeof value !== "string" && typeof value !== "boolean") throw commandError("UXP_INVALID_ARGUMENT", "value must be a number, string, or boolean"); if (typeof value === "number" && !Number.isFinite(value)) throw commandError("UXP_INVALID_ARGUMENT", "value must be finite"); if (typeof value === "string" && value.length > 4000) throw commandError("UXP_INVALID_ARGUMENT", "value string exceeds 4000 characters"); return value; }
 
+    // 2D properties such as Motion > Position require Adobe's native PointF
+    // (ComponentParam.createKeyframe accepts number | string | boolean |
+    // PointF | Color). A plain JSON object must be converted before it
+    // reaches the host, otherwise the host rejects the value type.
+    function pointValue(value) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw commandError("UXP_INVALID_ARGUMENT", "point value must be an object with finite x and y numbers");
+      const x = Number(value.x), y = Number(value.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) throw commandError("UXP_INVALID_ARGUMENT", "point value x and y must be finite numbers");
+      if (typeof ppro.PointF !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere PointF factory is unavailable on this host");
+      return new ppro.PointF(x, y);
+    }
+
+    function effectValue(value) {
+      if (value && typeof value === "object" && !Array.isArray(value)) return pointValue(value);
+      return scalarValue(value);
+    }
+
+    function pointReadback(value) {
+      if (value && typeof value === "object" && !Array.isArray(value) && Number.isFinite(Number(value.x)) && Number.isFinite(Number(value.y))) {
+        return { x: Number(value.x), y: Number(value.y) };
+      }
+      return value;
+    }
+
     function trackItemUpdateMatches(before, after, args) {
       if (args.startSeconds != null && !numbersEqual(after.startSeconds, args.startSeconds)) return false;
       if (args.endSeconds != null && !numbersEqual(after.endSeconds, args.endSeconds)) return false;
@@ -1062,7 +1098,16 @@
   function assertExpectedNumber(actual, expected, code, label) { if (expected != null && !numbersEqual(actual, expected)) throw commandError(code, label + " no longer matches the expected value"); }
   function requireExternalWrite(value) { if (value !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", "Encoding writes external files and may overwrite an existing output; pass confirmExternalWrite=true after review"); }
   function numbersEqual(left, right) { return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) < 0.000001; }
-  function valuesEqual(left, right) { return typeof right === "number" ? numbersEqual(left, right) : left === right; }
+  function valuesEqual(left, right) {
+    // PointF-aware: readbacks arrive as {x, y}; compare coordinates numerically.
+    if (left && right && typeof left === "object" && typeof right === "object"
+      && !Array.isArray(left) && !Array.isArray(right)
+      && Number.isFinite(Number(left.x)) && Number.isFinite(Number(left.y))
+      && Number.isFinite(Number(right.x)) && Number.isFinite(Number(right.y))) {
+      return numbersEqual(left.x, right.x) && numbersEqual(left.y, right.y);
+    }
+    return typeof right === "number" ? numbersEqual(left, right) : left === right;
+  }
   function commandError(code, message) { const error = new Error(message); error.code = code; return error; }
 
   return { createAdvancedWorkflowDefinitions };
