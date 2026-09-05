@@ -609,7 +609,9 @@
 
     async function addParameterKeyframe(args) {
       const context = await parameterContext(args, true), value = effectValue(args.value);
-      const timeBasis = args.timeBasis === "clip_relative" ? "clip_relative" : "timeline_seconds";
+      const timeBasis = args.timeBasis === undefined || args.timeBasis === "timeline_seconds" ? "timeline_seconds"
+        : args.timeBasis === "clip_relative" ? "clip_relative" : null;
+      if (timeBasis === null) throw commandError("UXP_INVALID_ARGUMENT", "timeBasis must be timeline_seconds or clip_relative");
       let timeSeconds = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400);
       if (timeBasis === "clip_relative") {
         const startSeconds = tickSeconds(await context.item.getStartTime());
@@ -673,7 +675,16 @@
     // Preview is read-only and returns a digest-bound snapshot; apply re-reads
     // the live state, refuses drift, writes four keyframes in ONE documented
     // transaction, and compensates only its own keys on a partial failure.
-    const CAPTION_ONE_FRAME_MAX_SECONDS = 0.05;
+
+    async function captionFrameSeconds(sequence) {
+      try {
+        const settings = sequence && typeof sequence.getSettings === "function" ? await sequence.getSettings() : null;
+        const rate = settings && typeof settings.getVideoFrameRate === "function" ? await settings.getVideoFrameRate() : null;
+        const fps = Number(rate && rate.value !== undefined ? rate.value : rate);
+        if (Number.isFinite(fps) && fps > 0) return 1 / fps;
+      } catch (_) {}
+      return 1 / 60;
+    }
 
     function planDigest(value) {
       const text = JSON.stringify(value);
@@ -740,11 +751,15 @@
       const target = await captionTarget(parent, context);
       const opacitySnapshot = await captionParameterSnapshot({ param: target.opacity.param, componentIndex: target.opacityComponent.index, componentId: target.opacityComponent.id, paramIndex: target.opacity.index, name: target.opacity.name });
       const positionSnapshot = await captionParameterSnapshot({ param: target.position.param, componentIndex: target.motionComponent.index, componentId: target.motionComponent.id, paramIndex: target.position.index, name: target.position.name });
-      return { ...target, opacitySnapshot, positionSnapshot };
+      const frameSeconds = await captionFrameSeconds(parent.sequence);
+      const oneFrame = target.durationSeconds <= frameSeconds * 1.5;
+      return { ...target, opacitySnapshot, positionSnapshot, frameSeconds, oneFrame };
     }
 
     function captionPlan(state, yOffset, coordinateSpace) {
-      const midSeconds = state.durationSeconds * 0.5;
+      // Rounded to whole microseconds (frame-accurate at any real frame
+      // rate) so binary floating-point noise never leaks into comparisons.
+      const midSeconds = Math.round(state.durationSeconds * 0.5 * 1000000) / 1000000;
       const base = state.positionSnapshot.baseValue && typeof state.positionSnapshot.baseValue === "object" ? state.positionSnapshot.baseValue : { x: 0.5, y: 0.5 };
       return {
         timeBasis: "clip_relative",
@@ -806,12 +821,12 @@
       const context = captionContext(args, false);
       const state = await captionState(context, false);
       const enriched = { ...state, contextMediaType: context.mediaType, contextTrackIndex: context.trackIndex, contextClipIndex: context.clipIndex };
-      const oneFrame = state.durationSeconds <= CAPTION_ONE_FRAME_MAX_SECONDS;
+      const oneFrame = state.oneFrame;
       const plan = captionPlan(enriched, null, null);
       const digest = planDigest(captionDigestInput(enriched));
       return {
         preview: true,
-        clip: { mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, oneFrame },
+        clip: { mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, frameSeconds: state.frameSeconds, oneFrame },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
         plan: {
           timeBasis: plan.timeBasis,
@@ -834,7 +849,12 @@
 
       const state = await captionState(context, true);
       const enriched = { ...state, contextMediaType: context.mediaType, contextTrackIndex: context.trackIndex, contextClipIndex: context.clipIndex };
-      if (state.durationSeconds <= CAPTION_ONE_FRAME_MAX_SECONDS) {
+      const speed = typeof state.item.getSpeed === "function" ? await state.item.getSpeed() : 1;
+      const reversed = typeof state.item.isSpeedReversed === "function" ? await state.item.isSpeedReversed() : false;
+      if ((typeof speed === "number" && Number.isFinite(speed) && Math.abs(speed - 1) > 0.000001) || reversed === true) {
+        throw commandError("UXP_TARGET_UNSUPPORTED", "retimed or reversed clips are not supported by the caption entrance animation yet");
+      }
+      if (state.oneFrame) {
         return { applied: false, skipped: true, reason: "clip is at most one frame; the entrance animation was skipped and the current appearance preserved", outcome: "verified", operation: { mutatesProject: false } };
       }
 
@@ -1264,12 +1284,20 @@
 
     // 2D properties such as Motion > Position require Adobe's native PointF
     // (ComponentParam.createKeyframe accepts number | string | boolean |
-    // PointF | Color). A plain JSON object must be converted before it
-    // reaches the host, otherwise the host rejects the value type.
+    // PointF | Color). The point must arrive as a strict {x, y} of finite
+    // numbers: null, booleans, numeric strings, arrays, and extra keys are
+    // rejected instead of coerced, so a malformed value can never silently
+    // become a valid-looking coordinate.
     function pointValue(value) {
       if (!value || typeof value !== "object" || Array.isArray(value)) throw commandError("UXP_INVALID_ARGUMENT", "point value must be an object with finite x and y numbers");
-      const x = Number(value.x), y = Number(value.y);
-      if (!Number.isFinite(x) || !Number.isFinite(y)) throw commandError("UXP_INVALID_ARGUMENT", "point value x and y must be finite numbers");
+      const keys = Object.keys(value);
+      if (keys.length !== 2 || !Object.prototype.hasOwnProperty.call(value, "x") || !Object.prototype.hasOwnProperty.call(value, "y")) {
+        throw commandError("UXP_INVALID_ARGUMENT", "point value must have exactly the keys x and y");
+      }
+      const x = value.x, y = value.y;
+      if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) {
+        throw commandError("UXP_INVALID_ARGUMENT", "point value x and y must be finite numbers");
+      }
       if (typeof ppro.PointF !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere PointF factory is unavailable on this host");
       return new ppro.PointF(x, y);
     }

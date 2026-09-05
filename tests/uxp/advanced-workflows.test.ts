@@ -317,7 +317,7 @@ function advancedHost() {
   const events = Events.createEventJournal({ capacity: 16 });
   return {
     registry: Commands.createCommandRegistry({ ppro, Protocol, workspace, events }),
-    project, ppro, workspace, markers, markerValues, root, bin, clip, parameter, positionParam, positionState,
+    project, ppro, workspace, markers, markerValues, root, bin, clip, parameter, positionParam, positionState, trackItem,
     sequence, sequences, settingsState, parameterState, trackState, editor, manager, events,
   };
 }
@@ -459,20 +459,61 @@ describe("advanced stable Premiere UXP workflows", () => {
     expect(created.y).toBeCloseTo(0.555013);
   });
 
-  it("rejects malformed point values before any host mutation", async () => {
+  it("rejects non-numeric point coordinates without coercion", async () => {
     const value = advancedHost();
     const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
 
-    await expect(value.registry.dispatch("parameters.keyframeAdd", {
-      ...target, timeSeconds: 0.15, value: { x: 0.5 },
-    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
-    await expect(value.registry.dispatch("parameters.keyframeAdd", {
-      ...target, timeSeconds: 0.15, value: { x: Number.NaN, y: 1 },
-    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    for (const bad of [{ x: null, y: 0.5 }, { x: true, y: 0 }, { x: "0.5", y: 0.5 }, { x: 0.5, y: 0.5, z: 1 }, { x: [0.5], y: 0.5 }, { x: 0.5 }, { x: Number.NaN, y: 1 }]) {
+      await expect(value.registry.dispatch("parameters.keyframeAdd", {
+        ...target, timeSeconds: 0.15, value: bad,
+      })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    }
     await expect(value.registry.dispatch("parameters.set", {
       ...target, value: [0.5, 0.5],
     })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
     expect(value.parameter.createKeyframe).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown time_basis instead of silently defaulting", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0, componentIndex: 0, paramIndex: 0 };
+
+    await expect(value.registry.dispatch("parameters.keyframeAdd", {
+      ...target, timeSeconds: 0.15, timeBasis: "source", value: 100,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(value.parameter.createKeyframe).not.toHaveBeenCalled();
+  });
+
+  it("rejects retimed or reversed caption clips until supported", async () => {
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+
+    const fast = advancedHost();
+    const fastPreview = await fast.registry.dispatch("captionAnimation.preview", { ...target });
+    fast.trackItem.getSpeed.mockResolvedValue(2);
+    await expect(fast.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: fastPreview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
+
+    const reversed = advancedHost();
+    const reversedPreview = await reversed.registry.dispatch("captionAnimation.preview", { ...target });
+    reversed.trackItem.isSpeedReversed.mockResolvedValue(true);
+    await expect(reversed.registry.dispatch("captionAnimation.apply", {
+      ...target, yOffset: 0.05, coordinateSpace: "normalized", snapshot: reversedPreview, confirmApply: true,
+    })).rejects.toMatchObject({ code: "UXP_TARGET_UNSUPPORTED" });
+  });
+
+  it("derives the one-frame rule from the real sequence frame rate", async () => {
+    const value = advancedHost();
+    const target = { mediaType: "video", trackIndex: 0, clipIndex: 0 };
+
+    value.trackState.end = 10.09;
+    const twoFrames = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    expect(twoFrames.clip.oneFrame).toBe(false);
+    expect(twoFrames.clip.frameSeconds).toBeCloseTo(1 / 23.976, 6);
+
+    value.trackState.end = 10.04;
+    const oneFrame = await value.registry.dispatch("captionAnimation.preview", { ...target });
+    expect(oneFrame.clip.oneFrame).toBe(true);
   });
 
   it("reports UXP_COMMAND_UNAVAILABLE when the host lacks a PointF factory", async () => {
