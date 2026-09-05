@@ -218,6 +218,8 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!result) return __error("Clip not found");
           
           var clip = result.clip;
+          var clipInPointSeconds = NaN;
+          try { clipInPointSeconds = __ticksToSeconds(clip.inPoint.ticks); } catch (eClipInPoint) {}
           var comp = null;
           for (var i = 0; i < clip.components.numItems; i++) {
             if (clip.components[i].displayName === "${escapeForExtendScript(args.effect_name)}" || clip.components[i].matchName === "${escapeForExtendScript(args.effect_name)}") {
@@ -251,11 +253,15 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
               var val = null;
               try { val = prop.getValueAtKey(time); } catch(e) {}
               var resolvedSeconds = __ticksToSeconds(time.ticks);
+              // Tick-exact comparison uses integer tick strings elsewhere; the
+              // relative display value is rounded to whole microseconds so
+              // binary floating-point noise near large in-points (e.g. 3600s)
+              // never leaks into equality checks by callers.
               keyframes.push({
                 time: resolvedSeconds,
                 value: val,
                 resolvedPropertyTimeSeconds: resolvedSeconds,
-                relativeTimeSeconds: isFinite(clipInPointSeconds) ? resolvedSeconds - clipInPointSeconds : null
+                relativeTimeSeconds: isFinite(clipInPointSeconds) ? Math.round((resolvedSeconds - clipInPointSeconds) * 1000000) / 1000000 : null
               });
             }
           }
@@ -386,20 +392,82 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           
           var time = new Time();
           time.ticks = __secondsToTicks(resolvedPropertyTimeSeconds).toString();
-          function rollbackAddedKey(reason) {
-            var keyframeRemoved = false;
-            try { prop.removeKey(time); } catch (eRollback) {}
-            var stillPresent = false;
-            var keysAfterRollback = prop.getKeys();
-            if (keysAfterRollback) {
-              for (var rollbackIndex = 0; rollbackIndex < keysAfterRollback.length; rollbackIndex++) {
-                if (String(keysAfterRollback[rollbackIndex].ticks) === String(time.ticks)) { stillPresent = true; break; }
+          function valuesMatch(expected, actual) {
+            var expectedIsList = expected && typeof expected.length === "number" && typeof expected !== "string";
+            var actualIsList = actual && typeof actual.length === "number" && typeof actual !== "string";
+            if (expectedIsList || actualIsList) {
+              if (!expectedIsList || !actualIsList || expected.length !== actual.length) return false;
+              for (var matchIndex = 0; matchIndex < expected.length; matchIndex++) {
+                if (Math.abs(expected[matchIndex] - actual[matchIndex]) > 0.0001) return false;
+              }
+              return true;
+            }
+            if (typeof expected === "number" && typeof actual === "number") {
+              return Math.abs(expected - actual) <= 0.0001;
+            }
+            return expected === actual;
+          }
+          var keyExistedBefore = false;
+          var previousKeyReadable = false;
+          var previousKeyValue = null;
+          var varyingBefore = false;
+          try {
+            var keysBeforeAdd = prop.getKeys();
+            if (keysBeforeAdd) {
+              for (var beforeIndex = 0; beforeIndex < keysBeforeAdd.length; beforeIndex++) {
+                if (String(keysBeforeAdd[beforeIndex].ticks) === String(time.ticks)) { keyExistedBefore = true; break; }
               }
             }
-            keyframeRemoved = !stillPresent;
-            return __error("ROLLBACK: " + reason + (keyframeRemoved
-              ? "; the keyframe added by this call was removed and its absence verified"
-              : "; the keyframe added by this call could NOT be removed") + ".");
+          } catch (eKeysBefore) {}
+          try { varyingBefore = prop.isTimeVarying(); } catch (eVaryingBefore) {}
+          if (keyExistedBefore) {
+            try { previousKeyValue = prop.getValueAtKey(time); previousKeyReadable = true; } catch (ePreviousValue) {}
+          }
+          function rollbackAddedKey(reason) {
+            var previousValueRestored = null;
+            var timeVaryingEnabledByCall = !varyingBefore;
+            var timeVaryingRestored = false;
+            if (keyExistedBefore) {
+              if (previousKeyReadable) {
+                var restored = false;
+                try {
+                  prop.setValueAtKey(time, previousKeyValue, true);
+                  restored = valuesMatch(previousKeyValue, prop.getValueAtKey(time));
+                } catch (eRestore) {}
+                previousValueRestored = restored;
+              } else {
+                previousValueRestored = false;
+              }
+            } else {
+              var keyframeRemoved = false;
+              try { prop.removeKey(time); } catch (eRollback) {}
+              var stillPresent = false;
+              var keysAfterRollback = prop.getKeys();
+              if (keysAfterRollback) {
+                for (var rollbackIndex = 0; rollbackIndex < keysAfterRollback.length; rollbackIndex++) {
+                  if (String(keysAfterRollback[rollbackIndex].ticks) === String(time.ticks)) { stillPresent = true; break; }
+                }
+              }
+              keyframeRemoved = !stillPresent;
+              if (!keyframeRemoved) {
+                return __error("ROLLBACK: " + reason + "; the keyframe added by this call could NOT be removed.");
+              }
+            }
+            if (timeVaryingEnabledByCall) {
+              try {
+                prop.setTimeVarying(false);
+                timeVaryingRestored = !prop.isTimeVarying();
+              } catch (eVaryingRestore) {}
+            }
+            return __error("ROLLBACK: " + reason
+              + (keyExistedBefore
+                ? (previousValueRestored === true
+                  ? "; the pre-existing keyframe value was restored and verified"
+                  : "; the PRE-EXISTING keyframe value could NOT be restored")
+                : "; the keyframe added by this call was removed and its absence verified")
+              + (timeVaryingEnabledByCall
+                ? (timeVaryingRestored ? "; time-varying was disabled again" : "; time-varying could NOT be disabled again")
+                : "") + ".");
           }
           var addResult = prop.addKey(time);
           var storedAtResolvedTime = false;
