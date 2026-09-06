@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
+import { findHeartbeatOwnerIds } from "./stop-mcp-heartbeat.mjs";
 
 const projectScript = resolve(fileURLToPath(new URL("../dist/index.js", import.meta.url)));
 
@@ -127,9 +128,25 @@ async function main() {
     process.exit(1);
   }
 
+  try {
+    // A detached broker can outlive its parent session and become invisible
+    // to command-line matching (orphan, or unreadable command line). The
+    // heartbeat names its exact validated owner, so reclaim that too.
+    const heartbeat = await findHeartbeatOwnerIds();
+    for (const warning of heartbeat.warnings) console.log(warning);
+    for (const id of heartbeat.ids) {
+      if (!owners.includes(id)) {
+        owners.push(id);
+        console.log(`[stop:mcp] Heartbeat reclaimed orphaned broker pid ${id}.`);
+      }
+    }
+  } catch (error) {
+    console.log("[stop:mcp] Heartbeat check skipped:", error instanceof Error ? error.message : String(error));
+  }
   if (owners.length === 0) {
     console.log("[stop:mcp] No owned MCP broker or legacy server process found.");
-  } else {
+  }
+  if (owners.length > 0) {
     stopProcesses(owners, false);
     // A broker may be blocked in a host call. Escalate only for processes that
     // still match this exact checkout after a bounded graceful wait.
