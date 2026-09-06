@@ -1,5 +1,6 @@
 import { buildToolScript } from "../bridge/script-builder.js";
 import { getTempDir, sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
+import type { BrokerRuntimeReport } from "../bridge/broker-heartbeat.js";
 import { isToolPermitted, resolveCapabilities, type CapabilityConfig } from "../security/capabilities.js";
 import type { ServerBuildInfo } from "../build-info.js";
 import { buildPlatformCapabilityReport } from "../platform-capabilities.js";
@@ -20,6 +21,8 @@ export interface HealthToolOptions {
   uxpBridge?: UxpWebSocketBridge;
   toolPacks?: ToolPackSelection;
   buildInfo?: ServerBuildInfo;
+  /** Broker self-report for endpoint diagnosis; absent outside broker mode. */
+  brokerReport?: () => BrokerRuntimeReport | null;
 }
 
 const disabledTelemetry: Telemetry = {
@@ -217,6 +220,7 @@ export function getHealthTools(
                 builtAt: null,
                 source: "missing",
               },
+              broker: options.brokerReport?.() ?? { present: false },
               toolPacks: {
                 selected: toolPacks.fullCatalog ? ["full"] : [...toolPacks.selected],
                 fullCatalog: toolPacks.fullCatalog,

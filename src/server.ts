@@ -308,6 +308,7 @@ function collectTools(
   toolPacks?: ToolPackSelection,
   cacheable = false,
   buildInfo?: ServerBuildInfo,
+  brokerReport?: () => import("./bridge/broker-heartbeat.js").BrokerRuntimeReport | null,
 ): Record<string, ToolDef> {
   const cacheKey = JSON.stringify({
     tempDir: bridgeOptions.tempDir ?? process.env.PREMIERE_TEMP_DIR ?? null,
@@ -369,6 +370,7 @@ function collectTools(
       uxpBridge,
       toolPacks,
       buildInfo,
+      brokerReport,
     }),
   );
   if (!uxpBridge && cacheable) toolCatalogCache.set(cacheKey, tools);
@@ -382,6 +384,8 @@ export interface ServerOptions {
   toolPacks?: string;
   /** Build snapshot captured at broker/server startup. Read from dist/ when omitted. */
   buildInfo?: ServerBuildInfo;
+  /** Broker self-report for endpoint diagnosis. Set only in broker mode. */
+  brokerReport?: () => import("./bridge/broker-heartbeat.js").BrokerRuntimeReport | null;
 }
 
 export function createServer(
@@ -430,6 +434,7 @@ export function createServer(
     toolPacks,
     !serverOptions.telemetry,
     serverOptions.buildInfo ?? readServerBuildInfo(),
+    serverOptions.brokerReport,
   );
 
   // Register each tool with the MCP server

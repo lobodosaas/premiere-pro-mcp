@@ -12,6 +12,7 @@ import {
 } from "@modelcontextprotocol/server/stdio";
 import { createServer } from "../server.js";
 import {
+  buildBrokerRuntimeReport,
   getBrokerHeartbeatPath,
   killBrokerProcess,
   queryBrokerOwnerProcess,
@@ -229,6 +230,7 @@ export class LocalBroker extends EventEmitter {
         telemetry: this.telemetry,
         toolPacks: this.options.toolPacks,
         buildInfo: this.buildInfo,
+        brokerReport: () => buildBrokerRuntimeReport(this.endpoint),
       }),
       {
         transport,

@@ -224,3 +224,35 @@ export async function killBrokerProcess(pid: number): Promise<void> {
   }
   process.kill(pid, "SIGKILL");
 }
+
+export interface BrokerRuntimeReport {
+  present: boolean;
+  pid: number;
+  uptimeSec: number;
+  endpoint: string;
+  heartbeatAgeMs: number | null;
+  checkoutPath: string | null;
+  distCommit: string | null;
+}
+
+/**
+ * One-call broker diagnosis for get_capabilities: who owns the endpoint, how
+ * long it lives, and how fresh its heartbeat is. Never throws — an unreadable
+ * heartbeat degrades to null fields, never to a broken capabilities call.
+ */
+export function buildBrokerRuntimeReport(
+  endpoint: string,
+  heartbeatFile: string = getBrokerHeartbeatPath(),
+  nowMs: number = Date.now(),
+): BrokerRuntimeReport {
+  const heartbeat = readBrokerHeartbeat(heartbeatFile);
+  return {
+    present: true,
+    pid: process.pid,
+    uptimeSec: Math.round(process.uptime()),
+    endpoint,
+    heartbeatAgeMs: heartbeat ? nowMs - heartbeat.lastTickMs : null,
+    checkoutPath: heartbeat?.checkoutPath ?? null,
+    distCommit: heartbeat?.distCommit ?? null,
+  };
+}
