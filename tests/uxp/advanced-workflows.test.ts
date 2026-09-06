@@ -1151,3 +1151,63 @@ describe("advanced stable Premiere UXP workflows", () => {
     });
   });
 });
+
+describe("caption entrance single-project guard", () => {
+  it("names the live project on every preview", async () => {
+    const value = advancedHost();
+    const preview = await previewCaption(value);
+    expect(preview.clip.projectId).toBe("project-1");
+    expect(preview.clip.projectName).toBe("Documentary");
+  });
+
+  it("refuses a snapshot from another project and names both sides", async () => {
+    const first = advancedHost();
+    const preview = await previewCaption(first);
+    expect(preview.clip.projectName).toBe("Documentary");
+
+    const second = advancedHost();
+    second.project.guid = "project-2";
+    second.project.name = "Strawberry";
+    await expect(second.registry.dispatch("captionAnimation.apply", {
+      mediaType: "video",
+      trackIndex: 0,
+      clipIndex: 0,
+      yOffset: 0.05,
+      coordinateSpace: "normalized",
+      confirmApply: true,
+      operationId: "cross-project",
+      snapshot: preview,
+    })).rejects.toMatchObject({
+      code: "UXP_STALE_SNAPSHOT",
+      message: expect.stringContaining("Documentary"),
+    });
+    await expect(second.registry.dispatch("captionAnimation.apply", {
+      mediaType: "video",
+      trackIndex: 0,
+      clipIndex: 0,
+      yOffset: 0.05,
+      coordinateSpace: "normalized",
+      confirmApply: true,
+      operationId: "cross-project-2",
+      snapshot: preview,
+    })).rejects.toSatisfy((error: unknown) =>
+      (error as Error).message.includes("Documentary")
+      && (error as Error).message.includes("Strawberry"));
+  });
+
+  it("still applies a same-project snapshot after the guard reorder", async () => {
+    const value = advancedHost();
+    const preview = await previewCaption(value, 0.055013);
+    const result = await value.registry.dispatch("captionAnimation.apply", {
+      mediaType: "video",
+      trackIndex: 0,
+      clipIndex: 0,
+      yOffset: 0.055013,
+      coordinateSpace: "normalized",
+      confirmApply: true,
+      operationId: "same-project-guard",
+      snapshot: preview,
+    });
+    expect(result.outcome).toBe("verified");
+  });
+});

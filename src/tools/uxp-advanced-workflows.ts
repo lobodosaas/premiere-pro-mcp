@@ -303,7 +303,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     animate_caption_clip_uxp: {
-      description: "Preview or apply the saved caption entrance pattern (Opacity 0->100 plus a Motion Position rise, keys at visible start and mid-duration) on one caption graphic clip. Preview is read-only and returns a digest-bound snapshot; apply revalidates the target, refuses stale snapshots and conflicting keys, skips one-frame clips, writes the four keyframes in a single UXP transaction, and compensates its own keys if verification fails. yOffset is caller-supplied and interpreted in the declared coordinate_space; the space itself is never converted.",
+      description: "Preview or apply the saved caption entrance pattern (Opacity 0->100 plus a Motion Position rise, keys at visible start and mid-duration) on one caption graphic clip. Preview is read-only and returns a digest-bound snapshot naming the live project; apply revalidates the target, refuses snapshots from another project/sequence/clip, refuses stale snapshots and conflicting keys, skips one-frame clips, writes the four keyframes in a single UXP transaction, and compensates its own keys if verification fails. Keep a single Premiere project open while applying. yOffset is caller-supplied and interpreted in the declared coordinate_space; the space itself is never converted.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,

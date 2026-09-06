@@ -827,6 +827,7 @@
       return {
         ...target,
         projectId: guidString(parent.project && parent.project.guid),
+        projectName: String(parent.project && parent.project.name || ""),
         sequenceId: guidString(parent.sequence && parent.sequence.guid),
         opacitySnapshot, positionSnapshot, frameSeconds, oneFrame,
       };
@@ -857,7 +858,7 @@
 
     function captionDigestInput(state, plan) {
       return {
-        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, inPointSeconds: state.inPointSeconds },
+        clip: { projectId: state.projectId, projectName: state.projectName, sequenceId: state.sequenceId, mediaType: state.contextMediaType, trackIndex: state.contextTrackIndex, clipIndex: state.contextClipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, inPointSeconds: state.inPointSeconds },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
         plan: {
           timeBasis: plan.timeBasis, yOffset: plan.yOffset, coordinateSpace: plan.coordinateSpace,
@@ -924,7 +925,7 @@
       const digest = planDigest(captionDigestInput(enriched, plan));
       return {
         preview: true,
-        clip: { projectId: state.projectId, sequenceId: state.sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, inPointSeconds: state.inPointSeconds, frameSeconds: state.frameSeconds, oneFrame },
+        clip: { projectId: state.projectId, projectName: state.projectName, sequenceId: state.sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex, startSeconds: state.startSeconds, endSeconds: state.endSeconds, durationSeconds: state.durationSeconds, inPointSeconds: state.inPointSeconds, frameSeconds: state.frameSeconds, oneFrame },
         components: { opacity: state.opacitySnapshot, position: state.positionSnapshot },
         plan: {
           timeBasis: plan.timeBasis,
@@ -982,13 +983,19 @@
       if (await patternAlreadyApplied(state, plan)) {
         return { applied: true, noop: true, outcome: "verified", operation: { mutatesProject: false } };
       }
-      const liveDigest = planDigest(captionDigestInput(enriched, plan));
-      if (liveDigest !== snapshot.snapshotDigest) throw commandError("UXP_STALE_SNAPSHOT", "the clip changed since preview; request a new captionAnimation.preview before applying");
+      // Identity first: a snapshot from another project/sequence/clip is
+      // refused with both sides named, before the digest comparison. Only one
+      // Premiere project may drive caption applies at a time.
       const snapshotClip = snapshot.clip && typeof snapshot.clip === "object" ? snapshot.clip : null;
       if (!snapshotClip || snapshotClip.projectId !== state.projectId || snapshotClip.sequenceId !== state.sequenceId
         || snapshotClip.trackIndex !== context.trackIndex || snapshotClip.clipIndex !== context.clipIndex) {
-        throw commandError("UXP_STALE_SNAPSHOT", "the snapshot belongs to a different project, sequence, or clip");
+        const snapshotName = snapshotClip && typeof snapshotClip.projectName === "string" && snapshotClip.projectName
+          ? " project '" + snapshotClip.projectName + "'" : "";
+        const liveName = state.projectName ? " project '" + state.projectName + "'" : "";
+        throw commandError("UXP_STALE_SNAPSHOT", "the snapshot belongs to a different project, sequence, or clip (snapshot" + snapshotName + ", live" + liveName + "); keep a single project open and request a new captionAnimation.preview before applying");
       }
+      const liveDigest = planDigest(captionDigestInput(enriched, plan));
+      if (liveDigest !== snapshot.snapshotDigest) throw commandError("UXP_STALE_SNAPSHOT", "the clip changed since preview; request a new captionAnimation.preview before applying");
       const snapshotBase = snapshot.components && snapshot.components.position ? snapshot.components.position.baseValue : null;
       if (!sameBaseValue(snapshotBase, state.positionSnapshot.baseValue)) {
         throw commandError("UXP_STALE_SNAPSHOT", "the live base position changed since preview; request a new captionAnimation.preview before applying");
