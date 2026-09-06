@@ -12,6 +12,16 @@ import {
 } from "@modelcontextprotocol/server/stdio";
 import { createServer } from "../server.js";
 import {
+  getBrokerHeartbeatPath,
+  killBrokerProcess,
+  queryBrokerOwnerProcess,
+  readBrokerHeartbeat,
+  removeBrokerHeartbeat,
+  resolveStaleBroker,
+  writeBrokerHeartbeat,
+  type QueryBrokerOwner,
+} from "./broker-heartbeat.js";
+import {
   cleanupTempDir,
   type BridgeOptions,
 } from "./file-bridge.js";
@@ -28,9 +38,36 @@ import {
 } from "./uxp-websocket-bridge.js";
 import { getTelemetry, type Telemetry } from "../telemetry.js";
 import { readServerBuildInfo, type ServerBuildInfo } from "../build-info.js";
-
 const BROKER_START_TIMEOUT_MS = 8_000;
+
 const BROKER_RETRY_DELAY_MS = 100;
+
+const BROKER_HEARTBEAT_INTERVAL_MS = 2_000;
+
+const BROKER_HEARTBEAT_STALE_MS = 10_000;
+
+const BROKER_UNRESPONSIVE_CODE = "BROKER_UNRESPONSIVE";
+
+/** Structured endpoint failure: names the broker instead of a bare -32000. */
+export class BrokerEndpointError extends Error {
+  readonly code = BROKER_UNRESPONSIVE_CODE;
+  readonly endpoint: string;
+  readonly pid: number | null;
+  readonly heartbeatAgeMs: number | null;
+
+  constructor(endpoint: string, pid: number | null, heartbeatAgeMs: number | null) {
+    super(
+      `Premiere MCP broker is unresponsive at ${endpoint}`
+      + (pid === null ? "" : ` (pid ${pid}`)
+      + (heartbeatAgeMs === null ? "" : `, last heartbeat ${Math.round(heartbeatAgeMs / 1000)}s ago`)
+      + (pid === null && heartbeatAgeMs === null ? "" : ")")
+      + ". Run `npm run stop:mcp` in the checkout, restart the premiere-pro MCP, and retry.",
+    );
+    this.endpoint = endpoint;
+    this.pid = pid;
+    this.heartbeatAgeMs = heartbeatAgeMs;
+  }
+}
 
 export interface LocalBrokerOptions {
   bridgeOptions: BridgeOptions;
@@ -42,6 +79,11 @@ export interface LocalBrokerOptions {
   telemetry?: Telemetry;
   /** Build snapshot to advertise; captured from dist/ at startup when omitted. */
   buildInfo?: ServerBuildInfo;
+  /**
+   * Broker liveness heartbeat. Enabled by default; pass `false` to disable
+   * (tests) or `{ file, intervalMs }` to redirect it.
+   */
+  heartbeat?: false | { file?: string; intervalMs?: number };
 }
 
 export interface LocalBrokerState {
@@ -63,6 +105,8 @@ export class LocalBroker extends EventEmitter {
   private ipcServer: LocalIpcServer | null = null;
   private readonly clients = new Map<Socket, StdioServerHandle>();
   private closed = false;
+  private heartbeatTimer: NodeJS.Timeout | null = null;
+  private heartbeatFile: string | null = null;
 
   constructor(options: LocalBrokerOptions) {
     super();
@@ -92,6 +136,7 @@ export class LocalBroker extends EventEmitter {
         endpoint: this.endpoint,
         onConnection: (socket) => this.acceptClient(socket),
       });
+      this.startHeartbeat();
       return this;
     } catch (error) {
       await this.close().catch(() => {});
@@ -122,7 +167,53 @@ export class LocalBroker extends EventEmitter {
     const lockServer = this.lockServer;
     this.lockServer = null;
     await lockServer?.close().catch(() => {});
+    this.stopHeartbeat();
     await this.telemetry.shutdown();
+  }
+
+  private heartbeatConfig(): { file: string; intervalMs: number } | null {
+    if (this.options.heartbeat === false) return null;
+    return {
+      file: this.options.heartbeat?.file ?? getBrokerHeartbeatPath(),
+      intervalMs: this.options.heartbeat?.intervalMs ?? BROKER_HEARTBEAT_INTERVAL_MS,
+    };
+  }
+
+  private writeHeartbeatOnce(file: string): void {
+    try {
+      const commit = this.buildInfo && typeof this.buildInfo.commit === "string"
+        ? this.buildInfo.commit
+        : null;
+      writeBrokerHeartbeat(file, {
+        pid: process.pid,
+        startTimeMs: Date.now() - Math.round(process.uptime() * 1000),
+        checkoutPath: path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".."),
+        distCommit: commit,
+        uxpPort: this.options.uxpPort ?? 7777,
+      });
+    } catch {
+      // Heartbeat is advisory; a broker that cannot write temp must still serve.
+    }
+  }
+
+  private startHeartbeat(): void {
+    const config = this.heartbeatConfig();
+    if (!config) return;
+    this.heartbeatFile = config.file;
+    this.writeHeartbeatOnce(config.file);
+    this.heartbeatTimer = setInterval(() => this.writeHeartbeatOnce(config.file), config.intervalMs);
+    this.heartbeatTimer.unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.heartbeatFile) {
+      removeBrokerHeartbeat(this.heartbeatFile);
+      this.heartbeatFile = null;
+    }
   }
 
   private acceptClient(socket: Socket): void {
@@ -167,6 +258,8 @@ export interface LocalBrokerProxyOptions {
   brokerScript?: string;
   environment?: NodeJS.ProcessEnv;
   spawnBroker?: () => void;
+  /** Max heartbeat age before a connected broker counts as a zombie. */
+  heartbeatMaxAgeMs?: number;
 }
 
 export interface LocalBrokerProxyStreams {
@@ -215,18 +308,75 @@ async function waitForBroker(
   throw new Error(`Local Premiere MCP broker did not become ready${detail}`);
 }
 
+export interface VerifyBrokerSocketOptions {
+  nowMs?: number;
+  heartbeatMaxAgeMs?: number;
+  heartbeatFile?: string;
+  readHeartbeat?: () => ReturnType<typeof readBrokerHeartbeat>;
+  queryOwner?: QueryBrokerOwner;
+  killProcess?: (pid: number) => Promise<void>;
+}
+
+export type BrokerSocketVerdict = { status: "healthy" } | { status: "reclaim"; pid: number };
+
+/**
+ * Confirm the broker behind a connected socket is alive. A validated zombie
+ * (stale heartbeat + exact pid/start/marker match) is terminated so the proxy
+ * can spawn a fresh broker; anything ambiguous keeps the socket untouched, so
+ * the happy path and legacy brokers behave exactly as before.
+ */
+export async function verifyBrokerSocket(
+  socket: Socket,
+  options: VerifyBrokerSocketOptions = {},
+): Promise<BrokerSocketVerdict> {
+  const nowMs = options.nowMs ?? Date.now();
+  const maxAgeMs = options.heartbeatMaxAgeMs ?? BROKER_HEARTBEAT_STALE_MS;
+  const heartbeat = (options.readHeartbeat ?? (() => readBrokerHeartbeat(
+    options.heartbeatFile ?? getBrokerHeartbeatPath(),
+  )))();
+  if (!heartbeat) return { status: "healthy" };
+  const decision = await resolveStaleBroker(heartbeat, nowMs, {
+    maxAgeMs,
+    queryOwner: options.queryOwner ?? queryBrokerOwnerProcess,
+  });
+  if (decision.action !== "kill") return { status: "healthy" };
+  socket.destroy();
+  await (options.killProcess ?? killBrokerProcess)(decision.pid);
+  return { status: "reclaim", pid: decision.pid };
+}
+
 export async function connectToLocalBroker(
   options: LocalBrokerProxyOptions = {},
 ): Promise<Socket> {
   const endpoint = options.endpoint ?? getLocalBrokerEndpoint();
   const connectTimeoutMs = options.connectTimeoutMs ?? 500;
   const startTimeoutMs = options.startTimeoutMs ?? BROKER_START_TIMEOUT_MS;
-
-  try {
-    return await connectLocalIpc(endpoint, connectTimeoutMs);
-  } catch {
+  const spawnFresh = () => {
     (options.spawnBroker ?? (() => spawnBrokerProcess({ ...options, endpoint })))();
     return waitForBroker(endpoint, startTimeoutMs);
+  };
+
+  try {
+    const socket = await connectLocalIpc(endpoint, connectTimeoutMs);
+    // Verification is advisory: it must never break a working connection.
+    const verdict = await verifyBrokerSocket(socket, {
+      heartbeatMaxAgeMs: options.heartbeatMaxAgeMs,
+    }).catch(() => ({ status: "healthy" }) as BrokerSocketVerdict);
+    if (verdict.status === "healthy") return socket;
+  } catch {
+    // No listener: fall through and spawn a fresh broker below.
+  }
+
+  try {
+    return await spawnFresh();
+  } catch {
+    const heartbeat = readBrokerHeartbeat(getBrokerHeartbeatPath());
+    const now = Date.now();
+    throw new BrokerEndpointError(
+      endpoint,
+      heartbeat?.pid ?? null,
+      heartbeat ? now - heartbeat.lastTickMs : null,
+    );
   }
 }
 

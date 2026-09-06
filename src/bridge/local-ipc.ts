@@ -104,8 +104,27 @@ function getUnixSocketIdentity(endpoint: string): UnixSocketIdentity | undefined
   }
 }
 
+/**
+ * Probe whether a pipe endpoint still has a listener. On Windows, named pipes
+ * vanish with their owner, so EADDRINUSE with no listener is transient: the
+ * caller may retry the bind once. A live listener means a real owner holds
+ * the endpoint and the bind must fail.
+ */
+export async function isPipeListenerAlive(endpoint: string, timeoutMs = 100): Promise<boolean> {
+  try {
+    const probe = await connectLocalIpc(endpoint, timeoutMs);
+    probe.destroy();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function prepareStaleUnixSocket(endpoint: string, error: unknown): Promise<boolean> {
-  if (process.platform === "win32" || errorCode(error) !== "EADDRINUSE") return false;
+  if (errorCode(error) !== "EADDRINUSE") return false;
+  if (process.platform === "win32") {
+    return !(await isPipeListenerAlive(endpoint));
+  }
 
   try {
     const probe = await connectLocalIpc(endpoint, 100);
