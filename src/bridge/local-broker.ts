@@ -24,6 +24,8 @@ import {
 } from "./broker-heartbeat.js";
 import {
   cleanupTempDir,
+  getTempDir,
+  writeServerIdentity,
   type BridgeOptions,
 } from "./file-bridge.js";
 import {
@@ -130,6 +132,9 @@ export class LocalBroker extends EventEmitter {
         onConnection: (socket) => socket.destroy(),
       });
       cleanupTempDir(this.options.bridgeOptions);
+      // The broker owns the bridge directory, so publish the running server
+      // version before any command exists for the CEP panel to inspect.
+      writeServerIdentity(getTempDir(this.options.bridgeOptions), this.buildInfo);
       // Claim the owner endpoint before opening UXP. Concurrent proxy starts
       // then elect one broker without creating duplicate UXP listeners.
       await this.uxpBridge.start();

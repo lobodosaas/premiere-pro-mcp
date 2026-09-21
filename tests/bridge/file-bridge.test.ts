@@ -26,6 +26,8 @@ import {
   sendCommand,
   sendRawCommand,
   cleanupTempDir,
+  writeServerIdentity,
+  BRIDGE_SERVER_IDENTITY_FILE,
 } from "../../src/bridge/file-bridge.js";
 
 // Mock fs module

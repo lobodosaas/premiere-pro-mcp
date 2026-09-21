@@ -62,6 +62,17 @@ it("lets an operator-set bridge directory environment variable win over the valu
   expect(aeSavedBranch).toBeGreaterThan(aeEnvBranch);
 });
 
+it("prefers the running server's own version over the per-user npm install in the update check", () => {
+  const premiere = readFileSync("cep-plugin/main.js", "utf8");
+  expect(premiere).toContain("function readBridgeServerIdentity()");
+  expect(premiere).toContain('path.join(tempDir, "bridge-server.json")');
+  const liveLookup = premiere.indexOf("var liveServer = readBridgeServerIdentity();");
+  const npmFallback = premiere.indexOf("(globalInstall ? globalInstall.serverVersion : null)");
+  expect(liveLookup).toBeGreaterThan(-1);
+  expect(npmFallback).toBeGreaterThan(liveLookup);
+  expect(premiere).toContain('(running bridge)');
+});
+
 describe.each(pluginDirectories)("%s bridge directory security", (pluginDirectory) => {
   it("refuses an existing symbolic-link bridge directory", () => {
     const security = loadSecurity(pluginDirectory).createBridgeDirectorySecurity({

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { getHelpersSource, helpersFileName, buildBootstrap } from "./script-builder.js";
+import { readServerBuildInfo, type ServerBuildInfo } from "../build-info.js";
 
 export function getDarwinUserTempDirectory(): string | null {
   try {
@@ -46,8 +47,41 @@ const processOwnerId = randomUUID();
 const bridgeOwnerIds = new WeakMap<object, string>();
 export const MAX_QUEUED_BRIDGE_COMMANDS = 32;
 export const MAX_BRIDGE_RESPONSE_BYTES = 1_048_576;
+export const BRIDGE_SERVER_IDENTITY_FILE = "bridge-server.json";
 export const BRIDGE_HEARTBEAT_FILE = "bridge-heartbeat.json";
 export const BRIDGE_HEARTBEAT_STALE_MS = 3_000;
+
+/**
+ * Publish the running server's own version next to the bridge protocol files.
+ *
+ * The CEP panel reports an update whenever the server and connector versions
+ * differ, but it can only see a per-user npm install. A checkout, a relocated
+ * build, or a fork would then look stale even while it is the server answering
+ * commands, so the broker states the real version here and the panel prefers it.
+ * The broker owns the directory and calls this once at startup; per-command
+ * writes would add file traffic to every bridge request.
+ */
+export function writeServerIdentity(
+  directory: string,
+  buildInfo: ServerBuildInfo = readServerBuildInfo(),
+): void {
+  const identityPath = join(directory, BRIDGE_SERVER_IDENTITY_FILE);
+  const stagedPath = `${identityPath}.staged`;
+  try {
+    writeFileSync(stagedPath, JSON.stringify({
+      schemaVersion: 1,
+      version: buildInfo.packageVersion,
+      commit: buildInfo.commit,
+      pid: process.pid,
+      updatedAt: new Date().toISOString(),
+    }), "utf-8");
+    renameSync(stagedPath, identityPath);
+  } catch {
+    // Diagnostic only: never fail a bridge command over the identity file.
+  } finally {
+    safeUnlink(stagedPath);
+  }
+}
 
 type ResponseListener = () => void;
 

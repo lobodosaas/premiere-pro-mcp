@@ -156,6 +156,22 @@ function getPerUserGlobalInstall() {
   }
 }
 
+function readBridgeServerIdentity() {
+  try {
+    var identityPath = path.join(tempDir, "bridge-server.json");
+    if (!fs.existsSync(identityPath)) return null;
+    var record = JSON.parse(fs.readFileSync(identityPath, "utf-8"));
+    var version = MCPBridgeUpdater.normalizeVersion(record && record.version);
+    if (!version) return null;
+    return {
+      version: version,
+      commit: record && typeof record.commit === "string" ? record.commit : null,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 function getPerUserGlobalCommand() {
   var install = getPerUserGlobalInstall();
   return install ? install.commandPath : null;
@@ -547,9 +563,16 @@ function checkForUpdates() {
             MCPBridgeUpdater.CURRENT_VERSION,
             JSON.parse(body)
           );
+          // Prefer the version of the server that is actually answering on this
+          // bridge. A checkout or a relocated build would otherwise be judged by
+          // whatever per-user npm install happens to exist on the machine.
+          var liveServer = readBridgeServerIdentity();
+          var installedServerVersion = liveServer
+            ? liveServer.version
+            : (globalInstall ? globalInstall.serverVersion : null);
           var serverUpdateAvailable = Boolean(
-            globalInstall &&
-            MCPBridgeUpdater.compareVersions(update.latestVersion, globalInstall.serverVersion) > 0
+            installedServerVersion &&
+            MCPBridgeUpdater.compareVersions(update.latestVersion, installedServerVersion) > 0
           );
           var needsUpdate = update.updateAvailable || serverUpdateAvailable;
 
@@ -559,7 +582,8 @@ function checkForUpdates() {
             };
             if (os.platform() === "win32" && globalInstall) {
               var versionSummary =
-                "Server " + globalInstall.serverVersion + ", connector " + MCPBridgeUpdater.CURRENT_VERSION + ". ";
+                "Server " + (liveServer ? liveServer.version + " (running bridge)" : globalInstall.serverVersion)
+                + ", connector " + MCPBridgeUpdater.CURRENT_VERSION + ". ";
               setUpdateUI(
                 "Version " + update.latestVersion + " is available",
                 versionSummary + "Update both together after you close Premiere.",
@@ -582,8 +606,9 @@ function checkForUpdates() {
               );
             }
           } else {
-            var currentDetail = globalInstall
-              ? "Server " + globalInstall.serverVersion + " and connector " + MCPBridgeUpdater.CURRENT_VERSION + " are current."
+            var currentDetail = installedServerVersion
+              ? "Server " + installedServerVersion + (liveServer ? " (running bridge)" : "")
+                + " and connector " + MCPBridgeUpdater.CURRENT_VERSION + " are current."
               : "Your connector release is current. This check does not alter your projects or MCP client configuration.";
             setUpdateUI(
               "Version " + MCPBridgeUpdater.CURRENT_VERSION,
