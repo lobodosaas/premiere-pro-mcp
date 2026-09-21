@@ -45,6 +45,23 @@ it("keeps the Premiere, After Effects, and server Windows ACL policy in sync", (
     .toBeLessThan(WINDOWS_BRIDGE_ACL_SCRIPT.indexOf("SetAccessControl($path"));
 });
 
+it("lets an operator-set bridge directory environment variable win over the value saved in the panel", () => {
+  const premiere = readFileSync("cep-plugin/main.js", "utf8");
+  expect(premiere).toContain("function environmentBridgeDirectory()");
+  const envBranch = premiere.indexOf("var fromEnvironment = environmentBridgeDirectory();");
+  const savedBranch = premiere.indexOf("} else if (saved) {");
+  expect(envBranch).toBeGreaterThan(-1);
+  expect(savedBranch).toBeGreaterThan(envBranch);
+  expect(premiere).toContain('log("Bridge directory from PREMIERE_TEMP_DIR: "');
+
+  const afterEffects = readFileSync("after-effects-cep-plugin/main.js", "utf8");
+  expect(afterEffects).toContain("function environmentBridgeDirectory()");
+  const aeEnvBranch = afterEffects.indexOf("var fromEnvironment = environmentBridgeDirectory();");
+  const aeSavedBranch = afterEffects.indexOf("field.value = saved || tempDir;");
+  expect(aeEnvBranch).toBeGreaterThan(-1);
+  expect(aeSavedBranch).toBeGreaterThan(aeEnvBranch);
+});
+
 describe.each(pluginDirectories)("%s bridge directory security", (pluginDirectory) => {
   it("refuses an existing symbolic-link bridge directory", () => {
     const security = loadSecurity(pluginDirectory).createBridgeDirectorySecurity({

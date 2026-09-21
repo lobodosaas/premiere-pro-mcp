@@ -107,7 +107,7 @@ var bridgeDirectorySecurity = MCPBridgeDirectorySecurity.createBridgeDirectorySe
   childProcess: childProcess,
   Buffer: Buffer,
 });
-function defaultBridgeDirectory() {
+function environmentBridgeDirectory() {
   try {
     var nodeProcess = nodeRequire("process");
     var configured = nodeProcess && nodeProcess.env && nodeProcess.env.PREMIERE_TEMP_DIR;
@@ -115,6 +115,11 @@ function defaultBridgeDirectory() {
   } catch (e) {
     // The panel still has a safe OS temporary-directory fallback.
   }
+  return null;
+}
+function defaultBridgeDirectory() {
+  var configured = environmentBridgeDirectory();
+  if (configured) return configured;
   return path.join(os.tmpdir(), "premiere-mcp-bridge");
 }
 tempDir = defaultBridgeDirectory();
@@ -665,10 +670,24 @@ function handleUpdateClick() {
   // Set the default temp dir in the input field
   document.getElementById("tempDir").value = tempDir;
 
-  // Restore saved temp dir
+  // Restore saved temp dir. An operator-set PREMIERE_TEMP_DIR wins over a value
+  // saved in the panel: the environment describes the machine the MCP server
+  // runs on, while a saved value can outlive a relocated bridge directory and
+  // leave the panel polling a folder the server no longer writes to.
   try {
     var saved = localStorage.getItem("mcp_bridge_temp_dir");
-    if (saved) {
+    var fromEnvironment = environmentBridgeDirectory();
+    if (fromEnvironment) {
+      tempDir = fromEnvironment;
+      document.getElementById("tempDir").value = tempDir;
+      if (saved !== tempDir) {
+        try {
+          localStorage.setItem("mcp_bridge_temp_dir", tempDir);
+        } catch (e) {}
+        log("Bridge directory from PREMIERE_TEMP_DIR: " + tempDir
+          + (saved ? " (replaced the saved value " + saved + ")" : ""));
+      }
+    } else if (saved) {
       tempDir = saved;
       document.getElementById("tempDir").value = tempDir;
     }

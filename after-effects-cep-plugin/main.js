@@ -29,12 +29,18 @@
     throw new Error("Node.js is unavailable. Confirm --enable-nodejs in the CEP manifest, then fully restart After Effects.");
   }
 
-  function defaultBridgeDirectory() {
+  function environmentBridgeDirectory() {
     try {
       var process = nodeRequire("process");
       var configured = process && process.env && process.env.AFTER_EFFECTS_MCP_TEMP_DIR;
       if (typeof configured === "string" && configured.trim()) return configured.trim();
     } catch (ignored) {}
+    return null;
+  }
+
+  function defaultBridgeDirectory() {
+    var configured = environmentBridgeDirectory();
+    if (configured) return configured;
     return path.join(os.tmpdir(), "after-effects-mcp-bridge");
   }
 
@@ -138,7 +144,22 @@
     setStatus("Stopped", false);
   }
 
+  // An operator-set AFTER_EFFECTS_MCP_TEMP_DIR wins over a value saved in the
+  // panel: the environment describes the machine the MCP server runs on, while a
+  // saved value can outlive a relocated bridge directory.
   var field = document.getElementById("tempDir");
-  try { field.value = localStorage.getItem("after_effects_mcp_temp_dir") || tempDir; } catch (ignored) { field.value = tempDir; }
+  try {
+    var saved = localStorage.getItem("after_effects_mcp_temp_dir");
+    var fromEnvironment = environmentBridgeDirectory();
+    if (fromEnvironment) {
+      tempDir = fromEnvironment;
+      field.value = tempDir;
+      if (saved !== tempDir) {
+        try { localStorage.setItem("after_effects_mcp_temp_dir", tempDir); } catch (ignored) {}
+      }
+    } else {
+      field.value = saved || tempDir;
+    }
+  } catch (ignored) { field.value = tempDir; }
   document.getElementById("toggle").onclick = function () { if (running) stop(); else start(); };
 }());
