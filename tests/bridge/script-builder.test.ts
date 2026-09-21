@@ -124,6 +124,19 @@ describe("generated script structure", () => {
     expect(result).toContain("var found = __findProjectItem(nodeIdOrName, item);");
   });
 
+  it("serializes a non-finite number as null so every payload stays valid JSON", () => {
+    const context: Record<string, unknown> = {};
+    runInNewContext(`${getHelpersSource()}
+this.__probeObject = function () { return __jsonStringify({ inPoint: NaN, name: "ok", flag: true, nested: { end: NaN } }); };
+this.__probeArray = function () { return __jsonStringify([Infinity, -Infinity, NaN, 1.5]); };
+`, context);
+    const probeObject = context.__probeObject as () => string;
+    const probeArray = context.__probeArray as () => string;
+    expect(JSON.parse(probeObject())).toEqual({ inPoint: null, name: "ok", flag: true, nested: { end: null } });
+    expect(probeArray()).toBe("[null,null,null,1.5]");
+    expect(probeObject()).not.toContain("NaN");
+  });
+
   it("normalizes numeric host IDs without changing exact name matching", () => {
     const result = getHelpersSource();
     expect(result).toContain("var wantedId = String(idOrName);");

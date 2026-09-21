@@ -15,7 +15,8 @@
           "PREMIERE_UXP_TOKEN": "zWkbcsfkkECd2Odt85AJ1zXVX06lVe3y96uytpzIwpE",
           "PREMIERE_TIMEOUT_MS": "60000",
           "PREMIERE_MCP_TOOL_PACKS": "full",
-          "PREMIERE_MCP_CAPABILITIES": "inspect,edit,export,filesystem"
+          "PREMIERE_MCP_CAPABILITIES": "inspect,edit,export,filesystem",
+          "PREMIERE_TEMP_DIR": "C:\\Users\\gusta\\.premiere-mcp-bridge"
         },
         "timeout": {
           "catalog": 120000,

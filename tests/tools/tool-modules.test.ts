@@ -837,6 +837,15 @@ describe("Tool Handler Behavior", () => {
       expect(script).toContain("__result");
     });
 
+    it("list_sequences reports a missing zero point as null instead of NaN", async () => {
+      const tools = getDiscoveryTools(bridgeOptions);
+      await (tools.list_sequences.handler as any)({});
+
+      const script = mockedSendCommand.mock.calls[0][0];
+      expect(script).toContain("var zeroPointSeconds = __ticksToSeconds(seq.zeroPoint.ticks);");
+      expect(script).toContain("inPoint: isFinite(zeroPointSeconds) ? zeroPointSeconds : null");
+    });
+
     it("list_project_items handles optional bin_path", async () => {
       const tools = getDiscoveryTools(bridgeOptions);
 

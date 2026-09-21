@@ -100,12 +100,13 @@ export function getDiscoveryTools(bridgeOptions: BridgeOptions) {
           var sequences = [];
           for (var i = 0; i < project.sequences.numSequences; i++) {
             var seq = project.sequences[i];
+            var zeroPointSeconds = __ticksToSeconds(seq.zeroPoint.ticks);
             sequences.push({
               name: seq.name,
               id: seq.sequenceID,
               videoTracks: seq.videoTracks.numTracks,
               audioTracks: seq.audioTracks.numTracks,
-              inPoint: __ticksToSeconds(seq.zeroPoint.ticks),
+              inPoint: isFinite(zeroPointSeconds) ? zeroPointSeconds : null,
               end: __ticksToSeconds(seq.end)
             });
           }

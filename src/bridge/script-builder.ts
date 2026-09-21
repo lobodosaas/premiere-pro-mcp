@@ -946,7 +946,11 @@ function __jsonStringify(obj) {
   if (obj === null) return "null";
   if (obj === undefined) return "undefined";
   if (typeof obj === "string") return '"' + obj.replace(/\\\\/g, "\\\\\\\\").replace(/"/g, '\\\\"').replace(/\\n/g, "\\\\n") + '"';
-  if (typeof obj === "number" || typeof obj === "boolean") return String(obj);
+  // JSON has no NaN or Infinity, and emitting them raw produced payloads no
+  // strict parser could read (for example a sequence without a zero point
+  // reported "inPoint":NaN). Report a non-finite number as null instead.
+  if (typeof obj === "number") return isFinite(obj) ? String(obj) : "null";
+  if (typeof obj === "boolean") return String(obj);
   if (obj instanceof Array) {
     var arr = [];
     for (var i = 0; i < obj.length; i++) {
