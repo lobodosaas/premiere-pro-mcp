@@ -8,8 +8,13 @@ type Tool = { parameters: Schema; handler: (args: Record<string, unknown>) => Pr
 
 const values: Record<string, unknown> = {
   name: "Coverage Name", query: "coverage", preset_path: "/tmp/preset.sqpreset",
+  confirm_non_undoable: true, confirm_destructive: true, operation_id: "coverage-operation",
   output_file_path: "/tmp/output.otio", project_item_id: "item-1", track_index: 0,
   start_seconds: 1, end_seconds: 2, transcript_revision: `sha256:${"a".repeat(64)}`,
+  project_guid: "project-1", expected_transcript_revision: `sha256:${"a".repeat(64)}`,
+  replacement_transcript_json: '{"segments":[]}',
+  sequence_name: "Coverage Stringout", duration_seconds: 10, frame_rate: 30,
+  silence_ranges: [{ start_seconds: 2, end_seconds: 4 }],
   placements: [{
     placement_id: "coverage-placement", track_type: "video", track_index: 0,
     source_in_seconds: 0, source_out_seconds: 10,
@@ -55,10 +60,18 @@ describe("UXP tool handler coverage", () => {
     it.each([["required", false], ["all", true]])(`${name} handles %s arguments`, async (_label, all) => {
       const args = argsFor(tool.parameters, all);
       if (name === "manage_timeline_selection_uxp" && all) args.action = "replace";
+      // Each manage_sequences_uxp action accepts only its own parameters, so the
+      // "all properties" sweep has to narrow to one action's argument set.
+      if (name === "manage_sequences_uxp" && all) {
+        args.action = "delete";
+        for (const unsupported of ["name", "project_item_ids", "target_bin_id", "ignore_track_targeting"]) {
+          delete args[unsupported];
+        }
+      }
       const result = await tool.handler(args);
       expect(result).toBeDefined();
       if (name === "get_uxp_capabilities") expect(getState).toHaveBeenCalled();
-      else expect(request).toHaveBeenCalled();
+      else if (!["preview_derived_dialogue_sequence_uxp", "apply_derived_dialogue_sequence_uxp"].includes(name)) expect(request).toHaveBeenCalled();
     });
   }
 

@@ -8,7 +8,13 @@
 
 **Give compatible AI assistants structured control over supported Adobe Premiere Pro workflows.**
 
-321 core tools across 37 modules, 14 resources, and 11 guided workflows. A connected UXP host adds 55 capability-gated tools.
+Free, MIT licensed, local-first, and published to npm as [`premiere-pro-mcp`](https://www.npmjs.com/package/premiere-pro-mcp) — the only package name that installs this project.
+
+[Website](https://premiere-pro-mcp.com/) · [Recorded demo](https://premiere-pro-mcp.com/demo/) · [Compare servers](https://premiere-pro-mcp.com/compare/) · [Setup guides](https://premiere-pro-mcp.com/blog/how-to-set-up-premiere-pro-mcp/) · [Search tools](https://premiere-pro-mcp.com/tools/) · [Troubleshooting](https://premiere-pro-mcp.com/docs/troubleshooting/) · [Release facts](https://premiere-pro-mcp.com/facts/)
+
+Development source: 381 core tools across 56 modules, 4 resources, and 19 guided workflows. A connected UXP host adds 96 capability-gated tools.
+
+The [completed AE render handoff](docs/after-effects-render-handoff.md) previews and confirms importing one finished render into an existing Premiere bin, with host and file rechecks and an import receipt.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-20.19%2B-green.svg)](https://nodejs.org)
@@ -17,11 +23,52 @@
 [![Fly.io](https://img.shields.io/badge/Fly.io-deployed-7C3AED.svg)](https://premiere-pro-mcp.fly.dev)
 [![Premiere Pro](https://img.shields.io/badge/Premiere%20Pro-2020--2026-9999FF.svg)](https://www.adobe.com/products/premiere.html)
 
+[![npm downloads](https://img.shields.io/npm/dm/premiere-pro-mcp.svg?label=npm%20downloads)](https://www.npmjs.com/package/premiere-pro-mcp)
+[![GitHub stars](https://img.shields.io/github/stars/leancoderkavy/premiere-pro-mcp?style=flat&logo=github)](https://github.com/leancoderkavy/premiere-pro-mcp/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/leancoderkavy/premiere-pro-mcp?style=flat&logo=github)](https://github.com/leancoderkavy/premiere-pro-mcp/network/members)
+[![Open issues](https://img.shields.io/github/issues/leancoderkavy/premiere-pro-mcp.svg)](https://github.com/leancoderkavy/premiere-pro-mcp/issues)
+[![Last commit](https://img.shields.io/github/last-commit/leancoderkavy/premiere-pro-mcp.svg)](https://github.com/leancoderkavy/premiere-pro-mcp/commits)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support%20the%20project-FFDD00?logo=buymeacoffee&logoColor=000000)](https://buymeacoffee.com/leancoderkavy)
+
 </div>
 
 ---
 
 ![MCP for Adobe Premiere Pro turns a structured AI request into an organized local editing workflow](landing/public/marketing/premiere-pro-mcp-campaign-hero-v1.png)
+
+<details>
+<summary><strong>Table of contents</strong></summary>
+
+- [What is this?](#what-is-this)
+  - [Latest release](#latest-release)
+  - [Current MCP protocol support](#current-mcp-protocol-support)
+- [For editors evaluating an AI workflow](#for-editors-evaluating-an-ai-workflow)
+- [Quick Start](#quick-start)
+  - [Easiest supported path: Claude Desktop](#easiest-supported-path-claude-desktop)
+  - [First proof, before the first edit](#first-proof-before-the-first-edit)
+  - [Other AI assistants](#other-ai-assistants)
+  - [Configure your MCP client](#3-configure-your-mcp-client)
+  - [Verify the bridge in Premiere Pro](#4-verify-the-bridge-in-premiere-pro)
+- [Clients and capability coverage](#codex-plugin)
+  - [Codex plugin](#codex-plugin) · [Claude](#claude) · [GPT-6 Astra tool discovery](#gpt-6-astra-and-agent-tool-discovery) · [Claude Fable 5.1](#claude-fable-51)
+  - [Windows and macOS capability coverage](#windows-and-macos-capability-coverage)
+  - [After Effects MOGRT studio](#after-effects-mogrt-studio)
+  - [Collaboration and AI feature boundaries](#collaboration-and-ai-feature-boundaries)
+  - [Authenticated UXP connection](#authenticated-uxp-connection)
+- [Architecture](#architecture)
+- [Tools](#tools)
+- [MCP Resources](#mcp-resources)
+- [Remote Deployment (Fly.io)](#remote-deployment-flyio)
+- [Environment Variables](#environment-variables)
+- [Project Structure](#project-structure)
+- [Technical Details](#technical-details)
+- [Frequently asked questions](#frequently-asked-questions)
+- [Troubleshooting](#troubleshooting)
+- [Star history](#star-history)
+- [Support the project](#support-the-project)
+- [Contributing](#contributing) · [License](#license)
+
+</details>
 
 ## What is this?
 
@@ -31,22 +78,89 @@ An [MCP (Model Context Protocol)](https://modelcontextprotocol.io) server that l
 "Add the B-roll clips to V2, apply a cross dissolve between each, color correct them to match the A-roll, and export a 1080p ProRes."
 ```
 
-The AI handles the entire workflow through 321 core tools spanning the supported ExtendScript, QE DOM, local media and interchange analysis, revisioned project-context retrieval, safe edit-planning, project-intake preview, review handoff, and connection-verification surfaces. A compatible, authenticated UXP panel adds 55 documented, capability-gated tools without replacing the production CEP bridge.
+### At a glance
 
-### Latest release: 1.14.4
+| | |
+| --- | --- |
+| Display name | MCP for Adobe Premiere Pro |
+| npm package | `premiere-pro-mcp` |
+| Install (npm route) | `npm install -g premiere-pro-mcp` |
+| Connector install | `premiere-pro-mcp --install-cep` |
+| MCP server name | `io.github.leancoderkavy/premiere-pro` |
+| Repository | <https://github.com/leancoderkavy/premiere-pro-mcp> |
+| Website | <https://premiere-pro-mcp.com> |
+| License | MIT |
+| Hosts | Windows and macOS, Premiere Pro 2020-2026 |
 
-- **Verified editing semantics:** QE razor operations use sequence timecode and
-  batch effect application preflights every target before reporting a verified
-  component readback.
-- **Honest playback state:** legacy playback tools report an accepted request,
-  not movement or stoppage, until a separate position readback confirms it.
-- **Fail-closed catalogs:** empty QE audio-transition catalogs are errors, and
-  effect fallback results are explicitly bounded and partial.
+This project is independent and is not affiliated with or endorsed by Adobe Inc.
+It is also separate from other MCP servers for Premiere Pro. The only npm package
+published from this repository is `premiere-pro-mcp`, and no other package name
+installs it.
+
+**Comparing similarly named packages?** Both this package and
+`adobe-premiere-pro-mcp` declare a `premiere-pro-mcp` executable. Verify the package
+and repository before configuring a client. The new
+[local configuration helper](docs/client-configuration.md) prints Claude, Cursor,
+VS Code, or Codex settings that point directly to this installation. It is a
+feature included in v1.15.1 and later.
+
+The current source exposes 381 core tools for supported workflow steps spanning the supported ExtendScript, QE DOM, local media and interchange analysis, revisioned project-context retrieval, safe edit-planning, project-intake preview, review handoff, connection verification, and guarded After Effects MOGRT authoring, batch, library, render-queue, inspection, and Premiere-handoff workflows. A compatible, authenticated UXP panel adds 95 documented, capability-gated tools without replacing the production CEP bridge.
+
+<a id="latest-release"></a>
+
+### Latest release: 1.16.4
+
+The published v1.16.3 npm artifact contains **381 core tools**, 379 in its default profile,
+and 475 with a compatible UXP connection. The development catalog above can include
+unreleased work. See the [versioned facts and package provenance](https://premiere-pro-mcp.com/facts/).
+
+### Try a bounded workflow
+
+Choose a setup guide: [Claude Desktop](https://premiere-pro-mcp.com/blog/claude-desktop-premiere-pro-mcp-setup/),
+[Codex](https://premiere-pro-mcp.com/blog/codex-premiere-pro-mcp-setup/),
+[other local MCP clients](https://premiere-pro-mcp.com/blog/how-to-set-up-premiere-pro-mcp/),
+or [ChatGPT connection options](https://premiere-pro-mcp.com/blog/chatgpt-premiere-pro-mcp/).
+
+Download the [workflow starter kit](https://premiere-pro-mcp.com/workflows/) for
+synthetic media and three evaluation recipes: a read-only sequence check, an
+explicitly confirmed review-frame export, and a product-spot preview. No email is
+required. The kit has no recorded Premiere demo or verified host result. Start with
+a disposable project and use [setup and recovery](https://premiere-pro-mcp.com/docs/troubleshooting/)
+if the connection is unavailable.
+
+### Release highlights
+
+- **Editorial planning:** film evidence, transcript cleanup, caption authoring, shorts and chapter planning, rhythm and speaker layouts, timeline QA, and platform delivery plans.
+- **Cross-app handoff:** capability-aware workflow routes and guarded After Effects render-to-Premiere handoff.
+- **Editing correctness:** verified readback and explicit capability or committed-but-unverified failures across transition, import, effects, source identity, and track operations. Insert edits ripple QE sync-locked tracks instead of silently desyncing neighbours.
+
+- **MOGRT studio:** an optional, separate After Effects CEP connector can
+  author approval-gated title, callout, quote, and social recipes; constrain
+  them with local brand kits; batch, publish, queue, inspect, and hand them to
+  Premiere without claiming visual or completed-render proof.
+- **Global-update handoff:** a global npm installation can show its server and
+   connector update state in the Windows CEP panel and, after explicit
+   confirmation, update only after Premiere has been quit; it never changes a
+   project, client configuration, source checkout, or custom npm prefix.
+- **Local review planning:** caption timing previews parse caller-supplied
+   SRT/VTT without writing or importing it, while revision-bound editorial
+   evidence stays in the opt-in local context index without provider calls.
+- **Repair preview:** `premiere-pro-mcp --doctor --plan-fixes` produces a
+   privacy-safe, no-write repair plan; the narrowly eligible connector repair
+   still requires an explicit confirmation that Premiere is closed.
+- **Auditable guidance:** the universal setup guide, generated public workflow
+  manifest, and proof runbook make workflow and verification boundaries
+  inspectable without claiming a licensed-host walkthrough occurred.
+- **Faster, clearer delivery:** immutable MCP registration work is reused
+  safely across stateless requests, and the landing now has a lighter,
+  mobile-first workflow view plus current machine-readable facts and crawl
+  guidance for its public pages.
 - **Explicit boundary:** the hosted endpoint remains an operator-managed MCP
   service; unauthenticated callers are rejected and it does not pair users to
-  local Premiere processes.
+  local Premiere processes. See the generated [supported action catalog](docs/supported-actions.md)
+  for individual capability and verification contracts.
 
-See the [v1.14.4 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.14.4)
+See the [v1.16.4 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.16.4)
 for complete details. Live installation in Premiere Pro still requires host verification.
 
 ### Current MCP protocol support
@@ -56,6 +170,11 @@ stateless protocol over HTTP and stdio, while retaining legacy MCP compatibility
 through `2025-11-25`. Modern clients receive discovery, validated routing headers,
 cache hints, subscription-stream support, and the formal Premiere extension
 capability. See the [complete MCP capability and boundary report](docs/mcp-2026-07-28-capabilities.md).
+
+If an MCP client cannot complete its `server/discover` probe, set
+`PREMIERE_MCP_PROTOCOL_MODE=legacy` in that client's server environment and restart
+the client. This uses the SDK's base stdio transport and the legacy initialization
+handshake only; leave it unset (or `auto`) for modern MCP capabilities.
 
 ---
 
@@ -86,11 +205,33 @@ their bins, media rules, and organization rules before a facility uses one.
 
 ## Quick Start
 
+> ### Install the published package (verify the name)
+>
+> ```bash
+> npm i -g premiere-pro-mcp@1.16.4
+> ```
+>
+> This repository publishes only **`premiere-pro-mcp`**. A differently named package (`adobe-premiere-pro-mcp`) may also declare a `premiere-pro-mcp` executable. Before configuring a client, confirm:
+>
+> | Check | Expected |
+> | --- | --- |
+> | Package name | `premiere-pro-mcp` (not `adobe-premiere-pro-mcp`) |
+> | Version | `1.16.4` |
+> | Homepage / repo | https://premiere-pro-mcp.com/ · https://github.com/leancoderkavy/premiere-pro-mcp |
+>
+> ```bash
+> npm list -g premiere-pro-mcp
+> premiere-pro-mcp --version
+> npm view premiere-pro-mcp homepage repository.url
+> ```
+>
+> Then continue with `--install-cep`, `--doctor`, and the read-only `verify_premiere_connection` prompt.
+
 ### Easiest supported path: Claude Desktop
 
-1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.14.4/premiere-pro-mcp-1.14.4.mcpb).
+1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.16.4/premiere-pro-mcp-1.16.4.mcpb).
 2. In Claude Desktop, open **Settings > Extensions > Advanced settings > Install Extension**, select the downloaded bundle, and restart Claude Desktop.
-3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.14.4/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
+3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.16.4/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
 4. Restart Premiere, open a project, then open **Window > Extensions > MCP for Adobe Premiere Pro**.
 5. In Claude, enter: `Safely check my Premiere connection with verify_premiere_connection. Make no changes.`
 
@@ -112,6 +253,11 @@ If a bridge, project, or active sequence is missing, fix that setup state before
 ### Other AI assistants
 
 Cursor, VS Code/Copilot, Windsurf, and other MCP clients do not currently have a project-provided one-click installer. Use their MCP settings with the advanced npm route below. Keep the assistant, server, connector, and Premiere on the same computer.
+
+For a portable reference users can download and attach to any AI assistant, see
+the [MCP for Adobe Premiere Pro setup guide for AI assistants](premiere-mcp-setup-guide.md).
+Attaching the guide provides assistant context; the local server and Premiere
+connector still need to be installed separately.
 
 <details>
 <summary><strong>Advanced setup: npm or source</strong></summary>
@@ -164,6 +310,51 @@ premiere-pro-mcp --doctor
 ```
 
 Then ask your MCP client to run `verify_premiere_connection`. The check is read-only.
+
+#### Update an existing installation
+
+New **releases** update the local server and Premiere connector; a deployment of
+the hosted MCP service does not replace software on your computer. Fully quit
+Premiere before updating the connector.
+
+**Installed globally from npm:**
+
+```bash
+premiere-pro-mcp --check-update
+premiere-pro-mcp --update
+```
+
+`--update` only changes a global npm installation. It installs the published
+`latest` package, refreshes the bundled CEP connector, and leaves your MCP
+client configuration and projects untouched. Restart Premiere and your MCP
+client afterward, then run `verify_premiere_connection` before editing.
+
+**From the MCP for Adobe Premiere Pro panel (Windows global npm install):**
+
+The **MCP updates** card compares the installed global server and connector
+with npm `latest`. Choose **Update after quit**, review the confirmation, then
+quit Premiere normally. A per-user helper waits for Premiere to exit; it never
+force-quits the app, then installs the published npm package and refreshes its
+matching connector. This also supports older global installs that predate the
+`--update` command.
+When you reopen Premiere, the panel reports the result and reminds you to
+restart your MCP client and verify the connection. This flow never changes a
+project or MCP client configuration. It deliberately will not update a Git
+checkout, a custom npm prefix, or a Claude Desktop `.mcpb` bundle.
+
+**Installed from a Git clone:**
+
+```bash
+npm run check-update:source
+npm run update:source
+```
+
+The source updater refuses a checkout with uncommitted files or local commits,
+fast-forwards only to its configured upstream, runs `npm ci` and the production
+build, then refreshes the CEP connector. This avoids silently overwriting local
+code. If you installed the Claude Desktop `.mcpb` bundle, download and install
+the newer bundle from the GitHub release instead; Claude controls extension
+updates.
 
 #### Remove the CEP connector
 
@@ -245,27 +436,6 @@ If you installed from npm, configure the client to run the global command:
 }
 ```
 
-When `PREMIERE_UXP_TOKEN` is enabled and more than one local MCP session may
-run at once, add `--proxy` to every client configuration. Each proxy attaches
-to one per-user broker; only that broker owns the UXP loopback listener.
-
-```json
-{
-  "mcpServers": {
-    "premiere-pro": {
-      "command": "premiere-pro-mcp",
-      "args": ["--proxy"]
-    }
-  }
-}
-```
-
-The first proxy starts the broker in a detached process. Later proxies reuse
-it through a Windows named pipe or a Unix-domain socket. Pass
-`PREMIERE_UXP_TOKEN` and any `PREMIERE_UXP_PORT` setting in the MCP client's
-environment so the broker inherits them. Restart all MCP client processes
-after changing this configuration.
-
 If you cloned the repository instead, use the source-build configuration shown below for your client.
 
 <details>
@@ -318,6 +488,9 @@ Add to `.cursor/mcp.json` in your project or global config:
 }
 ```
 
+After the server is enabled, select Claude Fable 5.1 in Cursor when you want a
+longer-horizon session. See [Claude Fable 5.1 workflows](docs/claude-fable-5-1.md).
+
 </details>
 
 <details>
@@ -346,7 +519,7 @@ Add to your VS Code MCP server configuration:
 4. Ask your AI assistant to run `get_capabilities`, then `ping`, with Premiere open.
 5. For a safe first request, ask: *"What is my current Premiere Pro project and active sequence? Do not make changes."*
 
-The default bridge directory is derived from the operating system on both sides, so most local setups should not set `PREMIERE_TEMP_DIR`. If you override it, use the same absolute path in the MCP server and CEP panel; Windows and macOS paths are not interchangeable.
+The default bridge directory is derived from the operating system on both sides, so most local setups should not set `PREMIERE_TEMP_DIR`. On macOS, the server resolves the per-user system temporary directory even when a GUI-launched client strips `TMPDIR`, keeping it aligned with Premiere's CEP panel. If you override it, use the same absolute path in the MCP server and CEP panel; Windows and macOS paths are not interchangeable.
 
 ### Codex plugin
 
@@ -358,17 +531,28 @@ From a clone of this repository:
 ```bash
 codex plugin marketplace add .
 codex plugin add premiere-pro@premiere-pro-mcp
-npx -y premiere-pro-mcp@1.14.4 --install-cep
+npx -y premiere-pro-mcp@1.16.3 --install-cep
 ```
 
 Restart Premiere Pro and start a new Codex session after installation. The plugin
-launches `premiere-pro-mcp@1.14.4` through `npx`; the separate CEP installation is
+launches `premiere-pro-mcp@1.16.3` through `npx`; the separate CEP installation is
 required because the MCP server communicates with the running Premiere host through
 the local bridge.
 
 The plugin source lives in [`plugins/premiere-pro`](plugins/premiere-pro), and the
 repository marketplace manifest lives in
 [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json).
+
+### GPT-6 Astra and agent tool discovery
+
+Use the Codex plugin with `codex --model gpt-6-astra` when your account has access.
+The server supplies session-aware workflow instructions and bounded tool discovery:
+call `get_capabilities` with `{"tool_query":"transcript","tool_limit":10}` to
+find relevant operations, their descriptions, and backend requirements. Searches
+default to tools registered under the current authority and tool packs.
+
+See [GPT-6 Astra workflows](docs/gpt-6-astra.md) for evidence retrieval, visual
+review, execution ordering, and the division between MCP and client capabilities.
 
 ### Claude
 
@@ -382,7 +566,7 @@ For Claude Code, add this repository as a marketplace and install the plugin:
 Then install the Premiere bridge and start a new Claude Code session:
 
 ```bash
-npx -y premiere-pro-mcp@1.14.4 --install-cep
+npx -y premiere-pro-mcp@1.16.3 --install-cep
 ```
 
 The Claude Code package lives in
@@ -400,6 +584,26 @@ Install the resulting file from `artifacts/` through **Settings > Extensions >
 Advanced settings > Install Extension**. The Premiere CEP bridge must still be
 installed separately.
 
+### Claude Fable 5.1
+
+Use Cursor, Claude Desktop, or Claude Code with Claude Fable 5.1
+(`claude-fable-5-1`) when your account has access. Model selection belongs to the
+client; this server does not run an Anthropic model. Fable 5.1 is optional:
+other Claude models can call the same MCP tools. If Cursor Privacy Mode or an
+Enterprise plan is enabled, an admin must approve Anthropic's Fable data-retention
+policy before the model is available.
+
+The server supplies session-aware workflow instructions and bounded tool discovery:
+call `get_capabilities` with `{"tool_query":"transcript","tool_limit":10}` to
+find relevant operations, their descriptions, and backend requirements. Keep
+Premiere mutations serialized even in a long Fable 5.1 session. Image review of
+returned frames is not playback or delivery proof.
+
+See [Claude Fable 5.1 workflows](docs/claude-fable-5-1.md) for connection order,
+privacy boundaries, evidence retrieval, Cursor's Opus fallback, and the division
+between MCP and client capabilities. The public walkthrough is
+[How to Use Claude Fable 5.1 with MCP for Adobe Premiere Pro](https://premiere-pro-mcp.com/blog/claude-fable-5-1-premiere-pro-mcp/).
+
 ### Windows and macOS capability coverage
 
 | Surface | Windows | macOS | Verification boundary |
@@ -407,6 +611,7 @@ installed separately.
 | CEP production bridge | Premiere Pro 2020–2026 | Premiere Pro 2020–2026 | Run `get_capabilities`, then `ping` with Premiere open |
 | UXP preview bridge | Premiere Pro 25.6+ | Premiere Pro 25.6+ | Live loopback WebSocket and host API verification required |
 | npm CEP installer | Copies plugin and verifies `REG_SZ` debug keys | Copies plugin and verifies the installed manifest/debug settings | Restart Premiere after installation |
+| AE MOGRT authoring CEP bridge | After Effects 2018+ | After Effects 2018+ | Opens only a saved, workspace-contained AE project; a local ZIP check is not import, playback, or visual verification |
 | CI build and unit tests | Node 20, 22, and 24 | Node 20, 22, and 24 | GitHub-hosted OS runners; no Adobe host is available in CI |
 
 `get_capabilities` reports the current operating system, temp directory, CEP/UXP coverage, enabled authority profile, and any live-host verification still required. It also includes the full `tools` catalog generated from the tools registered by the server, including tools disabled by the active profile. Every entry identifies:
@@ -421,7 +626,7 @@ installed separately.
 QE-backed tools are reported as `experimental` because QE is undocumented and can vary between Premiere builds. Authority availability is reported separately from implementation support, so disabling `edit`, for example, does not incorrectly label editing tools as unsupported. Static metadata never claims that a Premiere operation succeeded; use `ping` and inspect each tool result for runtime evidence.
 
 MCP `tools/list` is filtered to the active authority profile. The default
-`inspect,edit,export,filesystem` profile advertises 319 of the 321 registered
+`inspect,edit,export,filesystem` profile advertises 367 of the 369 registered
 tools and omits `execute_extendscript` and `evaluate_expression`, which require
 explicit `unsafe-script` authority. `ping` and `get_capabilities` remain visible
 under every profile so a restricted or misconfigured server can still explain
@@ -443,6 +648,52 @@ MCP `outputSchema`: `ok`, `tool`, plus `data` on success or `error` on failure.
 The tool-specific `data` shape remains versioned by the individual tool result,
 so clients can reliably distinguish transport success from a Premiere or local
 operation failure without parsing the text block.
+
+### After Effects MOGRT studio
+
+This is a narrow authoring path, not an arbitrary After Effects script runner.
+Install the separate local connector, fully restart After Effects, and open
+**Window > Extensions > MCP for Adobe After Effects**:
+
+```bash
+premiere-pro-mcp --install-after-effects-cep
+```
+
+Then open a saved `.aep` project inside an approved workspace and use this order:
+
+1. `verify_after_effects_connection` — read-only connector and saved-project check.
+2. `preview_mogrt_recipe` — produces an expiring, one-time plan for one of five
+   supported recipes: `lower_third`, `title_card`, `callout`, `quote_card`, or
+   `social_end_card`; it never creates directories or contacts Adobe.
+3. `create_mogrt_recipe` with that token and `confirm_export: true` — creates one
+   composition, saves the open project, and requests one `.mogrt` export.
+4. `verify_mogrt_artifact` — checks only local file existence and its ZIP header.
+
+Optional studio paths retain the same preview-and-confirm boundary:
+
+- `validate_mogrt_brand_kit` validates local name-prefix, accent/text colors,
+  font request, safe-margin, and workspace-contained logo values before they
+  are passed into a recipe.
+- `preview_mogrt_batch` / `create_mogrt_batch` export up to 20 JSON/CSV rows
+  serially; batches stop on a host error and do not promise rollback.
+- `preview_mogrt_library_publish` / `publish_mogrt_to_library` write a new,
+  immutable `v001`, `v002`, … copy under an already-existing local library.
+- `inspect_after_effects_template_source` returns source-comp dimensions,
+  duration, fonts, layer kinds, and controller names on AE 16.1+, while
+  `inspect_after_effects_render_templates` lists host template names from an
+  existing queue item.
+- `preview_after_effects_render` / `enqueue_after_effects_render` queue one
+  exact render but never start it. `preview_mogrt_premiere_handoff` /
+  `apply_mogrt_premiere_handoff` import into an explicitly named empty
+  `MOGRT Verify - …` Premiere sequence and read back insertion/control
+  descriptors.
+
+The authoring connector uses `AFTER_EFFECTS_MCP_TEMP_DIR` (default: the OS temp
+directory plus `after-effects-mcp-bridge`), completely separate from
+`PREMIERE_TEMP_DIR`. The tool will not create, replace, or switch projects; it
+requires the already-open AE project and output directory to be contained by the
+same approved workspace. An import/control readback still needs rendered-frame
+review before delivery; use `capture_frame` or a separate approved export path.
 
 `inspect_sequence_review_report` creates one read-only handoff report from
 Premiere timeline readback: sequence structure, primary-track gaps, disabled
@@ -522,16 +773,43 @@ The MCP server can accept a local UXP panel connection and invoke the UXP comman
 PREMIERE_UXP_TOKEN="replace-with-a-long-random-secret" premiere-pro-mcp
 ```
 
-Enter the same token in the UXP panel. The listener binds only to `127.0.0.1:7777`, authenticates the WebSocket upgrade, requires a versioned capability handshake, correlates concurrent requests, and fails pending work on timeout or disconnect. Set `PREMIERE_UXP_PORT` to use another loopback port. Use `--proxy` for multiple local MCP sessions; `--broker` explicitly starts the single per-user UXP owner and is normally started automatically by the first proxy.
+Generate that secret yourself and enter the same value in the UXP panel (**Window → UXP Plugins**, not the CEP Connector). CEP-only setups do not use a token. The listener binds only to `127.0.0.1:7777`, authenticates the WebSocket upgrade, requires a versioned capability handshake, correlates concurrent requests, and fails pending work on timeout or disconnect. Set `PREMIERE_UXP_PORT` to use another loopback port.
+
+When `PREMIERE_UXP_TOKEN` is enabled and more than one local MCP session may
+run at once, add `--proxy` to every client configuration. Each proxy attaches
+to one per-user broker; only that broker owns the UXP loopback listener.
+
+```json
+{
+  "mcpServers": {
+    "premiere-pro": {
+      "command": "premiere-pro-mcp",
+      "args": ["--proxy"]
+    }
+  }
+}
+```
+
+The first proxy starts the broker in a detached process. Later proxies reuse
+it through a Windows named pipe or a Unix-domain socket. Pass
+`PREMIERE_UXP_TOKEN` and any `PREMIERE_UXP_PORT` setting in the MCP client's
+environment so the broker inherits them. Restart all MCP client processes
+after changing this configuration.
 
 If an older direct server still owns the UXP port, run `npm run stop:mcp` from
 that checkout. Cleanup matches the exact `dist/index.js` path, excludes proxy
 sessions on Windows and POSIX, and reports if another process still owns the
 configured port.
 
-When enabled, MCP discovery includes 55 capability-gated UXP additions. The first expansion covers effects, deterministic timeline selection, selection batches, scene detection, proxy/ingest, relink, metadata, color conformance, Source Monitor audition, storage, and least-privilege workspace access. The second adds Project-panel selection, marker CRUD, bin organization, sequence settings, imports, typed effect parameters/keyframes, track-item transforms, SequenceEditor timeline edits, sequence lifecycle, and AME encoding. The third wave begins with a redacted event journal, conservative AME terminal receipts, explicit host-readiness gates, safe multi-project sessions, lease-based growing-media control, namespaced workflow checkpoints, bounded media-health maintenance, caption-aware track mute state, and transactional source trim/framing documented in [the third-wave workflow matrix](docs/third-wave-uxp-workflows.md). The bounded migration surface also includes a non-ripple selected-item lift plus native video-transition listing and transactions; it does not claim direct empty-track create/delete or global redo support. A separate [hybrid benchmark gate](docs/uxp-hybrid-benchmark.md) keeps native acceleration disabled until reproducible cross-platform evidence exists. See also [the first stable workflow matrix](docs/uxp-stable-workflows.md) and [the next-ten workflow matrix](docs/uxp-next-ten-workflows.md). Commands are advertised only while the authenticated local UXP bridge is connected; the host capability handshake remains the authority for support in the running Premiere build. A failed UXP command is never silently retried through CEP because the first operation may have partially succeeded.
+When enabled, MCP discovery includes 96 capability-gated UXP additions. The first expansion covers effects, deterministic timeline selection, selection batches, scene detection, proxy/ingest, relink, metadata, color conformance, read-only Premiere/After Effects environment inspection, Source Monitor audition, storage, and least-privilege workspace access. The second adds Project-panel selection, marker CRUD, single-transaction undoable beat-grid marker application, bin organization, sequence settings, imports, typed effect parameters/keyframes, track-item transforms, atomic J/L split edits, SequenceEditor timeline edits, sequence lifecycle, and AME encoding. The third wave begins with a redacted event journal, conservative AME terminal receipts, explicit host-readiness gates, safe multi-project sessions, lease-based growing-media control, namespaced workflow checkpoints, bounded media-health maintenance, caption-aware track mute state, transactional source trim/framing, guarded sequence-range updates, guarded source-media start timing, and guarded source-media frame-rate/pixel-aspect overrides documented in [the third-wave workflow matrix](docs/third-wave-uxp-workflows.md). The bounded migration surface also includes a non-ripple selected-item lift, native video-transition listing and guarded transactions, native active and explicit-GUID sequence timing inspection, opt-in installed-MOGRT directory inspection without filesystem enumeration, bounded native timeline structure inspection with opt-in source IDs, classification, and broad content category, guarded sequence display-format updates, a capped native Project-panel tree, a double-read Project-panel insertion-bin snapshot, guarded empty/default sequence creation, bounded native Project-panel schema/item-column metadata inspection, guarded direct Project-panel metadata replacements with exact state/readback guards, guarded typed Project metadata schema-field creation with non-field-level readback, guarded direct updates to three named application preferences, guarded transcript JSON replacement for one exact source clip, direct active-track-item identity readback, guarded source-only slips, guarded contiguous three-item slides, guarded append-only timeline duplicates, guarded contiguous same-track ripple deletes, guarded source-project-item color labels resolved from one timeline coordinate, guarded explicit-sequence preview-frame rectangle updates, explicit opt-in source-media provenance paths with bounded double resolution, bounded source-proxy readiness with an explicit attached-path disclosure, guarded static effect-parameter PointF x/y updates, bounded effect-parameter descriptor catalogs, bounded project/sequence Object Mask audits, native FrameRate/TickTime frame-alignment inspection with caller-owned inputs and tick readback, and native TickTime arithmetic over caller-owned canonical tick strings; it does not claim direct empty-track create/delete, global redo support, playback proof, Object Mask counts or visual validity, an atomic Project-panel metadata compare-and-set, app-preference Undo, installed-template availability or compatibility, imported transcript persistence, override-presence/clear semantics, path existence, source lineage or rights, proxy compatibility, general or keyframed effect-parameter value readback, rendered-frame correctness, linked-item sync, or licensed-host validation. A separate [hybrid benchmark gate](docs/uxp-hybrid-benchmark.md) keeps native acceleration disabled until reproducible cross-platform evidence exists. See also [the first stable workflow matrix](docs/uxp-stable-workflows.md), [the next-ten workflow matrix](docs/uxp-next-ten-workflows.md), [the guarded-slip workflow notes](docs/uxp-slip-workflows.md), [the guarded-slide workflow notes](docs/uxp-slide-workflows.md), [the guarded-duplicate workflow notes](docs/uxp-clone-workflows.md), and [the guarded-ripple-delete workflow notes](docs/uxp-ripple-delete-workflows.md). Commands are advertised only while the authenticated local UXP bridge is connected; the host capability handshake remains the authority for support in the running Premiere build. A failed UXP command is never silently retried through CEP because the first operation may have partially succeeded.
 
-The panel now requests access to one operator-selected workspace instead of declaring full filesystem access. Choose the folder in the panel before invoking a path-based UXP workflow. Media, relink, preset, export, and Source Monitor file paths must remain inside it; the persistent capability token and native root path are never returned over MCP. Lexical containment alone cannot exclude symlink, junction, or reparse-point escapes, and Adobe's request-scoped UXP filesystem API does not document canonical-path resolution. Builds without a host-supplied canonical resolver therefore advertise path-based UXP commands as unsupported and fail closed at invocation; use the existing CEP fallback for those operations.
+The bounded UXP migration surface also exposes a read-only animated-PointF endpoint-displacement inspection through `automate_effect_parameters_uxp`. It requires one exact component and parameter target plus a strictly increasing time interval, double-reads native endpoint values and their distance, and refuses static, malformed, or changed parameter state. It does not modify Premiere or prove rendered appearance, playback, persistence, Undo, or licensed-host behavior.
+
+The bounded UXP migration surface also exposes guarded static Color effect-parameter RGBA updates through `automate_effect_parameters_uxp`. They require a complete double-read snapshot, explicit confirmation, a valid operation ID, per-parameter serialization, one native transaction, and exact raw-component readback. They reject time-varying parameters and do not claim keyframed Color edits, color management, rendered appearance, playback, persistence, Undo, or licensed-host validation.
+
+The bounded UXP migration surface also exposes guarded typed Project metadata schema-field creation. It requires the exact inspected active-project identity and 12 KiB-bounded panel XML, an explicit confirmation and operation ID, and serializes this bridge's schema and panel-replacement calls per project. Adobe provides no atomic compare-and-set or field-level schema getter: native acceptance and a changed panel XML are evidence only, so the command always returns `committed_unverified` and does not claim field presence, persistence, UI results, Undo, cancellation, or licensed-host validation.
+
+The panel now requests access to one operator-selected workspace instead of declaring full filesystem access. Choose the folder in the panel before invoking a path-based UXP workflow. Media, relink, preset, export, and Source Monitor file paths must remain inside it; the persistent capability token and native root path are never returned over MCP. After a folder is granted, path-based commands resolve each native path through that folder's Entry tree and compare the host `nativePath` against the approved root, so symlink or junction targets outside the workspace still fail closed. If the host Entry cannot be walked and no resolver is supplied, those commands stay unsupported and the CEP fallback remains the path-based compatibility route.
 
 Native transcript editing starts with a read-only, revision-locked planning flow. Use
 `get_clip_transcript_uxp` to export the transcript Premiere generated for a source
@@ -552,6 +830,16 @@ idempotency keys and return explicit verification outcomes. See [the Adobe UXP 2
 coverage matrix](docs/adobe-uxp-26.3-coverage.md) and [the UXP capability
 foundation](docs/uxp-capability-foundation.md) for the command matrix and live-host
 validation boundary.
+
+The [Premiere surface registry](docs/premiere-surface-registry.md) separately
+tracks the Premiere DOM, general UXP JavaScript, HTML/CSS, Spectrum, plugin
+guides, UXP Hybrid C++, the standalone Premiere C++ PrSDK, CEP/ExtendScript,
+the CEP platform, QE, and pinned competitor sources. The exhaustive
+[general UXP JavaScript inventory](docs/uxp-js-api-inventory.md) is generated
+from Adobe's pinned declarations, while the exhaustive
+[Premiere documentation inventory](docs/premiere-doc-inventory.md) tracks every
+page in Adobe's live sitemap. This keeps declaration and documentation
+inventory distinct from implementation and licensed-host coverage.
 
 The stable workflow expansion adds native component-chain effects, deterministic
 timeline selection, compound selection batches, scene-edit detection, proxy/ingest control, guarded offline
@@ -604,11 +892,27 @@ The file-based IPC bridge is simple, reliable, and works across macOS and Window
 
 ---
 
-## Tools (321 core total; 319 under the default profile; 374 with a connected UXP bridge)
+<a id="tools"></a>
+
+`inspect_unique_object_identity_uxp` is a separate read-only native identity
+inspection route. It resolves exactly one project item or sequence, reads the
+opaque `UniqueSerializeable` identity twice, and rejects drift without retaining
+the value or treating it as edit authority. See the [unique-identity workflow
+notes](docs/uxp-unique-identity-workflows.md) for its bounds and proof boundary.
+
+## Film editorial review
+
+`inspect_film_editorial_workflow` validates captured identities and explicit
+source/scene coverage, builds marker/stringout/line/beat review artifacts, and
+reports revision-bound notes, VFX state, change impact and turnover exceptions.
+It performs local inspection; host edits and exports use separate guarded tools.
+See [usage, example and remaining execution adapters](docs/film-editorial-workflows.md).
+
+## Tools (381 core total; 379 under the default profile; 475 with a connected UXP bridge)
 
 The [complete supported-actions catalog](docs/supported-actions.md) lists every
 registered core tool, the two tools restricted behind explicit `unsafe-script`
-authority, and all 55 authenticated UXP additions with their current action or mode
+authority, and all 96 authenticated UXP additions with their current action or mode
 values. It is generated from the same MCP registration surface returned to clients;
 the tables below are a shorter workflow-oriented overview.
 
@@ -661,12 +965,14 @@ the tables below are a shorter workflow-oriented overview.
 > (`ripple_delete`, razor/split) and existing effect-parameter writes. These tools now verify
 > the resulting sequence state and return an error instead of a false success. For structural
 > edits, rebuild the wanted source ranges into a new sequence with `create_sequence` and
-> `add_to_timeline`. Native transitions are unavailable when the host does not expose
-> `qeTrack.addTransition`; overlay clips remain a workaround for transitions that do not need
-> to blend adjacent source frames. See [issue #21](https://github.com/leancoderkavy/premiere-pro-mcp/issues/21).
+> `add_to_timeline`. The legacy CEP transition path targets `qeClip.addTransition` (not the
+> QE track) and reports success only after DOM transition-count readback. Prefer the connected
+> UXP transition tools where available; overlay clips remain a workaround when a legacy QE
+> write is rejected or not verified. See [issue #21](https://github.com/leancoderkavy/premiere-pro-mcp/issues/21).
 
-> **Speed, caption, and visual-keyframe boundaries:** Premiere Pro 26.3 exposes no supported
-> scripting setter or Time Remapping component for timeline-clip speed or direction. `reverse_clip`,
+> **Speed, caption, and visual-keyframe boundaries:** Premiere Pro 26.3 may reflect legacy QE
+> speed/direction methods, but exposes no supported scripting setter or Time Remapping component
+> for timeline-clip speed or direction. `reverse_clip`,
 > `speed_change`, `set_clip_speed_qe`, and `set_clip_properties` with `speed` now stop before host mutation;
 > use the Speed/Duration UI or pre-render retimed media. `add_text_overlay` likewise stops
 > before mutation because a raw-text-to-caption API is not exposed; import an `.srt`/`.vtt`
@@ -726,7 +1032,7 @@ Premiere Pro 26.x host.
 | `get_value_at_time` | Query interpolated value at any time |
 | `set_color_value` | Set color properties on effects |
 
-### Export & Encoding (16)
+### Export & Encoding (17)
 
 | Tool | Description |
 | :--- | :---------- |
@@ -735,13 +1041,17 @@ Premiere Pro 26.x host.
 | `verify_delivery_file` | Verify output size and calculate SHA-256/SHA-512 checksums |
 | `capture_frame` | Export frame as PNG, return as base64 image |
 | `export_as_fcp_xml` / `export_aaf` / `export_omf` | Interchange formats |
+| `export_sequence_edl` | CMX 3600 EDL for one track, generated from timeline readback and self-validated (cuts, reels, drop/non-drop timecode, M2 lines for retimed clips) |
 | `encode_project_item` / `encode_file` | Direct encoding |
 | `start_batch_encode` | Start render queue |
 
-Premiere's documented automation surfaces do not currently expose OTIO or EDL
-interchange, Render and Replace, cloud publishing, or Content Credentials export
-configuration. `get_capabilities` reports these delivery gaps explicitly rather
-than presenting UI-only operations as available tools.
+Premiere's documented automation surfaces do not currently expose OTIO or native
+EDL interchange, Render and Replace, cloud publishing, or Content Credentials
+export configuration. `export_sequence_edl` therefore builds the CMX 3600 list
+locally from the clips Premiere reads back and validates it with the same parser
+used by `inspect_cmx3600_edl`; it is not a Premiere-native export.
+`get_capabilities` reports the remaining delivery gaps explicitly rather than
+presenting UI-only operations as available tools.
 
 ### Source Monitor & Playback (7 + 4)
 
@@ -788,6 +1098,89 @@ than presenting UI-only operations as available tools.
 | `get_workspaces` / `set_workspace` | Switch workspace layouts |
 | `create_caption_track` | Create caption/subtitle tracks |
 
+### Timeline QA (2)
+
+| Tool | Description |
+| :--- | :---------- |
+| `diff_sequence_snapshots` | Added / removed / moved / trimmed / retimed / renamed / enabled changes between two sequence snapshots with frame deltas and EDL-like lines |
+| `audit_timeline_health` | Health score with flash-frame, gap, overlap, repeated-shot, coverage, overlength, and speed findings plus review-frame suggestions |
+
+### Editor Requests: markers, selection, checkpoints, navigation (5)
+
+| Tool | Description |
+| :--- | :---------- |
+| `add_markers_batch` | Up to 200 sequence or clip markers in one verified request; feed it beat grids from `detect_beats`, chapters from `plan_chapter_markers`, or client notes from `plan_client_notes_checklist` |
+| `select_clips_by_pattern` | "Select every other clip": every-Nth selection with offset, name/regex, duration, range, track, and enabled filters, read back after selecting |
+| `create_sequence_checkpoint` / `list_sequence_checkpoints` | Named `[checkpoint]` sequence clone before a risky edit, plus a `diff_sequence_snapshots`-ready snapshot of the original |
+| `navigate_playhead` | Start, end, in/out, work area, next/previous edit or marker, or frame stepping with position readback |
+
+### Review and Conversation Planning (2)
+
+| Tool | Description |
+| :--- | :---------- |
+| `plan_client_notes_checklist` | Pasted client or reviewer feedback → prioritized checklist (category, must/should/nice, approvals, questions, timecodes and ranges) and an `add_markers_batch` payload |
+| `plan_multicam_angle_switches` | Active-speaker angle switching for stacked camera tracks: minimum holds, crosstalk cover shots, lead-in cuts, cutaways, razor times, per-camera enable ranges, and markers |
+
+Both planners are local and deterministic. Premiere exposes no scripting API
+for switching angles inside a multicam source sequence, so the multicam plan
+targets synced clips stacked on separate video tracks and is applied through
+`razor_all_tracks`, `select_clips_in_range`, `batch_enable_disable`, and
+`add_markers_batch` on a checkpointed sequence. See
+[editor requests](docs/editor-requests.md) for the community and competitor
+evidence behind these tools and their verification boundaries.
+
+### Speaker Layout (2)
+
+| Tool | Description |
+| :--- | :---------- |
+| `plan_speaker_checkerboard` | Per-speaker segments, split points, and track assignments for checkerboarded dialogue |
+| `plan_active_speaker_reframe` | Active-speaker vertical reframe keyframes, or static stacked / side-by-side two-speaker layouts |
+
+### Rhythm Plans (2)
+
+| Tool | Description |
+| :--- | :---------- |
+| `plan_emphasis_zoom_keyframes` | Punch-in zoom keyframes (Motion Scale + subject-anchored Position) from sentence starts, emphasis words, intervals, or supplied triggers |
+| `plan_beat_montage` | Beat-grid shot assignment for a clip list with `add_to_timeline_batch` chunks, trim plan, and beat markers |
+
+### Shorts Intelligence (2)
+
+| Tool | Description |
+| :--- | :---------- |
+| `rank_short_form_candidates` | Rank sentence-aligned windows as short-form candidates with explainable hook, completeness, density, evidence, and duration-fit scores |
+| `plan_chapter_markers` | Lexical-cohesion chapter segmentation with titles, YouTube timestamps, and ready Chapter marker payloads |
+
+### Caption Authoring (2)
+
+| Tool | Description |
+| :--- | :---------- |
+| `build_caption_artifact` | Word-grouped SRT/VTT captions with karaoke timestamps, emphasis markup, speaker prefixes, and style presets, written inside an approved workspace |
+| `check_caption_safe_zone` | Overlap check for caption and graphic rectangles against approximate platform UI zones, with a suggested clear position |
+
+### Reaction Shorts (3)
+
+| Tool | Description |
+| :--- | :---------- |
+| `plan_reaction_captions` | Stacked speaker-colored caption plan from a word timeline and explicit palette; flash words merge, overlaps stack, unknown speakers stay uncolored |
+| `plan_short_subscribe_cta` | Brief subscribe overlay placed about two-thirds through a Short, after an optional hook, with brand-safe styling notes |
+| `plan_short_export_folder` | Series-named export path under an approved Shorts root; create the folder when it is missing and keep Cafe and Watch Club assets separate |
+
+### Transcript Word Edits (4)
+
+| Tool | Description |
+| :--- | :---------- |
+| `plan_filler_word_removal` | Word-level filler removal plan (um, uh, you know…) with frame-snapped removal and keep ranges |
+| `plan_pause_tightening` | Shorten long pauses to a target length without deleting speech |
+| `plan_word_mute_ranges` | Mute or bleep listed words: padded ranges, ready audio keyframes, redacted text |
+| `detect_repeated_takes` | Group near-duplicate retakes and plan removal of all but the kept take |
+
+### Platform Delivery Planning (2)
+
+| Tool | Description |
+| :--- | :---------- |
+| `plan_platform_delivery_matrix` | Per-platform sequence settings, fit/fill reframe math, duration and file-size fit, caption safe zones, and an ordered clone → reframe → caption → export → verify route |
+| `validate_platform_publish_package` | Validate a rendered file plus title, description, hashtags, and content flags against approximate TikTok, Reels, Shorts, YouTube, LinkedIn, X, and Facebook limits |
+
 ### Scripting (2)
 
 | Tool | Description |
@@ -803,13 +1196,13 @@ Track targeting, batch operations, markers, audio levels, motion/transform, meta
 
 ## MCP Resources
 
-The server exposes fourteen LLM context resources and eleven workflow prompts:
+The server exposes fourteen LLM context resources and nineteen workflow prompts:
 
 | Resource URI | Description |
 | :----------- | :---------- |
-| `config://premiere-instructions` | Best practices: workflow order, timeline rules, effect tips, error handling |
+| `config://premiere-instructions` | Best practices: workflow order, metadata layers, timeline rules, error handling |
 | `config://extendscript-reference` | Complete ExtendScript API reference for writing custom scripts |
-| `config://premiere-workflows` | Machine-readable catalog for rough cuts, dialogue cleanup, captions, and delivery |
+| `config://premiere-workflows` | Machine-readable catalog for rough cuts, metadata review, dialogue cleanup, captions, and delivery |
 | `config://premiere-project-context` | Revisioned local project-context indexing and retrieval workflow |
 | `premiere://project/info` | Fresh, path-redacted current-project and active-sequence summary |
 | `premiere://project/sequences` | Bounded sequence inventory with stable Premiere IDs |
@@ -820,7 +1213,7 @@ The server exposes fourteen LLM context resources and eleven workflow prompts:
 | `premiere://effects/applied` | Bounded active-timeline component inventory |
 | `premiere://transitions/available` | Bounded video/audio transition catalog for planning |
 | `premiere://export/presets` | Bounded export-preset names and formats, without native paths |
-| `premiere://project/metadata` | Read-only project and active-timeline summary, without paths or timestamps |
+| `premiere://project/metadata` | Path-redacted project and active-timeline summary — not XMP or Project Metadata XML |
 
 The ten `premiere://` snapshots are read-only CEP bridge requests. They include a
 revision token for stale-state detection and omit native media, project-tree, preset,
@@ -924,7 +1317,7 @@ user/device authorization are implemented.
 
 | Variable | Description | Default |
 | :------- | :---------- | :------ |
-| `PREMIERE_TEMP_DIR` | Shared temp directory for MCP ↔ CEP communication | OS temp dir + `/premiere-mcp-bridge` |
+| `PREMIERE_TEMP_DIR` | Shared temp directory for MCP ↔ CEP communication | OS user temp dir + `/premiere-mcp-bridge` (macOS fallback is independent of `TMPDIR`) |
 | `PREMIERE_TIMEOUT_MS` | Command timeout in milliseconds | `30000` |
 | `PREMIERE_DEFAULT_SEQUENCE_PRESET` | Override the auto-discovered `.sqpreset` used by `create_sequence` | auto-discovered |
 | `PREMIERE_MCP_CAPABILITIES` | Comma-separated authority profile; add `unsafe-script` only when raw scripting is required | `inspect,edit,export,filesystem` |
@@ -946,6 +1339,11 @@ user/device authorization are implemented.
 | `MCP_KEEP_ALIVE_TIMEOUT_MS` | Idle keep-alive socket timeout | `5000` |
 | `MCP_MAX_REQUESTS_PER_SOCKET` | Requests permitted on one keep-alive socket | `100` |
 | `MCP_MAX_CONCURRENT_REQUESTS` | In-flight authenticated MCP request ceiling | `8` |
+| `MCP_MAX_CONCURRENT_STREAMS` | Open authenticated SSE stream ceiling; isolated from operation capacity | `32` |
+| `MCP_MAX_CONCURRENT_LANDING_DOCUMENTS` | Concurrent HTML reads, nonce injection and asynchronous compression; excess work returns `503` | `4` |
+| `MCP_LANDING_MAX_HTML_BYTES` | Maximum source HTML document bytes | `4194304` (4 MiB) |
+| `MCP_LANDING_HTML_CACHE_BYTES` | Source HTML cache memory budget; must be at least the document byte limit | `16777216` (16 MiB) |
+| `PREMIERE_MCP_PROJECT_BACKUP_MAX_BYTES` | Positive integer byte budget for one project backup | `2147483648` (2 GiB) |
 | `MCP_RATE_LIMIT_PER_MINUTE` | Per-credential token-bucket refill rate | `120` |
 | `MCP_RATE_LIMIT_BURST` | Per-credential short burst allowance | `30` |
 | `MCP_MAX_RATE_LIMIT_KEYS` | In-memory rate-limit identity ceiling | `2048` |
@@ -978,11 +1376,11 @@ premiere-pro-mcp/
 ├── src/
 │   ├── index.ts                 # Entry point — stdio transport setup
 │   ├── http-server.ts           # Entry point — HTTP/SSE transport (Fly.io / remote)
-│   ├── server.ts                # MCP server — registers 321 tools, filtered by authority profile
+│   ├── server.ts                # MCP server — registers 381 tools, filtered by authority profile
 │   ├── bridge/
 │   │   ├── file-bridge.ts       # File-based IPC (write .jsx, poll .json)
 │   │   └── script-builder.ts    # ExtendScript generator with ES3 helpers
-│   ├── tools/                   # 31 tool modules
+│   ├── tools/                   # 51 tool modules
 │   │   ├── discovery.ts         # Project discovery and queries
 │   │   ├── recovery.ts          # Read-only autosave discovery and private bridge telemetry
 │   │   ├── project.ts           # Project management and import
@@ -1021,12 +1419,14 @@ premiere-pro-mcp/
 │   ├── main.js                  # Bridge polling and script execution
 │   ├── host.jsx                 # ExtendScript entry point
 │   └── CSInterface.js           # Adobe CEP interface library
+├── after-effects-cep-plugin/    # Separate AE CEP bridge for guarded MOGRT recipes
 ├── scripts/
 │   ├── install-cep.sh           # macOS CEP installer (symlink + debug mode)
 │   └── install-cep.ps1          # Windows CEP installer (copy + REG_SZ debug mode)
 ├── Dockerfile                   # Multi-stage Docker build for Fly.io
 ├── fly.toml                     # Fly.io deployment config
 ├── RESEARCH.md                  # API research and implementation status
+├── AGENTS.md                    # IDE / coding-agent map
 ├── CONTRIBUTING.md              # Contribution guidelines
 ├── CHANGELOG.md                 # Version history
 └── LICENSE                      # MIT License
@@ -1062,9 +1462,38 @@ by default. Enable them only by setting
   upstream rate limit and request-size limit too; process-local counters do not protect a multi-machine deployment.
 - **The landing CSP uses a per-response nonce for scripts**, and its static assets use explicit cache policies.
   Keep the server in front of the exported landing so those controls are not bypassed by a separate static host.
-- The bridge temp directory is created private to your user (mode `0700`), and the server
-  refuses to use one owned by another user — relevant on shared machines, where the CEP
-  panel would otherwise execute any `cmd_*.jsx` staged there.
+  Source HTML is cached as immutable build output; restart the HTTP process after replacing
+  an export. Each response still gets a fresh nonce. HEAD requests skip body rendering.
+- **Media scans yield between asynchronous filesystem operations** and bound total traversal:
+  25,000 entries, 5,000 matching files, 2,000 directories, depth 32, a 1,000-directory
+  pending queue, and a cooperative five-second budget. A stalled OS call can exceed that
+  elapsed budget. Inspect `scan_incomplete` and `scan_limit_reasons` before treating a
+  watch baseline as complete; import previews also report `incomplete`.
+- **Project backups stream their copy and checksum work** with a configurable byte budget.
+  Only one backup runs per process; concurrent requests fail promptly. Failed or cancelled
+  copies are removed without replacing an existing backup.
+- **The Docker runner uses the unprivileged `node` user (UID 1000).** Custom bridge or
+  context volume mounts must be writable by that user and private to the operator.
+  The default context directory is under `/home/node/.local/state/premiere-pro-mcp`.
+- Dependency audits run in CI for both lockfiles. Keep local `.env*`, `.npmrc`, and
+  private key/certificate files out of commits and Docker build contexts; only
+  placeholder `.env.example` and `.env.template` files are eligible for Git tracking.
+- Both CEP panels validate the bridge directory before writing a heartbeat or polling
+  commands. Symlinks and directories owned by another user are refused. On POSIX,
+  directories writable by group/other users are refused by both the server and panels;
+  tightening permissions alone cannot make previously staged commands trustworthy.
+  On Windows, only the current user, SYSTEM and Administrators may have write access,
+  including inherited grants. Windows capability and app-container SIDs (`S-1-15-*`)
+  are ignored: they are not logon principals and appear as inherited FullControl on
+  stock `%LOCALAPPDATA%` paths. ACL inspection failures also stop startup. Ancestors must
+  also prevent other users from replacing the bridge path; a private child inside a
+  broadly writable parent is insufficient (POSIX sticky temp directories are supported).
+  Choose a new directory under a private user-owned location if the connector rejects
+  a shared temp folder, and configure the same path on the server and panel. Do not
+  copy pending commands from the rejected folder into the new one.
+  Windows checks invoke PowerShell synchronously before publishing commands, with a
+  five-second timeout and 64 KiB output cap; this adds command latency rather than
+  caching a permission decision that could become stale.
 - There is a 500 KB script size limit, and a small regex check that rejects `eval()`,
   `new Function()`, and `System.callSystem()` in tool-generated scripts. **This is a guard
   rail, not a sandbox** — it is trivially bypassable and is not a security boundary. Do not
@@ -1079,6 +1508,53 @@ Many tools use the undocumented QE DOM (enabled via `app.enableQE()`). These too
 - Set clip speed and reverse
 - Frame blending and time interpolation
 - Remove all effects from a clip
+
+---
+
+## Frequently asked questions
+
+**What is an MCP server for Adobe Premiere Pro?**
+It is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives a
+compatible AI assistant structured, reviewable control over supported Adobe Premiere
+Pro workflows on your own computer. This project's display name is MCP for Adobe
+Premiere Pro; its npm package is `premiere-pro-mcp`.
+
+**How do I use it with Claude?**
+Install the [Claude Desktop bundle](#easiest-supported-path-claude-desktop), install
+the separate signed Premiere connector, restart Premiere, then ask Claude to run
+`verify_premiere_connection` with no changes. That first prompt is read-only.
+Claude Fable 5.1 is an optional client model for Cursor, Claude Desktop, or Claude
+Code; see [Claude Fable 5.1 workflows](docs/claude-fable-5-1.md).
+
+**Where is the GitHub repository?**
+<https://github.com/leancoderkavy/premiere-pro-mcp>. Releases, the signed `.zxp`
+connector, and the Claude `.mcpb` bundle are on that repository's
+[Releases](https://github.com/leancoderkavy/premiere-pro-mcp/releases) page.
+
+**What is the bridge panel in Premiere Pro?**
+A local CEP panel (`Window > Extensions > MCP for Adobe Premiere Pro`) that connects
+the server to a running Premiere Pro instance. "Running" in the panel means the local
+bridge is available; it does not by itself show that an edit completed. An
+authenticated UXP panel is an additional, capability-gated route.
+
+**Is there a setup guide?**
+Yes - [`premiere-mcp-setup-guide.md`](premiere-mcp-setup-guide.md) is a portable guide
+you can attach to any AI assistant, and <https://premiere-pro-mcp.com/docs/> hosts the
+published documentation.
+
+**Does it run on Windows and macOS?**
+Both. Node.js 20.19 or newer and Premiere Pro 2020-2026 are required, and the
+assistant, server, connector, and Premiere should stay on the same computer.
+Individual tool support remains capability- and host-dependent.
+
+**Is this Adobe's AI Assistant?**
+No. This is an independent MIT-licensed project, not an Adobe product and not Adobe's
+native AI Assistant. It is also distinct from other MCP servers for Premiere Pro;
+`premiere-pro-mcp` is the only npm package published from this repository.
+
+**Is it free?**
+Yes. The server, the CEP connector, and the documentation are MIT licensed and free
+to use.
 
 ---
 
@@ -1135,9 +1611,46 @@ npm version, fully quit every Premiere process, run `premiere-pro-mcp --install-
 
 ---
 
+## Star history
+
+If this project saves you time in Premiere, a star helps other editors find it.
+
+<a href="https://star-history.com/#leancoderkavy/premiere-pro-mcp&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=leancoderkavy/premiere-pro-mcp&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=leancoderkavy/premiere-pro-mcp&type=Date" />
+    <img alt="Star history chart for leancoderkavy/premiere-pro-mcp" src="https://api.star-history.com/svg?repos=leancoderkavy/premiere-pro-mcp&type=Date" width="600" />
+  </picture>
+</a>
+
+---
+
+## Support the project
+
+This is an independently maintained, MIT-licensed project with no company behind it.
+Every release is tested against real Premiere versions on both Windows and macOS,
+which takes hardware, licenses, and time.
+
+<a href="https://buymeacoffee.com/leancoderkavy">
+  <img alt="Buy Me A Coffee" src="https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support%20this%20project-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000" />
+</a>
+
+Free ways to help, in order of usefulness:
+
+- ⭐ **Star the repo** — the main way editors discover it
+- 🐛 **File a bug** with your Premiere version, OS, and the tool name that failed
+- 📝 **Report what worked** on a host version not yet in the [capability coverage table](#windows-and-macos-capability-coverage)
+- 🔧 **Open a PR** — see [CONTRIBUTING.md](CONTRIBUTING.md)
+
+Sponsorship funds host verification, signing certificates, and hosting. It does not
+buy prioritized support, roadmap influence, or any claim about unverified host behavior.
+
+---
+
 ## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+AI agents and IDE assistants should read [AGENTS.md](AGENTS.md).
 
 The evidence-backed [next improvement pull-request roadmap](docs/next-improvement-pr-roadmap.md)
 breaks the proposed feature, protocol, reliability, and performance work into ten

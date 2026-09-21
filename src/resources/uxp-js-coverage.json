@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "implementation": "uxp-plugin/index.cjs",
+      "uxpApi": [
+        "uxp.entrypoints",
+        "uxp.EntryPoints.setup",
+        "uxp.host",
+        "uxp.Host.version",
+        "uxp.storage",
+        "globalThis.LocalStorage.getItem",
+        "globalThis.LocalStorage.removeItem",
+        "globalThis.LocalStorage.setItem",
+        "globalThis.WebSocket",
+        "globalThis.WebSocket.close",
+        "globalThis.WebSocket.readyState",
+        "globalThis.WebSocket.send"
+      ],
+      "evidence": "Static panel source mapping only; runtime availability remains host- and manifest-dependent."
+    },
+    {
+      "implementation": "uxp-plugin/workflows.cjs",
+      "uxpApi": [
+        "uxp.xmp",
+        "uxp.XMPMeta",
+        "uxp.XMPMeta.[[construct]]",
+        "uxp.XMPMeta.getProperty",
+        "uxp.XMPMeta.setProperty",
+        "uxp.XMPMeta.iterator",
+        "uxp.XMPMeta.serialize",
+        "uxp.XMPConst"
+      ],
+      "evidence": "Bounded project/XMP field inspect and update; runtime availability is probed and is host-dependent."
+    }
+  ]
+}

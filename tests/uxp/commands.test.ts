@@ -5,41 +5,92 @@ const Commands = require("../../uxp-plugin/commands.cjs");
 const Protocol = require("../../uxp-plugin/protocol.cjs");
 
 function host(options: { transitions?: boolean; commit?: boolean } = {}) {
-  const addAction = vi.fn(() => true);
-  const add = vi.fn(() => ({ kind: "add" }));
-  const remove = vi.fn(() => ({ kind: "remove" }));
+  const addAction = vi.fn((action: { apply?: () => void }) => {
+    action.apply?.();
+    return true;
+  });
+  const transitionState = { start: false, end: true };
+  const ticksPerSecond = 1000000;
+  const createNativeTickTime = (seconds: number) => Object.defineProperties({ seconds }, {
+    ticks: { value: String(Math.round(seconds * ticksPerSecond)) },
+    alignToFrame: { value: (frameRate: { value: number }) => createNativeTickTime(Math.floor(seconds * frameRate.value + 1e-9) / frameRate.value) },
+    alignToNearestFrame: { value: (frameRate: { value: number }) => createNativeTickTime(Math.round(seconds * frameRate.value) / frameRate.value) },
+  });
+  const add = vi.fn((_transition: unknown, options: { applyToStart?: boolean }) => ({
+    kind: "add", apply: () => { transitionState[options.applyToStart ? "start" : "end"] = true; }
+  }));
+  const remove = vi.fn((position: number) => ({
+    kind: "remove", apply: () => { transitionState[position === 0 ? "start" : "end"] = false; }
+  }));
   const liftAction = { kind: "lift" };
   const selectedItem = { guid: "selected-clip" };
   const selection = { getTrackItems: vi.fn(async () => [selectedItem]) };
   const createRemoveItemsAction = vi.fn(() => liftAction);
-  const clip = { createAddVideoTransitionAction: add, createRemoveVideoTransitionAction: remove };
+  const clip = {
+    createAddVideoTransitionAction: add,
+    createRemoveVideoTransitionAction: remove,
+    getProjectItem: vi.fn(async () => ({ getId: vi.fn(async () => "project-item-1") })),
+    getStartTime: vi.fn(async () => ({ seconds: 10 })),
+    getEndTime: vi.fn(async () => ({ seconds: 20 })),
+    hasVideoTransition: vi.fn(async (position: number) => transitionState[position === 0 ? "start" : "end"]),
+  };
   const track = { getTrackItems: vi.fn(async () => [clip]) };
   const exportedFrames: string[] = [];
   const exportSequenceFrame = vi.fn(async (_sequence: unknown, _position: unknown, filename: string) => {
     exportedFrames.push(filename);
     return true;
   });
+  const range = { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 };
+  const playhead = { positionSeconds: 3 };
+  const preferenceValues = new Map<string, string>([
+    ["auto-peak-generation", "0"],
+    ["import-workspace", "1"],
+    ["show-quickstart-dialog", "1"],
+  ]);
+  const sequenceProjectItem = { name: "Timeline", getId: vi.fn(() => "sequence-project-item-1") };
+  const insertionBin = { name: "Imports", type: 2, getId: vi.fn(async () => "insertion-bin-1") };
   const sequence = {
     guid: "sequence-1",
     name: "Timeline",
     getVideoTrackCount: vi.fn(async () => 1),
     getVideoTrack: vi.fn(async () => track),
     getSelection: vi.fn(async () => selection),
-    getPlayerPosition: vi.fn(async () => ({ seconds: 3 })),
-    getFrameSize: vi.fn(async () => ({ width: 1920, height: 1080 }))
+    getPlayerPosition: vi.fn(async () => ({ seconds: playhead.positionSeconds })),
+    setPlayerPosition: vi.fn(async (position: { seconds: number }) => {
+      playhead.positionSeconds = position.seconds;
+      return true;
+    }),
+    getFrameSize: vi.fn(async () => ({ width: 1920, height: 1080 })),
+    getTimebase: vi.fn(async () => "254016000000"),
+    getSequenceAudioTimeDisplayFormat: vi.fn(async () => ({ type: 200 })),
+    getSequenceVideoTimeDisplayFormat: vi.fn(async () => ({ type: 100 })),
+    getProjectItem: vi.fn(async () => sequenceProjectItem),
+    getInPoint: vi.fn(async () => ({ seconds: range.inSeconds })),
+    getOutPoint: vi.fn(async () => ({ seconds: range.outSeconds })),
+    getZeroPoint: vi.fn(async () => ({ seconds: range.zeroPointSeconds })),
+    getEndTime: vi.fn(async () => ({ seconds: range.endSeconds })),
+    createSetInPointAction: vi.fn((time: { seconds: number }) => ({ apply: () => { range.inSeconds = time.seconds; } })),
+    createSetOutPointAction: vi.fn((time: { seconds: number }) => ({ apply: () => { range.outSeconds = time.seconds; } })),
+    createSetZeroPointAction: vi.fn((time: { seconds: number }) => ({ apply: () => { range.zeroPointSeconds = time.seconds; } })),
   };
   const project = {
     guid: "project-1",
     name: "Example",
     path: "/projects/example.prproj",
     getActiveSequence: vi.fn(async () => sequence),
+    getSequence: vi.fn((guid: { toString?: () => string } | string) => {
+      const value = typeof guid === "string" ? guid : String(guid?.toString?.() || "");
+      return value === sequence.guid ? sequence : null;
+    }),
+    getInsertionBin: vi.fn(async () => insertionBin),
     getSequences: vi.fn(async () => [sequence]),
     save: vi.fn(async () => true),
     createSequenceWithPresetPath: vi.fn(async (name: string) => ({ guid: "sequence-2", name })),
     lockedAccess: vi.fn((callback: () => void) => callback()),
     executeTransaction: vi.fn((callback: (compound: unknown) => void) => {
+      if (options.commit === false) return false;
       callback({ addAction });
-      return options.commit !== false;
+      return true;
     })
   };
   const optionValues: Record<string, unknown> = {};
@@ -48,18 +99,38 @@ function host(options: { transitions?: boolean; commit?: boolean } = {}) {
       getVideoTransitionMatchNames: vi.fn(async () => ["CrossDissolve", "DipToBlack"]),
       createVideoTransition: vi.fn(async (name: string) => ({ name }))
     },
-    AddTransitionOptions: vi.fn(() => ({
-      setApplyToStart: vi.fn((value: boolean) => { optionValues.applyToStart = value; }),
+    AddTransitionOptions: vi.fn(() => {
+      const options: { applyToStart?: boolean; setApplyToStart: ReturnType<typeof vi.fn>; setDuration: ReturnType<typeof vi.fn>; setForceSingleSided: ReturnType<typeof vi.fn>; setTransitionAlignment: ReturnType<typeof vi.fn> } = {
+        setApplyToStart: vi.fn((value: boolean) => { optionValues.applyToStart = value; options.applyToStart = value; }),
       setDuration: vi.fn((value: unknown) => { optionValues.duration = value; }),
       setForceSingleSided: vi.fn((value: boolean) => { optionValues.forceSingleSided = value; }),
       setTransitionAlignment: vi.fn((value: number) => { optionValues.transitionAlignment = value; })
-    }))
+      };
+      return options;
+    })
   };
   const ppro = {
     Project: { getActiveProject: vi.fn(async () => project) },
-    TickTime: { createWithSeconds: vi.fn((seconds: number) => ({ seconds })) },
+    Guid: { fromString: vi.fn((value: string) => ({ toString: () => value })) },
+    FrameRate: { createWithValue: vi.fn((value: number) => ({ value, ticksPerFrame: ticksPerSecond / value })) },
+    TickTime: {
+      createWithSeconds: vi.fn((seconds: number) => createNativeTickTime(seconds)),
+      createWithFrameAndFrameRate: vi.fn((frameCount: number, frameRate: { value: number }) => createNativeTickTime(frameCount / frameRate.value)),
+    },
     Constants: { TrackItemType: { CLIP: 1 }, MediaType: { ANY: 0 }, TransitionPosition: { START: 0, END: 1 } },
-    SequenceEditor: { getEditor: vi.fn(async () => ({ createRemoveItemsAction })) },
+    AppPreference: {
+      KEY_AUTO_PEAK_GENERATION: "auto-peak-generation",
+      KEY_IMPORT_WORKSPACE: "import-workspace",
+      KEY_SHOW_QUICKSTART_DIALOG: "show-quickstart-dialog",
+      PROPERTY_PERSISTENT: 1,
+      PROPERTY_NON_PERSISTENT: 2,
+      getValue: vi.fn((key: string) => preferenceValues.get(key)),
+      setValue: vi.fn((key: string, value: string) => { preferenceValues.set(key, value); return true; }),
+    },
+    SequenceEditor: {
+      getEditor: vi.fn(async () => ({ createRemoveItemsAction })),
+      getInstalledMogrtPath: vi.fn(async () => "C:\\ProgramData\\Adobe\\Common\\Motion Graphics Templates"),
+    },
     ProjectConverter: {
       exportAsOpenTimelineIO: vi.fn(async () => true),
       exportAsFinalCutProXML: vi.fn(async () => true),
@@ -75,7 +146,14 @@ function host(options: { transitions?: boolean; commit?: boolean } = {}) {
     Exporter: { exportSequenceFrame },
     ...transitionApis
   };
-  return { registry: Commands.createCommandRegistry({ ppro, fs: {}, Protocol }), ppro, project, sequence, track, clip, add, remove, addAction, optionValues, selection, createRemoveItemsAction, exportSequenceFrame, exportedFrames };
+  return { registry: Commands.createCommandRegistry({ ppro, fs: {}, Protocol }), ppro, project, sequence, sequenceProjectItem, insertionBin, range, playhead, preferenceValues, track, clip, add, remove, addAction, optionValues, selection, createRemoveItemsAction, exportSequenceFrame, exportedFrames, transitionState };
+}
+
+function expectedTransition(position: "start" | "end", transitionPresent: boolean) {
+  return {
+    sequenceGuid: "sequence-1", videoTrackIndex: 0, clipIndex: 0, projectItemId: "project-item-1",
+    startSeconds: 10, endSeconds: 20, position, transitionPresent,
+  };
 }
 
 describe("UXP command registry", () => {
@@ -83,11 +161,67 @@ describe("UXP command registry", () => {
     const available = await host().registry.capabilities();
     expect(available.commands["transition.video.add"]).toMatchObject({ supported: true, destructive: true, undoable: true, minHostVersion: "25.6.0" });
     expect(available.commands["timeline.selection.lift"]).toMatchObject({ supported: true, destructive: true, undoable: true, minHostVersion: "25.6.0" });
+    expect(available.commands["sequence.range.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0" });
+    expect(available.commands["sequence.range.update"]).toMatchObject({ supported: true, destructive: true, undoable: true, idempotent: true, minHostVersion: "25.6.0" });
+    expect(available.commands["sequence.playhead.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0" });
+    expect(available.commands["sequence.playhead.set"]).toMatchObject({ supported: true, destructive: false, undoable: false, idempotent: true, minHostVersion: "25.6.0" });
+    expect(available.commands["time.frameAlignment.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0" });
+    expect(available.commands["sequence.timing.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0" });
+    expect(available.commands["sequence.timingByGuid.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0", targetCapabilityProbe: "invocation" });
+    expect(available.commands["graphics.mogrtPath.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0" });
+    expect(available.commands["preferences.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0" });
+    expect(available.commands["preferences.set"]).toMatchObject({ supported: true, destructive: false, undoable: false, idempotent: true, minHostVersion: "25.6.0" });
+    expect(available.commands["project.insertionBin.inspect"]).toMatchObject({ supported: true, readOnly: true, minHostVersion: "25.6.0" });
+    expect(available.commands["sequence.createPreset"]).toMatchObject({
+      destructive: true, undoable: false, idempotent: true, workspaceRequired: true, minHostVersion: "26.3.0",
+    });
     for (const command of ["sequence.createPreset", "interchange.export", "interchange.aaf.export", "frame.export"]) {
       expect(available.commands[command]).toMatchObject({ workspaceRequired: true });
     }
     const unavailable = await host({ transitions: false }).registry.capabilities();
     expect(unavailable.commands["transition.video.add"]).toMatchObject({ supported: false, reason: expect.any(String) });
+  });
+
+  it("creates a preset sequence only after confirmation and verifies the returned identity", async () => {
+    const value = host();
+    const created = { guid: "sequence-2", name: "Delivery" };
+    value.project.createSequenceWithPresetPath.mockImplementationOnce(async (name: string) => {
+      value.project.getSequences.mockResolvedValueOnce([value.sequence, created]);
+      return created;
+    });
+    await expect(value.registry.dispatch("sequence.createPreset", {
+      name: "Delivery",
+      presetPath: "/presets/hd.sqpreset",
+    })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await expect(value.registry.dispatch("sequence.createPreset", {
+      name: "Delivery",
+      presetPath: "/presets/hd.sqpreset",
+      confirmNonUndoable: true,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(value.project.createSequenceWithPresetPath).not.toHaveBeenCalled();
+    await expect(value.registry.dispatch("sequence.createPreset", {
+      name: "Delivery",
+      presetPath: "/presets/hd.sqpreset",
+      confirmNonUndoable: true,
+      operationId: "preset-sequence-1",
+    })).resolves.toMatchObject({
+      created: true,
+      outcome: "verified",
+      sequence: { guid: "sequence-2", name: "Delivery" },
+      verificationBoundary: "create_sequence_with_preset_identity_readback",
+    });
+    expect(value.project.createSequenceWithPresetPath).toHaveBeenCalledWith("Delivery", "/presets/hd.sqpreset");
+    await expect(value.registry.dispatch("sequence.createPreset", {
+      name: "Delivery",
+      presetPath: "/presets/hd.sqpreset",
+      confirmNonUndoable: true,
+      operationId: "preset-sequence-1",
+    })).resolves.toMatchObject({
+      created: true,
+      replayed: true,
+      sequence: { guid: "sequence-2", name: "Delivery" },
+    });
+    expect(value.project.createSequenceWithPresetPath).toHaveBeenCalledTimes(1);
   });
 
   it("requires an explicit available canonical-path state for path command discovery", async () => {
@@ -98,7 +232,13 @@ describe("UXP command registry", () => {
       workspace: { status: () => ({ configured: true }), assertPathAllowed: (path: string) => path },
     });
     await expect(missingState.capabilities()).resolves.toMatchObject({
-      commands: { "sequence.createPreset": { supported: false, workspaceRequired: true } },
+      commands: {
+        "sequence.createPreset": {
+          supported: false,
+          workspaceRequired: true,
+          reason: "canonical path validation is not implemented in this build; use the CEP fallback for path-based workflows",
+        },
+      },
     });
 
     const availableState = Commands.createCommandRegistry({
@@ -125,7 +265,7 @@ describe("UXP command registry", () => {
           supported: true, workspaceRequired: true, workspacePathMode: "approved_root_only",
         },
         "sequence.createPreset": {
-          supported: false, reason: expect.stringContaining("canonically validate"),
+          supported: false, reason: expect.stringContaining("canonical path validation"),
         },
       },
     });
@@ -197,6 +337,42 @@ describe("UXP command registry", () => {
     });
   });
 
+  it("reads a bounded native insertion-bin snapshot and rejects a changing target", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("project.insertionBin.inspect", {})).resolves.toEqual({
+      projectGuid: "project-1",
+      insertionBin: { projectItemId: "insertion-bin-1", name: "Imports", type: 2 },
+      verificationBoundary: "project_insertion_bin_identity_readback",
+    });
+    expect(value.project.getInsertionBin).toHaveBeenCalledTimes(2);
+
+    const changed = host();
+    changed.project.getInsertionBin
+      .mockResolvedValueOnce(changed.insertionBin)
+      .mockResolvedValueOnce({ name: "Graphics", type: 2, getId: vi.fn(async () => "insertion-bin-2") });
+    await expect(changed.registry.dispatch("project.insertionBin.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_STALE_INSERTION_BIN" });
+  });
+
+  it("rejects an insertion-bin snapshot when the active project changes during readback", async () => {
+    const value = host();
+    value.ppro.Project.getActiveProject
+      .mockResolvedValueOnce(value.project)
+      .mockResolvedValueOnce({ ...value.project, guid: "project-2" });
+    await expect(value.registry.dispatch("project.insertionBin.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_STALE_PROJECT" });
+    expect(value.project.getInsertionBin).toHaveBeenCalledTimes(1);
+  });
+
+  it("inspects a bounded native video-transition target before mutation", async () => {
+    await expect(host().registry.dispatch("transition.video.inspect", {
+      videoTrackIndex: 0, clipIndex: 0, position: "end",
+    })).resolves.toEqual({
+      target: expectedTransition("end", true),
+      verificationBoundary: "video_transition_target_readback",
+    });
+  });
+
   it("accepts a transition match name returned by an earlier list when host enumeration changes", async () => {
     const value = host();
     value.ppro.TransitionFactory.getVideoTransitionMatchNames
@@ -208,6 +384,7 @@ describe("UXP command registry", () => {
     });
     await expect(value.registry.dispatch("transition.video.add", {
       videoTrackIndex: 0, clipIndex: 0, matchName: "ADBE Cross Dissolve New", position: "start",
+      expectedTarget: expectedTransition("start", false),
     })).resolves.toMatchObject({ applied: true, matchName: "ADBE Cross Dissolve New" });
     expect(value.ppro.TransitionFactory.createVideoTransition).toHaveBeenCalledWith("ADBE Cross Dissolve New");
   });
@@ -238,6 +415,622 @@ describe("UXP command registry", () => {
       activeSequenceGuid: "sequence-1",
       sequences: [{ guid: "sequence-1", name: "Timeline" }],
     });
+  });
+
+  it("inspects and transactionally updates a complete guarded sequence range", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("sequence.range.inspect", {})).resolves.toEqual({
+      sequenceGuid: "sequence-1",
+      range: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      verificationBoundary: "sequence_range_readback",
+    });
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2, outSeconds: 110, zeroPointSeconds: 7200 },
+      operationId: "range-1",
+    })).resolves.toMatchObject({
+      updated: true,
+      outcome: "verified",
+      sequenceGuid: "sequence-1",
+      range: { inSeconds: 2, outSeconds: 110, zeroPointSeconds: 7200, endSeconds: 120 },
+      operation: {
+        mutatesProject: true,
+        verification: { status: "verified" },
+        undo: { supported: true },
+        cancellation: { supported: false },
+      },
+      operationId: "range-1",
+    });
+    expect(value.project.lockedAccess).toHaveBeenCalledOnce();
+    expect(value.project.executeTransaction).toHaveBeenCalledWith(expect.any(Function), "Update sequence range");
+    expect(value.sequence.createSetInPointAction).toHaveBeenCalledWith({ seconds: 2 });
+    expect(value.sequence.createSetOutPointAction).toHaveBeenCalledWith({ seconds: 110 });
+    expect(value.sequence.createSetZeroPointAction).toHaveBeenCalledWith({ seconds: 7200 });
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2, outSeconds: 110, zeroPointSeconds: 7200 },
+      operationId: "range-1",
+    })).resolves.toMatchObject({ replayed: true });
+    expect(value.project.executeTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("serializes concurrent sequence-range updates with different operation IDs", async () => {
+    const value = host();
+    const expectedRange = { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 };
+    const first = value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange,
+      updates: { inSeconds: 2 },
+      operationId: "range-concurrent-first",
+    });
+    const second = value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange,
+      updates: { outSeconds: 110 },
+      operationId: "range-concurrent-second",
+    });
+
+    await expect(first).resolves.toMatchObject({
+      updated: true,
+      operationId: "range-concurrent-first",
+      range: { inSeconds: 2, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+    });
+    await expect(second).rejects.toMatchObject({ code: "UXP_STALE_RANGE" });
+    expect(value.project.executeTransaction).toHaveBeenCalledOnce();
+    expect(value.range).toEqual({ inSeconds: 2, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 });
+  });
+
+  it("inspects, guardedly sets, and replays the sequence player position", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("sequence.playhead.inspect", {})).resolves.toEqual({
+      sequenceGuid: "sequence-1",
+      positionSeconds: 3,
+      verificationBoundary: "sequence_playhead_readback",
+    });
+    const args = {
+      expectedSequenceGuid: "sequence-1",
+      expectedPositionSeconds: 3,
+      positionSeconds: 8,
+      operationId: "playhead-1",
+    };
+    await expect(value.registry.dispatch("sequence.playhead.set", args)).resolves.toMatchObject({
+      positioned: true,
+      outcome: "verified",
+      sequenceGuid: "sequence-1",
+      positionSeconds: 8,
+      verified: "sequence_playhead_readback",
+      operationId: "playhead-1",
+      operation: {
+        mutatesProject: false,
+        verification: { status: "verified", boundary: "sequence_playhead_readback" },
+        undo: { supported: false },
+        cancellation: { supported: false },
+      },
+    });
+    expect(value.sequence.setPlayerPosition).toHaveBeenCalledWith({ seconds: 8 });
+    expect(value.project.lockedAccess).not.toHaveBeenCalled();
+    await expect(value.registry.dispatch("sequence.playhead.set", args)).resolves.toMatchObject({ replayed: true });
+    expect(value.sequence.setPlayerPosition).toHaveBeenCalledOnce();
+  });
+
+  it("inspects, guardedly sets, and replays bounded documented app preferences", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("preferences.inspect", {})).resolves.toEqual({
+      preferences: [
+        { preference: "auto_peak_generation", value: "0" },
+        { preference: "import_workspace", value: "1" },
+        { preference: "show_quickstart_dialog", value: "1" },
+      ],
+      verificationBoundary: "app_preference_native_string_readback",
+    });
+    const args = {
+      preference: "auto_peak_generation",
+      expectedValue: "0",
+      value: "1",
+      persistence: "persistent",
+      confirmPreferenceChange: true,
+      operationId: "app-preference-1",
+    };
+    await expect(value.registry.dispatch("preferences.set", args)).resolves.toMatchObject({
+      updated: true,
+      outcome: "verified",
+      preference: "auto_peak_generation",
+      beforeValue: "0",
+      value: "1",
+      persistence: "persistent",
+      verified: "app_preference_native_string_readback",
+      operationId: "app-preference-1",
+      operation: {
+        mutatesProject: false,
+        verification: { status: "verified", boundary: "app_preference_native_string_readback" },
+        undo: { supported: false },
+        cancellation: { supported: false },
+      },
+    });
+    expect(value.ppro.AppPreference.setValue).toHaveBeenCalledWith("auto-peak-generation", "1", 1);
+    await expect(value.registry.dispatch("preferences.set", args)).resolves.toMatchObject({ replayed: true });
+    expect(value.ppro.AppPreference.setValue).toHaveBeenCalledOnce();
+  });
+
+  it("serializes competing app-preference writes and fails closed on stale or unverified values", async () => {
+    const value = host();
+    const first = value.registry.dispatch("preferences.set", {
+      preference: "import_workspace", expectedValue: "1", value: "0", persistence: "non_persistent",
+      confirmPreferenceChange: true, operationId: "app-preference-concurrent-first",
+    });
+    const second = value.registry.dispatch("preferences.set", {
+      preference: "import_workspace", expectedValue: "1", value: "2", persistence: "persistent",
+      confirmPreferenceChange: true, operationId: "app-preference-concurrent-second",
+    });
+    await expect(first).resolves.toMatchObject({ updated: true, value: "0", operationId: "app-preference-concurrent-first" });
+    await expect(second).rejects.toMatchObject({ code: "UXP_STALE_APP_PREFERENCE" });
+    expect(value.ppro.AppPreference.setValue).toHaveBeenCalledOnce();
+
+    const stale = host();
+    stale.preferenceValues.set("show-quickstart-dialog", "0");
+    await expect(stale.registry.dispatch("preferences.set", {
+      preference: "show_quickstart_dialog", expectedValue: "1", value: "0", persistence: "persistent",
+      confirmPreferenceChange: true, operationId: "app-preference-stale",
+    })).rejects.toMatchObject({ code: "UXP_STALE_APP_PREFERENCE" });
+    expect(stale.ppro.AppPreference.setValue).not.toHaveBeenCalled();
+
+    const noReadback = host();
+    noReadback.ppro.AppPreference.setValue.mockImplementationOnce(() => true);
+    await expect(noReadback.registry.dispatch("preferences.set", {
+      preference: "show_quickstart_dialog", expectedValue: "1", value: "0", persistence: "persistent",
+      confirmPreferenceChange: true, operationId: "app-preference-readback",
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+  });
+
+  it("rejects malformed, unconfirmed, unsupported, and unavailable app-preference writes", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("preferences.set", {
+      preference: "auto_peak_generation", expectedValue: "0", value: "1", persistence: "persistent", operationId: "app-preference-unconfirmed",
+    })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await expect(value.registry.dispatch("preferences.set", {
+      preference: "unknown", expectedValue: "0", value: "1", persistence: "persistent", confirmPreferenceChange: true, operationId: "app-preference-invalid",
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("preferences.set", {
+      preference: "auto_peak_generation", expectedValue: "0", value: "1", persistence: "persistent", confirmPreferenceChange: true,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("preferences.inspect", { extra: true }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+
+    const unavailable = host();
+    unavailable.ppro.AppPreference.setValue = undefined;
+    const capabilities = await unavailable.registry.capabilities();
+    expect(capabilities.commands["preferences.inspect"]).toMatchObject({ supported: true });
+    expect(capabilities.commands["preferences.set"]).toMatchObject({ supported: false, reason: expect.any(String) });
+  });
+
+  it("uses only native TickTime and FrameRate values for bounded frame alignment", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("time.frameAlignment.inspect", {
+      action: "align", frameRate: 24, seconds: 1.03,
+    })).resolves.toMatchObject({
+      action: "align",
+      requested: { seconds: 1.03, frameRate: 24 },
+      frameRate: { value: 24 },
+      input: { seconds: 1.03, ticks: "1030000" },
+      aligned: { down: { seconds: 1 }, nearest: { seconds: 1.0416666666666667 } },
+      verificationBoundary: "native_ticktime_value_readback",
+    });
+    expect(value.ppro.FrameRate.createWithValue).toHaveBeenCalledWith(24);
+    expect(value.ppro.TickTime.createWithSeconds).toHaveBeenCalledWith(1.03);
+
+    await expect(value.registry.dispatch("time.frameAlignment.inspect", {
+      action: "frame", frameRate: 30000 / 1001, frameCount: 30,
+    })).resolves.toMatchObject({
+      action: "frame",
+      requested: { frameCount: 30, frameRate: 30000 / 1001 },
+      value: { seconds: 1.0010000000000001 },
+      verificationBoundary: "native_ticktime_value_readback",
+    });
+    expect(value.ppro.TickTime.createWithFrameAndFrameRate).toHaveBeenCalledWith(30, expect.objectContaining({ value: 30000 / 1001 }));
+  });
+
+  it("fails closed for malformed frame-alignment inputs and invalid native readback", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("time.frameAlignment.inspect", { action: "align", frameRate: 24 }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("time.frameAlignment.inspect", { action: "frame", frameRate: 24, seconds: 1, frameCount: 1 }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("time.frameAlignment.inspect", { action: "frame", frameRate: 24, frameCount: 20736001 }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("time.frameAlignment.inspect", { action: "align", frameRate: 24, seconds: 1, extra: true }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+
+    const malformed = host();
+    malformed.ppro.TickTime.createWithSeconds.mockReturnValueOnce({ seconds: 1, ticks: "not-ticks", alignToFrame: () => ({ seconds: 1, ticks: "1000000" }), alignToNearestFrame: () => ({ seconds: 1, ticks: "1000000" }) });
+    await expect(malformed.registry.dispatch("time.frameAlignment.inspect", { action: "align", frameRate: 24, seconds: 1 }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_HOST_STATE" });
+
+    const unavailable = host();
+    unavailable.ppro.TickTime.createWithFrameAndFrameRate = undefined;
+    await expect(unavailable.registry.capabilities()).resolves.toMatchObject({
+      commands: { "time.frameAlignment.inspect": { supported: false, reason: expect.any(String) } },
+    });
+  });
+
+  it("returns a bounded native sequence-timing snapshot and rejects a final active-sequence mismatch", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("sequence.timing.inspect", {})).resolves.toEqual({
+      sequenceGuid: "sequence-1",
+      sequenceName: "Timeline",
+      frameSize: { width: 1920, height: 1080 },
+      timebase: "254016000000",
+      audioTimeDisplayFormat: { type: 200 },
+      videoTimeDisplayFormat: { type: 100 },
+      projectItem: { id: "sequence-project-item-1", name: "Timeline" },
+      verificationBoundary: "sequence_timing_readback",
+    });
+
+    const changed = host();
+    changed.sequence.getTimebase.mockImplementation(async () => {
+      changed.project.getActiveSequence.mockResolvedValueOnce({ ...changed.sequence, guid: "sequence-2" });
+      return "254016000000";
+    });
+    await expect(changed.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE" });
+  });
+
+  it("redacts the documented installed MOGRT directory unless path disclosure is explicitly requested", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("graphics.mogrtPath.inspect", {})).resolves.toEqual({
+      available: true,
+      installedMogrtPath: null,
+      pathDisclosure: "redacted",
+      verificationBoundary: "documented_sequence_editor_installation_directory_readback",
+    });
+    await expect(value.registry.dispatch("graphics.mogrtPath.inspect", { includePath: true })).resolves.toEqual({
+      available: true,
+      installedMogrtPath: "C:\\ProgramData\\Adobe\\Common\\Motion Graphics Templates",
+      pathDisclosure: "requested",
+      verificationBoundary: "documented_sequence_editor_installation_directory_readback",
+    });
+    expect(value.ppro.SequenceEditor.getInstalledMogrtPath).toHaveBeenCalledTimes(2);
+  });
+
+  it("fails closed for invalid installed MOGRT directories, unsupported getters, and invalid arguments", async () => {
+    const invalid = host();
+    invalid.ppro.SequenceEditor.getInstalledMogrtPath.mockResolvedValueOnce(" ");
+    await expect(invalid.registry.dispatch("graphics.mogrtPath.inspect", { includePath: true }))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const nul = host();
+    nul.ppro.SequenceEditor.getInstalledMogrtPath.mockResolvedValueOnce(["C:\\Templates", "hidden"].join("\0"));
+    await expect(nul.registry.dispatch("graphics.mogrtPath.inspect", { includePath: true }))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    await expect(host().registry.dispatch("graphics.mogrtPath.inspect", { includePath: "true" }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(host().registry.dispatch("graphics.mogrtPath.inspect", { extra: true }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+
+    const unavailable = host();
+    unavailable.ppro.SequenceEditor.getInstalledMogrtPath = undefined;
+    await expect(unavailable.registry.capabilities()).resolves.toMatchObject({
+      commands: { "graphics.mogrtPath.inspect": { supported: false, reason: expect.any(String) } },
+    });
+  });
+
+  it("inspects one non-active sequence by documented GUID lookup without activating it and rejects changing double-read state", async () => {
+    const value = host();
+    const targetProjectItem = { name: "Nested Timeline", getId: vi.fn(async () => "sequence-project-item-2") };
+    const target = {
+      ...value.sequence,
+      guid: "sequence-2",
+      name: "Nested Timeline",
+      getFrameSize: vi.fn(async () => ({ width: 3840, height: 2160 })),
+      getTimebase: vi.fn(async () => "508032000000"),
+      getSequenceAudioTimeDisplayFormat: vi.fn(async () => ({ type: 201 })),
+      getSequenceVideoTimeDisplayFormat: vi.fn(async () => ({ type: 101 })),
+      getProjectItem: vi.fn(async () => targetProjectItem),
+    };
+    value.project.getSequence.mockImplementation((guid: { toString?: () => string } | string) => {
+      const requested = typeof guid === "string" ? guid : String(guid?.toString?.() || "");
+      return requested === "sequence-2" ? target : null;
+    });
+    await expect(value.registry.dispatch("sequence.timingByGuid.inspect", { sequenceGuid: "sequence-2" })).resolves.toMatchObject({
+      projectGuid: "project-1", requestedSequenceGuid: "sequence-2", sequenceGuid: "sequence-2",
+      sequenceName: "Nested Timeline", frameSize: { width: 3840, height: 2160 },
+      projectItem: { id: "sequence-project-item-2", name: "Nested Timeline" },
+      verificationBoundary: "targeted_sequence_timing_double_readback",
+    });
+    expect(value.project.getActiveSequence).not.toHaveBeenCalled();
+    expect(value.ppro.Guid.fromString).toHaveBeenCalledWith("sequence-2");
+    expect(value.project.getSequence).toHaveBeenCalledTimes(2);
+
+    const switchedProject = host();
+    const switchedTarget = { ...switchedProject.sequence, guid: "sequence-2", name: "Nested Timeline" };
+    switchedProject.project.getSequence.mockReturnValue(switchedTarget);
+    const replacementProject = { ...switchedProject.project, guid: "project-2" };
+    switchedProject.ppro.Project.getActiveProject
+      .mockResolvedValueOnce(switchedProject.project)
+      .mockResolvedValueOnce(replacementProject);
+    await expect(switchedProject.registry.dispatch("sequence.timingByGuid.inspect", { sequenceGuid: "sequence-2" }))
+      .rejects.toMatchObject({ code: "UXP_STALE_PROJECT" });
+
+    const changed = host();
+    const first = { ...changed.sequence, guid: "sequence-2", name: "Nested Timeline" };
+    const final = { ...changed.sequence, guid: "sequence-2", name: "Nested Timeline", getTimebase: vi.fn(async () => "508032000000") };
+    changed.project.getSequence.mockReturnValueOnce(first).mockReturnValueOnce(final);
+    await expect(changed.registry.dispatch("sequence.timingByGuid.inspect", { sequenceGuid: "sequence-2" }))
+      .rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE" });
+  });
+
+  it("fails closed for malformed timing values, identity, unknown arguments, and unavailable timing APIs", async () => {
+    const invalidDisplay = host();
+    invalidDisplay.sequence.getSequenceAudioTimeDisplayFormat.mockResolvedValueOnce({ type: Number.NaN });
+    await expect(invalidDisplay.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const invalidFrame = host();
+    invalidFrame.sequence.getFrameSize.mockResolvedValueOnce({ width: 0, height: 1080 });
+    await expect(invalidFrame.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const fractionalFrame = host();
+    fractionalFrame.sequence.getFrameSize.mockResolvedValueOnce({ width: 1920.5, height: 1080 });
+    await expect(fractionalFrame.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const oversizedFrame = host();
+    oversizedFrame.sequence.getFrameSize.mockResolvedValueOnce({ width: 10241, height: 8193 });
+    await expect(oversizedFrame.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const negativeDisplayCode = host();
+    negativeDisplayCode.sequence.getSequenceVideoTimeDisplayFormat.mockResolvedValueOnce({ type: -1 });
+    await expect(negativeDisplayCode.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const fractionalDisplayCode = host();
+    fractionalDisplayCode.sequence.getSequenceVideoTimeDisplayFormat.mockResolvedValueOnce({ type: 100.5 });
+    await expect(fractionalDisplayCode.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const invalidTimebase = host();
+    invalidTimebase.sequence.getTimebase.mockResolvedValueOnce(123);
+    await expect(invalidTimebase.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const blankTimebase = host();
+    blankTimebase.sequence.getTimebase.mockResolvedValueOnce("   ");
+    await expect(blankTimebase.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    for (const malformedTimebase of ["not-a-timebase", "0", "-1", "1.5", "1234567890123456789"]) {
+      const malformedTimebaseHost = host();
+      malformedTimebaseHost.sequence.getTimebase.mockResolvedValueOnce(malformedTimebase);
+      await expect(malformedTimebaseHost.registry.dispatch("sequence.timing.inspect", {}))
+        .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+    }
+
+    const whitespaceSequenceGuid = host();
+    whitespaceSequenceGuid.sequence.guid = "   ";
+    await expect(whitespaceSequenceGuid.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const nonGuidSequenceIdentity = host();
+    nonGuidSequenceIdentity.sequence.guid = 123;
+    await expect(nonGuidSequenceIdentity.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const nativeGuidObject = host();
+    nativeGuidObject.sequence.guid = { toString: vi.fn(() => "sequence-guid-object") };
+    await expect(nativeGuidObject.registry.dispatch("sequence.timing.inspect", {}))
+      .resolves.toMatchObject({ sequenceGuid: "sequence-guid-object" });
+
+    const blankProjectItemName = host();
+    blankProjectItemName.sequenceProjectItem.name = "";
+    await expect(blankProjectItemName.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const blankProjectItemId = host();
+    blankProjectItemId.sequenceProjectItem.getId.mockReturnValueOnce("   ");
+    await expect(blankProjectItemId.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const nonStringProjectItemId = host();
+    nonStringProjectItemId.sequenceProjectItem.getId.mockReturnValueOnce(123);
+    await expect(nonStringProjectItemId.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const missingProjectItem = host();
+    missingProjectItem.sequence.getProjectItem.mockResolvedValueOnce(null);
+    await expect(missingProjectItem.registry.dispatch("sequence.timing.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    await expect(host().registry.dispatch("sequence.timing.inspect", { extra: true }))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+
+    const unavailable = host();
+    unavailable.sequence.getTimebase = undefined;
+    const capabilities = await unavailable.registry.capabilities();
+    expect(capabilities.commands["sequence.timing.inspect"])
+      .toMatchObject({ supported: false, reason: expect.any(String) });
+
+    await expect(host().registry.dispatch("sequence.timingByGuid.inspect", {}))
+      .rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(host().registry.dispatch("sequence.timingByGuid.inspect", { sequenceGuid: "missing" }))
+      .rejects.toMatchObject({ code: "UXP_TARGET_NOT_FOUND" });
+    const missingGuid = host();
+    missingGuid.ppro.Guid.fromString = undefined;
+    const byGuidCapabilities = await missingGuid.registry.capabilities();
+    expect(byGuidCapabilities.commands["sequence.timingByGuid.inspect"])
+      .toMatchObject({ supported: false, reason: expect.any(String) });
+  });
+
+  it("serializes concurrent sequence player-position requests with different operation IDs", async () => {
+    const value = host();
+    const first = value.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 8, operationId: "playhead-concurrent-first",
+    });
+    const second = value.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 9, operationId: "playhead-concurrent-second",
+    });
+
+    await expect(first).resolves.toMatchObject({ positioned: true, operationId: "playhead-concurrent-first", positionSeconds: 8 });
+    await expect(second).rejects.toMatchObject({ code: "UXP_STALE_PLAYHEAD" });
+    expect(value.sequence.setPlayerPosition).toHaveBeenCalledOnce();
+    expect(value.playhead).toEqual({ positionSeconds: 8 });
+  });
+
+  it("fails closed for malformed, stale, rejected, unreadable, and unavailable sequence player-position setters", async () => {
+    const malformed = host();
+    await expect(malformed.registry.dispatch("sequence.playhead.set", {
+      expectedPositionSeconds: 3, positionSeconds: 8,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(malformed.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: Number.NaN, positionSeconds: 8,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(malformed.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 86400.001,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(malformed.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 8, unexpected: true,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(malformed.sequence.setPlayerPosition).not.toHaveBeenCalled();
+
+    const staleSequence = host();
+    await expect(staleSequence.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "other-sequence", expectedPositionSeconds: 3, positionSeconds: 8,
+    })).rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE" });
+    expect(staleSequence.sequence.setPlayerPosition).not.toHaveBeenCalled();
+
+    const staleDuringConversion = host();
+    staleDuringConversion.ppro.TickTime.createWithSeconds.mockImplementation((seconds: number) => {
+      staleDuringConversion.playhead.positionSeconds = 4;
+      return { seconds };
+    });
+    await expect(staleDuringConversion.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 8,
+    })).rejects.toMatchObject({ code: "UXP_STALE_PLAYHEAD" });
+    expect(staleDuringConversion.sequence.setPlayerPosition).not.toHaveBeenCalled();
+
+    const rejected = host();
+    rejected.sequence.setPlayerPosition.mockResolvedValueOnce(false);
+    await expect(rejected.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 8,
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const noReadback = host();
+    noReadback.sequence.setPlayerPosition.mockImplementationOnce(async () => true);
+    await expect(noReadback.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 8,
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const changedSequence = host();
+    const newlyActiveSequence = {
+      ...changedSequence.sequence,
+      guid: "sequence-2",
+      getPlayerPosition: vi.fn(async () => ({ seconds: 8 })),
+    };
+    changedSequence.sequence.setPlayerPosition.mockImplementationOnce(async (position: { seconds: number }) => {
+      changedSequence.playhead.positionSeconds = position.seconds;
+      changedSequence.project.getActiveSequence.mockResolvedValueOnce(newlyActiveSequence);
+      return true;
+    });
+    await expect(changedSequence.registry.dispatch("sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1", expectedPositionSeconds: 3, positionSeconds: 8,
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+    expect(changedSequence.sequence.setPlayerPosition).toHaveBeenCalledOnce();
+
+    const unavailable = host();
+    unavailable.sequence.setPlayerPosition = undefined;
+    const capabilities = await unavailable.registry.capabilities();
+    expect(capabilities.commands["sequence.playhead.inspect"]).toMatchObject({ supported: true });
+    expect(capabilities.commands["sequence.playhead.set"]).toMatchObject({ supported: false, reason: expect.any(String) });
+  });
+
+  it("rejects a range change that occurs while TickTime values are being created", async () => {
+    const value = host();
+    value.ppro.TickTime.createWithSeconds.mockImplementation((seconds: number) => {
+      value.range.outSeconds = 99;
+      return { seconds };
+    });
+
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2 },
+    })).rejects.toMatchObject({ code: "UXP_STALE_RANGE" });
+    expect(value.ppro.TickTime.createWithSeconds).toHaveBeenCalledWith(2);
+    expect(value.project.lockedAccess).not.toHaveBeenCalled();
+    expect(value.sequence.createSetInPointAction).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for stale, malformed, and out-of-bounds sequence-range updates", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "other-sequence",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2 },
+    })).rejects.toMatchObject({ code: "UXP_STALE_SEQUENCE" });
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 0, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2 },
+    })).rejects.toMatchObject({ code: "UXP_STALE_RANGE" });
+    const durationChanged = host();
+    durationChanged.range.endSeconds = 119;
+    await expect(durationChanged.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2 },
+    })).rejects.toMatchObject({ code: "UXP_STALE_RANGE" });
+    expect(durationChanged.project.executeTransaction).not.toHaveBeenCalled();
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 111, outSeconds: 110 },
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: {},
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(value.sequence.createSetInPointAction).not.toHaveBeenCalled();
+    expect(value.project.executeTransaction).not.toHaveBeenCalled();
+
+    const rejectedAction = host();
+    rejectedAction.sequence.createSetInPointAction.mockReturnValue(undefined);
+    await expect(rejectedAction.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2 },
+    })).rejects.toMatchObject({ code: "UXP_ACTION_REJECTED" });
+  });
+
+  it("rejects failed range readback and advertises only the supported command variant", async () => {
+    const value = host();
+    value.sequence.getOutPoint
+      .mockResolvedValueOnce({ seconds: 100 })
+      .mockResolvedValueOnce({ seconds: 99 });
+    await expect(value.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { outSeconds: 110 },
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const durationChanged = host();
+    durationChanged.sequence.getEndTime
+      .mockResolvedValueOnce({ seconds: 120 })
+      .mockResolvedValueOnce({ seconds: 119 });
+    await expect(durationChanged.registry.dispatch("sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 100, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2 },
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+
+    const unavailable = host();
+    unavailable.sequence.createSetZeroPointAction = undefined;
+    const capabilities = await unavailable.registry.capabilities();
+    expect(capabilities.commands["sequence.range.inspect"]).toMatchObject({ supported: true });
+    expect(capabilities.commands["sequence.range.update"]).toMatchObject({ supported: false, reason: expect.any(String) });
   });
 
   it("deduplicates completed mutations by operation id", async () => {
@@ -342,8 +1135,9 @@ describe("UXP command registry", () => {
     const value = host();
     await expect(value.registry.dispatch("transition.video.add", {
       videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", position: "start",
-      durationSeconds: 0.5, forceSingleSided: true, transitionAlignment: 1
-    })).resolves.toMatchObject({ applied: true, verified: "transaction", position: "start" });
+      durationSeconds: 0.5, forceSingleSided: true, transitionAlignment: 1,
+      expectedTarget: expectedTransition("start", false),
+    })).resolves.toMatchObject({ applied: true, verified: "video_transition_edge_readback", target: { transitionPresent: true } });
     expect(value.project.lockedAccess).toHaveBeenCalledOnce();
     expect(value.project.executeTransaction).toHaveBeenCalledWith(expect.any(Function), "Add video transition");
     expect(value.add).toHaveBeenCalledWith({ name: "CrossDissolve" }, expect.any(Object));
@@ -352,9 +1146,66 @@ describe("UXP command registry", () => {
 
   it("removes the requested transition side in a transaction", async () => {
     const value = host();
-    await expect(value.registry.dispatch("transition.video.remove", { videoTrackIndex: 0, clipIndex: 0, position: "end" }))
-      .resolves.toMatchObject({ removed: true, position: "end" });
+    await expect(value.registry.dispatch("transition.video.remove", {
+      videoTrackIndex: 0, clipIndex: 0, position: "end", expectedTarget: expectedTransition("end", true),
+    })).resolves.toMatchObject({ removed: true, verified: "video_transition_edge_readback", target: { transitionPresent: false } });
     expect(value.remove).toHaveBeenCalledWith(1);
+  });
+
+  it("rejects a stale transition snapshot before creating an action", async () => {
+    const value = host();
+    await expect(value.registry.dispatch("transition.video.add", {
+      videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", position: "start",
+      expectedTarget: { ...expectedTransition("start", false), startSeconds: 11 },
+    })).rejects.toMatchObject({ code: "UXP_STALE_TRANSITION_TARGET" });
+    expect(value.add).not.toHaveBeenCalled();
+    expect(value.project.lockedAccess).not.toHaveBeenCalled();
+  });
+
+  it("serializes different transition operation IDs through snapshot, action, and readback", async () => {
+    const value = host();
+    let releasePreflight: () => void = () => undefined;
+    const preflight = new Promise<void>((resolve) => { releasePreflight = resolve; });
+    value.clip.hasVideoTransition.mockImplementationOnce(async () => {
+      await preflight;
+      return false;
+    });
+    const first = value.registry.dispatch("transition.video.add", {
+      videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", position: "start",
+      expectedTarget: expectedTransition("start", false), operationId: "transition-first",
+    });
+    await vi.waitFor(() => expect(value.clip.hasVideoTransition).toHaveBeenCalledOnce());
+    const second = value.registry.dispatch("transition.video.add", {
+      videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", position: "start",
+      expectedTarget: expectedTransition("start", false), operationId: "transition-second",
+    });
+    releasePreflight();
+    await expect(first).resolves.toMatchObject({ outcome: "verified", target: { transitionPresent: true } });
+    await expect(second).rejects.toMatchObject({ code: "UXP_STALE_TRANSITION_TARGET" });
+    expect(value.add).toHaveBeenCalledOnce();
+    expect(value.project.executeTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("replays one guarded transition operation without creating a second action", async () => {
+    const value = host();
+    const args = {
+      videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", position: "start",
+      expectedTarget: expectedTransition("start", false), operationId: "transition-replay",
+    };
+    await expect(value.registry.dispatch("transition.video.add", args)).resolves.toMatchObject({ outcome: "verified" });
+    await expect(value.registry.dispatch("transition.video.add", args)).resolves.toMatchObject({ replayed: true, outcome: "verified" });
+    expect(value.add).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when transition presence readback does not confirm the committed add", async () => {
+    const value = host();
+    value.clip.hasVideoTransition.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+    await expect(value.registry.dispatch("transition.video.add", {
+      videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", position: "start",
+      expectedTarget: expectedTransition("start", false),
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+    expect(value.add).toHaveBeenCalledOnce();
+    expect(value.project.executeTransaction).toHaveBeenCalledOnce();
   });
 
   it("lifts the current selection without ripple in one undoable transaction", async () => {
@@ -377,19 +1228,25 @@ describe("UXP command registry", () => {
   });
 
   it("rejects unknown transitions, invalid targets, and failed commits", async () => {
-    await expect(host().registry.dispatch("transition.video.add", { videoTrackIndex: 0, clipIndex: 0, matchName: "Missing" }))
+    await expect(host().registry.dispatch("transition.video.add", {
+      videoTrackIndex: 0, clipIndex: 0, matchName: "Missing", position: "start", expectedTarget: expectedTransition("start", false),
+    }))
       .rejects.toMatchObject({ code: "UXP_TRANSITION_NOT_FOUND" });
-    await expect(host().registry.dispatch("transition.video.remove", { videoTrackIndex: 1, clipIndex: 0 }))
+    await expect(host().registry.dispatch("transition.video.remove", { videoTrackIndex: 1, clipIndex: 0, expectedTarget: {
+      ...expectedTransition("end", true), videoTrackIndex: 1,
+    } }))
       .rejects.toMatchObject({ code: "UXP_TARGET_NOT_FOUND" });
-    await expect(host({ commit: false }).registry.dispatch("transition.video.remove", { videoTrackIndex: 0, clipIndex: 0 }))
+    await expect(host({ commit: false }).registry.dispatch("transition.video.remove", {
+      videoTrackIndex: 0, clipIndex: 0, expectedTarget: expectedTransition("end", true),
+    }))
       .rejects.toMatchObject({ code: "UXP_TRANSACTION_FAILED" });
   });
 });
 
 describe("UXP transition argument validation", () => {
   it("requires explicit non-negative clip coordinates and a match name", () => {
-    expect(() => Commands.validateAddArgs({ videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve" })).not.toThrow();
-    expect(() => Commands.validateAddArgs({ videoTrackIndex: -1, clipIndex: 0, matchName: "CrossDissolve" })).toThrow("videoTrackIndex");
-    expect(() => Commands.validateAddArgs({ videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", surprise: true })).toThrow("Unknown argument");
+    expect(() => Commands.validateAddArgs({ videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", expectedTarget: expectedTransition("end", true) })).not.toThrow();
+    expect(() => Commands.validateAddArgs({ videoTrackIndex: -1, clipIndex: 0, matchName: "CrossDissolve", expectedTarget: expectedTransition("end", true) })).toThrow("videoTrackIndex");
+    expect(() => Commands.validateAddArgs({ videoTrackIndex: 0, clipIndex: 0, matchName: "CrossDissolve", expectedTarget: expectedTransition("end", true), surprise: true })).toThrow("Unknown argument");
   });
 });

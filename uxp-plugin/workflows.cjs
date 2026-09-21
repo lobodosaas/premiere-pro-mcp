@@ -8,6 +8,30 @@
   const MAX_SELECTION_ITEMS = 64;
   const MAX_METADATA_CHARS = 350000;
   const MAX_METADATA_RESULT_BYTES = 900000;
+  const MAX_METADATA_FIELDS = 256;
+  const MAX_METADATA_FIELD_VALUE_CHARS = 4096;
+  const MAX_METADATA_COLUMNS = 64;
+  const PREMIERE_PRIVATE_METADATA_NS = "http://ns.adobe.com/premierePrivateProjectMetaData/1.0/";
+  const METADATA_NAMESPACE_ALIASES = {
+    premiere: PREMIERE_PRIVATE_METADATA_NS,
+    project: PREMIERE_PRIVATE_METADATA_NS,
+    dc: "http://purl.org/dc/elements/1.1/",
+    xmp: "http://ns.adobe.com/xap/1.0/",
+    xmpDM: "http://ns.adobe.com/xmp/1.0/DynamicMedia/",
+    xmpMM: "http://ns.adobe.com/xap/1.0/mm/",
+    photoshop: "http://ns.adobe.com/photoshop/1.0/",
+    exif: "http://ns.adobe.com/exif/1.0/",
+    iptc: "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"
+  };
+  // A Project-panel schema is XML and can expand materially when represented
+  // in the JSON bridge request (quotes and backslashes are escaped). Keep each
+  // exact stale guard and replacement far below the protocol ceiling instead
+  // of accepting a large pair that cannot be safely serialized together.
+  const MAX_PROJECT_PANEL_METADATA_UPDATE_BYTES = 12 * 1024;
+  // Inspect/readback can return a real Premiere schema. Keep the 12 KiB cap
+  // only on create/update write payloads and their paired stale guards that
+  // travel together in one mutation request.
+  const MAX_PROJECT_PANEL_METADATA_INSPECT_BYTES = MAX_METADATA_RESULT_BYTES;
 
   function utf8ByteLength(value) {
     let bytes = 0;
@@ -26,9 +50,11 @@
 
   function createWorkflowDefinitions(deps) {
     const ppro = deps.ppro, Protocol = deps.Protocol, workspace = deps.workspace;
+    const projectPanelMetadataMutationTails = new Map();
     const definitions = {
       "effects.catalog": { readOnly: true, minHostVersion: "25.6.0", probe: canUseEffects, handler: effectCatalog },
       "effects.chain.get": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseEffects, handler: effectChain },
+      "trackItem.identity.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canInspectTrackItemIdentity, handler: inspectTrackItemIdentity },
       "effects.chain.add": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseEffects, handler: addEffect },
       "effects.chain.remove": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseEffects, handler: removeEffect },
       "selection.inspect": { readOnly: true, minHostVersion: "25.6.0", probe: canUseSelection, handler: inspectSelection },
@@ -37,7 +63,7 @@
       "selection.update": { idempotent: true, minHostVersion: "25.6.0", probe: canManageSelection, handler: updateSelection },
       "effects.selection.add": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseEffectsSelection, handler: addEffectToSelection },
       "effects.selection.remove": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseEffectsSelection, handler: removeEffectFromSelection },
-      "sceneEdit.detect": { destructive: true, undoable: false, minHostVersion: "25.6.0", probe: canDetectScenes, handler: detectScenes },
+      "sceneEdit.detect": { destructive: true, undoable: false, minHostVersion: "26.3.0", probe: canDetectScenes, handler: detectScenes },
       "proxy.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseClipItems, handler: inspectProxy },
       "proxy.attach": { destructive: true, undoable: false, idempotent: true, targetCapabilityProbe: true, requiresWorkspace: true, minHostVersion: "25.6.0", probe: canAttachProxy, handler: attachProxy },
       "ingest.get": { readOnly: true, minHostVersion: "25.6.0", probe: canUseIngest, handler: getIngest },
@@ -45,7 +71,15 @@
       "media.relink": { destructive: true, undoable: false, idempotent: true, targetCapabilityProbe: true, requiresWorkspace: true, minHostVersion: "25.6.0", probe: canRelink, handler: relinkMedia },
       "metadata.get": { readOnly: true, minHostVersion: "25.6.0", probe: canUseMetadata, handler: getMetadata },
       "metadata.update": { destructive: true, undoable: true, idempotent: true, minHostVersion: "25.6.0", probe: canUseMetadata, handler: updateMetadata },
+      "metadata.fields.inspect": { readOnly: true, minHostVersion: "25.6.0", probe: canUseMetadataFields, handler: inspectMetadataFields },
+      "metadata.fields.update": { destructive: true, undoable: true, idempotent: true, minHostVersion: "25.6.0", probe: canUseMetadataFields, handler: updateMetadataField },
+      "metadata.columns.get": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canGetProjectColumnsMetadata, handler: getProjectColumnsMetadata },
+      "metadata.projectPanel.get": { readOnly: true, minHostVersion: "25.6.0", probe: canGetProjectPanelMetadata, handler: getProjectPanelMetadata },
+      "metadata.projectPanel.update": { destructive: true, undoable: false, idempotent: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canSetProjectPanelMetadata, handler: updateProjectPanelMetadata },
+      "metadata.projectSchema.inspect": { readOnly: true, minHostVersion: "25.6.0", probe: canCreateProjectMetadataSchema, handler: inspectProjectMetadataSchema },
+      "metadata.projectSchema.create": { destructive: true, undoable: false, idempotent: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canCreateProjectMetadataSchema, handler: createProjectMetadataField },
       "color.preflight": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canInspectColor, handler: colorPreflight },
+      "environment.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canInspectEnvironment, handler: inspectEnvironment },
       "footage.conform": { destructive: true, undoable: true, idempotent: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canConformFootage, handler: conformFootage },
       "sourceMonitor.state": { readOnly: true, minHostVersion: "25.6.0", probe: canInspectSourceMonitor, handler: sourceMonitorState },
       "sourceMonitor.open": { idempotent: true, conditionalWorkspace: true, minHostVersion: "25.6.0", probe: canOpenSourceMonitor, handler: openSourceMonitor },
@@ -264,6 +298,46 @@
       const input = validateTrackTarget(args, ["mediaType", "trackIndex", "clipIndex"]), context = await activeContext(false);
       const item = await trackItemAt(context.sequence, input.mediaType, input.trackIndex, input.clipIndex);
       return { ...input, ...(await chainSnapshot(await componentChain(item))) };
+    }
+
+    async function inspectTrackItemIdentity(args) {
+      const input = validateTrackItemIdentityArgs(args), context = await activeContext(false);
+      const sequenceGuid = guidString(context.sequence && context.sequence.guid);
+      if (!sequenceGuid) throw commandError("UXP_COMMAND_UNAVAILABLE", "The active sequence does not expose a stable GUID");
+      if (input.expectedSequenceGuid && input.expectedSequenceGuid !== sequenceGuid) {
+        throw commandError("UXP_STALE_SEQUENCE", "The active sequence differs from expectedSequenceGuid; inspect the track-item identity again");
+      }
+      const item = await trackItemAt(context.sequence, input.mediaType, input.trackIndex, input.clipIndex);
+      const identity = await trackItemIdentitySnapshot(item);
+      const activeAfter = await context.project.getActiveSequence(), activeAfterGuid = guidString(activeAfter && activeAfter.guid);
+      if (activeAfterGuid !== sequenceGuid) {
+        throw commandError("UXP_STALE_SEQUENCE", "The active sequence changed while reading the track-item identity; retry the inspection");
+      }
+      return {
+        sequenceGuid, mediaType: input.mediaType, trackIndex: input.trackIndex, clipIndex: input.clipIndex,
+        ...identity, verificationBoundary: "active_sequence_identity_readback"
+      };
+    }
+
+    async function trackItemIdentitySnapshot(item) {
+      const required = ["getMatchName", "getType", "getMediaType", "getTrackIndex", "getIsSelected"];
+      const missing = required.find((name) => !item || typeof item[name] !== "function");
+      if (missing) throw commandError("UXP_COMMAND_UNAVAILABLE", "This track item does not expose documented " + missing + " identity access");
+      const matchName = await item.getMatchName(), trackItemType = await item.getType(), mediaTypeGuid = guidString(await item.getMediaType());
+      const reportedTrackIndex = await item.getTrackIndex(), selected = await item.getIsSelected();
+      if (typeof matchName !== "string" || matchName.length > 512 || !Number.isInteger(trackItemType) ||
+        !mediaTypeGuid || !Number.isInteger(reportedTrackIndex) || reportedTrackIndex < 0 || typeof selected !== "boolean") {
+        throw commandError("UXP_VERIFICATION_FAILED", "Premiere returned an incomplete track-item identity snapshot");
+      }
+      return { matchName, trackItemType, mediaTypeGuid, reportedTrackIndex, selected };
+    }
+
+    function guidString(value) {
+      if (value == null) return "";
+      try {
+        const result = String(typeof value.toString === "function" ? value.toString() : value);
+        return result.length <= 512 ? result : "";
+      } catch (_) { return ""; }
     }
 
     async function createEffectComponent(mediaType, effectId, item) {
@@ -693,6 +767,50 @@
       assertObject(args); assertOnlyKeys(args, ["mode", "operationId"]);
       const mode = enumValue(args.mode, "mode", ["applyCuts", "createMarkers", "createSubclips"]);
       const context = await activeContext(false), selected = await selectedTrackItems(context.sequence);
+      const markerIdsForOwner = async (owner, ownerKey) => {
+        if (!ppro.Markers || typeof ppro.Markers.getMarkers !== "function" || !owner) return { ids: [], readable: false };
+        let collection = null;
+        try { collection = await ppro.Markers.getMarkers(owner); } catch (_) { collection = null; }
+        if (!collection || typeof collection.getMarkers !== "function") return { ids: [], readable: false };
+        const ids = [];
+        for (const marker of Array.from(await collection.getMarkers() || [])) {
+          let markerId = "";
+          try { markerId = marker && marker.guid != null ? String(marker.guid) : ""; } catch (_) {}
+          if (markerId) ids.push(ownerKey + ":" + markerId);
+        }
+        return { ids, readable: true };
+      };
+      const markerSnapshot = async () => {
+        const ownerIds = [], markerIds = [];
+        const seen = new Set();
+        let readable = false;
+        const sequenceGuid = context.sequence && context.sequence.guid != null ? String(context.sequence.guid) : "";
+        if (sequenceGuid) {
+          const key = "sequence:" + sequenceGuid;
+          seen.add(key);
+          ownerIds.push(key);
+          const sequenceMarkers = await markerIdsForOwner(context.sequence, key);
+          readable = readable || sequenceMarkers.readable;
+          markerIds.push(...sequenceMarkers.ids);
+        }
+        for (const trackItem of selected.items) {
+          if (!trackItem || typeof trackItem.getProjectItem !== "function") continue;
+          let owner = null;
+          try { owner = await trackItem.getProjectItem(); } catch (_) { owner = null; }
+          const ownerId = await projectItemIdentifier(owner);
+          if (!ownerId || seen.has(ownerId)) continue;
+          seen.add(ownerId);
+          ownerIds.push(ownerId);
+          const itemMarkers = await markerIdsForOwner(castProjectItem(owner), ownerId);
+          readable = readable || itemMarkers.readable;
+          markerIds.push(...itemMarkers.ids);
+        }
+        return { ownerIds, markerIds, readable };
+      };
+      let markersBefore = null;
+      if (mode === "createMarkers") {
+        markersBefore = await markerSnapshot();
+      }
       const utils = ppro.SequenceUtils, names = {
         applyCuts: "SEQUENCE_OPERATION_APPLYCUT",
         createMarkers: "SEQUENCE_OPERATION_CREATEMARKER",
@@ -702,6 +820,32 @@
       if (typeof operation !== "string" || !operation) throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere scene-edit operation constants are unavailable");
       const detected = await utils.performSceneEditDetectionOnSelection(operation, selected.selection);
       if (!detected) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not confirm scene-edit detection");
+      if (mode === "createMarkers") {
+        const markersAfter = await markerSnapshot(), addedMarkerIds = markersAfter.markerIds.filter((id) => markersBefore.markerIds.indexOf(id) < 0);
+        if (addedMarkerIds.length) {
+          return {
+            detected: true, verified: true, mode, selectedItemCount: selected.items.length,
+            markerOwnerCount: markersAfter.ownerIds.length, addedMarkerCount: addedMarkerIds.length,
+            outcome: "verified", verificationBoundary: "selected_project_item_marker_guid_readback",
+            operation: operationSemantics({
+              mutatesProject: true, verificationStatus: "verified", verificationBoundary: "selected_project_item_marker_guid_readback",
+              verificationEvidence: [{ type: "selected_project_item_marker_guid_delta", addedMarkerCount: addedMarkerIds.length }], undoSupported: false, cancellationSupported: true
+            })
+          };
+        }
+        if (!markersBefore.readable && !markersAfter.readable) {
+          return {
+            detected: true, outcome: "committed_unverified", mode, selectedItemCount: selected.items.length,
+            verificationBoundary: "sequence_utils_host_return",
+            warning: "Premiere accepted scene-marker detection, but no marker collection was readable on the selected items or active sequence.",
+            operation: operationSemantics({
+              mutatesProject: true, verificationStatus: "not_verified", verificationBoundary: "sequence_utils_host_return",
+              verificationEvidence: [{ type: "host_return", value: true }], undoSupported: false, cancellationSupported: true
+            })
+          };
+        }
+        throw commandError("UXP_VERIFICATION_FAILED", "Premiere reported scene-marker detection but did not add observable selected-item or sequence markers");
+      }
       return {
         detected: true, outcome: "committed_unverified", mode, selectedItemCount: selected.items.length,
         verificationBoundary: "sequence_utils_host_return",
@@ -850,6 +994,205 @@
       return metadataSnapshot(context.clip);
     }
 
+    function boundedMetadataResult(value, field, result) {
+      const metadata = boundedStringAllowEmpty(value, field, MAX_METADATA_CHARS);
+      if (utf8ByteLength(JSON.stringify(result)) > MAX_METADATA_RESULT_BYTES) {
+        throw commandError("UXP_RESULT_TOO_LARGE", field + " exceeds the bridge's bounded result size");
+      }
+      return Protocol && typeof Protocol.assertResultSize === "function" ? Protocol.assertResultSize(result) : result;
+    }
+
+    async function getProjectColumnsMetadata(args) {
+      const context = await clipTarget(args, ["projectItemId", "projectItemName"]);
+      const projectItem = castProjectItem(context.clip);
+      const projectColumnsMetadata = await ppro.Metadata.getProjectColumnsMetadata(projectItem);
+      const result = {
+        projectItemId: await projectItemIdentifier(projectItem),
+        name: String(context.clip.name || ""),
+        projectColumnsMetadata
+      };
+      return boundedMetadataResult(result.projectColumnsMetadata, "projectColumnsMetadata", result);
+    }
+
+    async function getProjectPanelMetadata(args) {
+      assertObject(args); assertOnlyKeys(args, []);
+      const project = await activeProject(false);
+      const projectPanelMetadata = await ppro.Metadata.getProjectPanelMetadata();
+      const result = {
+        projectGuid: String(project.guid || ""),
+        projectName: String(project.name || ""),
+        projectPanelMetadata
+      };
+      if (!result.projectGuid) throw commandError("UXP_INVALID_HOST_STATE", "Premiere did not return a project GUID for Project-panel metadata");
+      return boundedMetadataResult(result.projectPanelMetadata, "projectPanelMetadata", result);
+    }
+
+    async function projectPanelMetadataSnapshot(maximumBytes) {
+      const project = await activeProject(false);
+      const projectGuid = String(project.guid || "");
+      if (!projectGuid) throw commandError("UXP_INVALID_HOST_STATE", "Premiere did not return a project GUID for Project-panel metadata");
+      const projectPanelMetadata = boundedUtf8StringAllowEmpty(
+        await ppro.Metadata.getProjectPanelMetadata(), "projectPanelMetadata", maximumBytes
+      );
+      return { project, projectGuid, projectName: String(project.name || ""), projectPanelMetadata };
+    }
+
+    async function updateProjectPanelMetadata(args) {
+      assertObject(args);
+      assertOnlyKeys(args, ["expectedProjectGuid", "expectedProjectPanelMetadata", "projectPanelMetadata", "confirmUpdate", "operationId"]);
+      const input = {
+        expectedProjectGuid: boundedString(args.expectedProjectGuid, "expectedProjectGuid", 512),
+        expectedProjectPanelMetadata: boundedUtf8StringAllowEmpty(args.expectedProjectPanelMetadata, "expectedProjectPanelMetadata", MAX_PROJECT_PANEL_METADATA_UPDATE_BYTES),
+        projectPanelMetadata: boundedUtf8StringAllowEmpty(args.projectPanelMetadata, "projectPanelMetadata", MAX_PROJECT_PANEL_METADATA_UPDATE_BYTES),
+        operationId: requiredOperationId(args.operationId, "operationId")
+      };
+      if (args.confirmUpdate !== true) {
+        throw commandError("UXP_CONFIRMATION_REQUIRED", "Replacing Project-panel metadata is not undoable; pass confirmUpdate=true after review");
+      }
+      return withProjectPanelMetadataMutationLock(input.expectedProjectGuid, async () => {
+        // This queue serializes this bridge's competing requests. Premiere does
+        // not expose an atomic compare-and-set for this direct setter, so the
+        // snapshot is deliberately the final asynchronous preflight before the
+        // setter is started; human UI or another extension can still race it.
+        const before = await projectPanelMetadataSnapshot(MAX_PROJECT_PANEL_METADATA_UPDATE_BYTES);
+        if (before.projectGuid !== input.expectedProjectGuid) {
+          throw commandError("UXP_STALE_PROJECT_PANEL_METADATA", "The active project changed before Project-panel metadata was updated; inspect and retry");
+        }
+        if (before.projectPanelMetadata !== input.expectedProjectPanelMetadata) {
+          throw commandError("UXP_STALE_PROJECT_PANEL_METADATA", "Project-panel metadata changed before it was updated; inspect and retry");
+        }
+        if (before.projectPanelMetadata === input.projectPanelMetadata) {
+          return projectPanelMetadataUpdateResult(true, {
+            updated: false, unchanged: true, projectGuid: before.projectGuid,
+            projectName: before.projectName, projectPanelMetadata: before.projectPanelMetadata
+          }, "project_panel_metadata_exact_readback");
+        }
+        let request;
+        before.project.lockedAccess(() => {
+          request = ppro.Metadata.setProjectPanelMetadata(input.projectPanelMetadata);
+        });
+        if (await request !== true) throw commandError("UXP_ACTION_REJECTED", "Premiere did not accept Project-panel metadata replacement");
+        const after = await projectPanelMetadataSnapshot(MAX_PROJECT_PANEL_METADATA_UPDATE_BYTES);
+        const verified = after.projectGuid === before.projectGuid && after.projectPanelMetadata === input.projectPanelMetadata;
+        return projectPanelMetadataUpdateResult(verified, {
+          updated: true, projectGuid: before.projectGuid, projectName: after.projectName,
+          projectPanelMetadata: after.projectPanelMetadata,
+          requestedProjectPanelMetadata: input.projectPanelMetadata,
+          readbackProjectGuid: after.projectGuid
+        }, verified ? "project_panel_metadata_exact_readback" : "project_panel_metadata_active_project_readback");
+      });
+    }
+
+    function withProjectPanelMetadataMutationLock(projectGuid, operation) {
+      const previous = projectPanelMetadataMutationTails.get(projectGuid) || Promise.resolve();
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const tail = previous.catch(() => undefined).then(() => gate);
+      projectPanelMetadataMutationTails.set(projectGuid, tail);
+      return previous.catch(() => undefined).then(operation).finally(() => {
+        release();
+        if (projectPanelMetadataMutationTails.get(projectGuid) === tail) projectPanelMetadataMutationTails.delete(projectGuid);
+      });
+    }
+
+    function projectPanelMetadataUpdateResult(verified, values, boundary) {
+      return {
+        ...values, outcome: verified ? "verified" : "committed_unverified", verified,
+        verificationBoundary: boundary,
+        operation: operationSemantics({
+          mutatesProject: true, verificationStatus: verified ? "verified" : "not_verified", verificationBoundary: boundary,
+          verificationEvidence: [{ type: boundary, verified }], undoSupported: false,
+          transactionActionGroup: false, cancellationSupported: false
+        })
+      };
+    }
+
+    async function inspectProjectMetadataSchema(args) {
+      assertObject(args); assertOnlyKeys(args, []);
+      const snapshot = await projectPanelMetadataSnapshot(MAX_PROJECT_PANEL_METADATA_INSPECT_BYTES);
+      return {
+        projectGuid: snapshot.projectGuid, projectName: snapshot.projectName,
+        projectPanelMetadata: snapshot.projectPanelMetadata,
+        verificationBoundary: "bounded_project_panel_metadata_readback"
+      };
+    }
+
+    async function createProjectMetadataField(args) {
+      assertObject(args);
+      assertOnlyKeys(args, ["expectedProjectGuid", "expectedProjectPanelMetadata", "fieldName", "fieldLabel", "fieldType", "confirmCreate", "operationId"]);
+      const input = {
+        expectedProjectGuid: boundedString(args.expectedProjectGuid, "expectedProjectGuid", 512),
+        expectedProjectPanelMetadata: boundedUtf8StringAllowEmpty(args.expectedProjectPanelMetadata, "expectedProjectPanelMetadata", MAX_PROJECT_PANEL_METADATA_INSPECT_BYTES),
+        fieldName: metadataSchemaFieldName(args.fieldName),
+        fieldLabel: boundedString(args.fieldLabel, "fieldLabel", 255),
+        fieldType: enumValue(args.fieldType, "fieldType", ["integer", "real", "text", "boolean"]),
+        operationId: requiredOperationId(args.operationId, "operationId")
+      };
+      if (args.confirmCreate !== true) {
+        throw commandError("UXP_CONFIRMATION_REQUIRED", "Creating a Project metadata schema field is non-undoable; pass confirmCreate=true after review");
+      }
+      // Resolve every synchronous host value before the queued stale snapshot so
+      // no awaited conversion can open a gap between validation and the direct
+      // schema call under lockedAccess().
+      const metadataType = projectMetadataType(input.fieldType);
+      return withProjectPanelMetadataMutationLock(input.expectedProjectGuid, async () => {
+        // This shared queue also excludes this bridge's direct Project-panel XML
+        // replacement requests. Adobe provides no atomic compare-and-set or
+        // schema-field getter, so UI and other-extension races remain outside
+        // this protocol's proof boundary.
+        const before = await projectPanelMetadataSnapshot(MAX_PROJECT_PANEL_METADATA_INSPECT_BYTES);
+        if (before.projectGuid !== input.expectedProjectGuid) {
+          throw commandError("UXP_STALE_PROJECT_METADATA_SCHEMA", "The active project changed before the metadata schema field was created; inspect and retry");
+        }
+        if (before.projectPanelMetadata !== input.expectedProjectPanelMetadata) {
+          throw commandError("UXP_STALE_PROJECT_METADATA_SCHEMA", "Project-panel metadata changed before the metadata schema field was created; inspect and retry");
+        }
+        let request;
+        before.project.lockedAccess(() => {
+          request = ppro.Metadata.addPropertyToProjectMetadataSchema(input.fieldName, input.fieldLabel, metadataType);
+        });
+        if (await request !== true) throw commandError("UXP_ACTION_REJECTED", "Premiere did not accept Project metadata schema field creation");
+        const after = await projectPanelMetadataSnapshot(MAX_PROJECT_PANEL_METADATA_INSPECT_BYTES);
+        const activeProjectRetained = after.projectGuid === before.projectGuid;
+        const panelMetadataChanged = activeProjectRetained && after.projectPanelMetadata !== before.projectPanelMetadata;
+        return {
+          creationRequested: true,
+          hostAccepted: true,
+          projectGuid: before.projectGuid,
+          projectName: after.projectName,
+          field: { name: input.fieldName, label: input.fieldLabel, type: input.fieldType },
+          readbackProjectGuid: after.projectGuid,
+          panelMetadataChanged,
+          outcome: "committed_unverified",
+          verified: false,
+          verificationBoundary: panelMetadataChanged ? "project_panel_metadata_change_readback" : "metadata_schema_add_host_return",
+          operation: operationSemantics({
+            mutatesProject: true, verificationStatus: "not_verified",
+            verificationBoundary: panelMetadataChanged ? "project_panel_metadata_change_readback" : "metadata_schema_add_host_return",
+            verificationEvidence: [{ type: "metadata_schema_host_return", value: true }, { type: "project_panel_metadata_changed", value: panelMetadataChanged }],
+            undoSupported: false, transactionActionGroup: false, cancellationSupported: false
+          })
+        };
+      });
+    }
+
+    function metadataSchemaFieldName(value) {
+      if (typeof value !== "string" || !/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/.test(value)) {
+        throw commandError("UXP_INVALID_ARGUMENT", "fieldName must start with a letter and contain at most 128 letters, digits, periods, underscores, or hyphens");
+      }
+      return value;
+    }
+
+    function projectMetadataType(fieldType) {
+      const typeNames = {
+        integer: "METADATA_TYPE_INTEGER", real: "METADATA_TYPE_REAL",
+        text: "METADATA_TYPE_TEXT", boolean: "METADATA_TYPE_BOOLEAN"
+      };
+      const value = ppro.Metadata && ppro.Metadata[typeNames[fieldType]];
+      if (value == null) throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose the " + fieldType + " Project metadata field type");
+      return value;
+    }
+
     async function updateMetadata(args) {
       assertObject(args);
       assertOnlyKeys(args, ["projectItemId", "projectItemName", "projectMetadata", "xmpMetadata", "updatedFields", "operationId"]);
@@ -880,6 +1223,240 @@
       const after = await metadataSnapshot(clip);
       const verified = (!hasProject || after.projectMetadata === projectMetadata) && (!hasXmp || after.xmpMetadata === xmpMetadata);
       return mutationResult(verified, { updated: true, updatedFields, metadata: after }, "metadata_readback", "Update clip metadata");
+    }
+
+    function resolveXmpModule() {
+      const provided = deps.xmp;
+      if (provided && typeof provided.XMPMeta === "function") return provided;
+      try {
+        const uxp = require("uxp");
+        if (uxp && uxp.xmp && typeof uxp.xmp.XMPMeta === "function") return uxp.xmp;
+        if (uxp && typeof uxp.XMPMeta === "function") return { XMPMeta: uxp.XMPMeta, XMPConst: uxp.XMPConst };
+      } catch (_) {}
+      return null;
+    }
+
+    function resolveMetadataNamespace(value, required, fallback) {
+      if (value == null || value === "") {
+        if (required) throw commandError("UXP_INVALID_ARGUMENT", "namespace is required");
+        return fallback || "";
+      }
+      if (typeof value !== "string") throw commandError("UXP_INVALID_ARGUMENT", "namespace must be a string");
+      const trimmed = value.trim();
+      if (METADATA_NAMESPACE_ALIASES[trimmed]) return METADATA_NAMESPACE_ALIASES[trimmed];
+      if (/^https?:\/\//i.test(trimmed)) {
+        if (trimmed.length > 512) throw commandError("UXP_INVALID_ARGUMENT", "namespace must be at most 512 characters");
+        return trimmed;
+      }
+      throw commandError("UXP_INVALID_ARGUMENT", "namespace must be an http(s) URI or a known alias such as premiere, dc, xmp, or exif");
+    }
+
+    function optionalNamespaceFilters(value) {
+      if (value == null) return null;
+      if (!Array.isArray(value) || !value.length || value.length > 8) {
+        throw commandError("UXP_INVALID_ARGUMENT", "namespaces must contain 1-8 namespace URIs or aliases");
+      }
+      return value.map(function (item) { return resolveMetadataNamespace(item, true); });
+    }
+
+    function namespaceAllowed(namespace, filters) {
+      return !filters || filters.indexOf(namespace) !== -1;
+    }
+
+    function propertyString(prop) {
+      if (prop == null) return "";
+      if (typeof prop === "string" || typeof prop === "number" || typeof prop === "boolean") return String(prop);
+      if (typeof prop.value !== "undefined" && prop.value != null) return String(prop.value);
+      return String(prop);
+    }
+
+    function isSensitiveMetadataField(namespace, name) {
+      const compact = [namespace, name].join(" ").toLowerCase().replace(/[^a-z0-9]/g, "");
+      return compact.indexOf("gps") !== -1 || compact.indexOf("serialnumber") !== -1
+        || compact.indexOf("lensserial") !== -1 || compact.indexOf("bodyserial") !== -1
+        || compact.indexOf("cameraserial") !== -1;
+    }
+
+    function parseProjectColumns(raw) {
+      const columns = [];
+      if (raw == null || raw === "") return columns;
+      let parsed = raw;
+      if (typeof raw === "string") {
+        try { parsed = JSON.parse(raw); } catch (_) { return columns; }
+      }
+      if (!Array.isArray(parsed)) return columns;
+      for (let i = 0; i < parsed.length && columns.length < MAX_METADATA_COLUMNS; i += 1) {
+        const item = parsed[i];
+        if (!item || typeof item !== "object") continue;
+        const column = {
+          source: "columns",
+          name: String(item.ColumnName || ""),
+          value: String(item.ColumnValue != null ? item.ColumnValue : "")
+        };
+        if (item.ColumnID != null) column.columnId = String(item.ColumnID);
+        if (item.ColumnPath != null) column.path = String(item.ColumnPath);
+        columns.push(column);
+      }
+      return columns;
+    }
+
+    function iteratePacketFields(XMPMeta, packet, packetName, includeSensitive, filters, fields, budget) {
+      let omittedSensitiveCount = 0, truncated = false;
+      if (!packet) return { omittedSensitiveCount, truncated };
+      let meta;
+      try { meta = new XMPMeta(packet); } catch (_) { return { omittedSensitiveCount, truncated }; }
+      if (!meta || typeof meta.iterator !== "function") return { omittedSensitiveCount, truncated };
+      let iterator;
+      try {
+        const xmp = resolveXmpModule();
+        const leaf = xmp && xmp.XMPConst && typeof xmp.XMPConst.ITERATOR_JUST_LEAFNODES === "number"
+          ? xmp.XMPConst.ITERATOR_JUST_LEAFNODES : 0;
+        iterator = meta.iterator(leaf, "", "");
+      } catch (_) {
+        iterator = meta.iterator();
+      }
+      if (!iterator || typeof iterator.next !== "function") return { omittedSensitiveCount, truncated };
+      let item = iterator.next();
+      while (item) {
+        const namespace = String(item.namespace || "");
+        const name = String(item.path || item.name || "");
+        if (!name || name === "rdf:type" || /#type$/.test(name)) {
+          item = iterator.next();
+          continue;
+        }
+        if (!namespaceAllowed(namespace, filters)) {
+          item = iterator.next();
+          continue;
+        }
+        if (budget.remaining <= 0) { truncated = true; break; }
+        const rawValue = propertyString(item.value);
+        const clipped = rawValue.length > MAX_METADATA_FIELD_VALUE_CHARS
+          ? rawValue.slice(0, MAX_METADATA_FIELD_VALUE_CHARS) : rawValue;
+        const field = { packet: packetName, namespace, name };
+        if (isSensitiveMetadataField(namespace, name) && !includeSensitive) {
+          field.omitted = "sensitive";
+          omittedSensitiveCount += 1;
+        } else {
+          field.value = clipped;
+          if (clipped !== rawValue) field.valueTruncated = true;
+        }
+        fields.push(field);
+        budget.remaining -= 1;
+        item = iterator.next();
+      }
+      return { omittedSensitiveCount, truncated };
+    }
+
+    async function inspectMetadataFields(args) {
+      assertObject(args);
+      assertOnlyKeys(args, ["projectItemId", "projectItemName", "includeSensitive", "namespaces", "packets"]);
+      const xmp = resolveXmpModule();
+      if (!xmp || typeof xmp.XMPMeta !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This Premiere build does not expose uxp.XMPMeta field parsing");
+      }
+      const includeSensitive = optionalBoolean(args.includeSensitive, false, "includeSensitive");
+      const filters = optionalNamespaceFilters(args.namespaces);
+      const packets = args.packets == null ? ["columns", "project", "xmp"]
+        : boundedEnumArray(args.packets, "packets", ["columns", "project", "xmp"], 3);
+      const context = await clipTarget({
+        projectItemId: args.projectItemId, projectItemName: args.projectItemName
+      }, ["projectItemId", "projectItemName"]);
+      const projectItem = castProjectItem(context.clip);
+      const columns = [];
+      if (packets.indexOf("columns") !== -1) {
+        if (typeof ppro.Metadata.getProjectColumnsMetadata === "function") {
+          columns.push.apply(columns, parseProjectColumns(await ppro.Metadata.getProjectColumnsMetadata(projectItem)));
+        } else if (args.packets) {
+          throw commandError("UXP_COMMAND_UNAVAILABLE", "Project-panel column metadata is unavailable");
+        }
+      }
+      const snapshot = await metadataSnapshot(context.clip);
+      const fields = [], budget = { remaining: MAX_METADATA_FIELDS };
+      let omittedSensitiveCount = 0, truncated = false;
+      if (packets.indexOf("project") !== -1) {
+        const result = iteratePacketFields(xmp.XMPMeta, snapshot.projectMetadata, "project", includeSensitive, filters, fields, budget);
+        omittedSensitiveCount += result.omittedSensitiveCount;
+        truncated = truncated || result.truncated;
+      }
+      if (packets.indexOf("xmp") !== -1) {
+        const result = iteratePacketFields(xmp.XMPMeta, snapshot.xmpMetadata, "xmp", includeSensitive, filters, fields, budget);
+        omittedSensitiveCount += result.omittedSensitiveCount;
+        truncated = truncated || result.truncated;
+      }
+      const result = {
+        projectItemId: snapshot.projectItemId, name: snapshot.name, columns, fields,
+        omittedSensitiveCount, truncated, includeSensitive
+      };
+      if (utf8ByteLength(JSON.stringify(result)) > MAX_METADATA_RESULT_BYTES) {
+        throw commandError("UXP_RESULT_TOO_LARGE", "Metadata fields exceed the bridge's bounded result size");
+      }
+      return Protocol && typeof Protocol.assertResultSize === "function" ? Protocol.assertResultSize(result) : result;
+    }
+
+    async function updateMetadataField(args) {
+      assertObject(args);
+      assertOnlyKeys(args, ["projectItemId", "projectItemName", "packet", "namespace", "name", "value", "expectedValue", "operationId"]);
+      const xmp = resolveXmpModule();
+      if (!xmp || typeof xmp.XMPMeta !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This Premiere build does not expose uxp.XMPMeta field updates");
+      }
+      const packet = enumValue(args.packet, "packet", ["project", "xmp"]);
+      const name = boundedString(args.name, "name", 512);
+      const value = boundedStringAllowEmpty(args.value, "value", MAX_METADATA_FIELD_VALUE_CHARS);
+      const expectedValue = args.expectedValue == null ? null
+        : boundedStringAllowEmpty(args.expectedValue, "expectedValue", MAX_METADATA_FIELD_VALUE_CHARS);
+      const namespace = packet === "project"
+        ? resolveMetadataNamespace(args.namespace, false, PREMIERE_PRIVATE_METADATA_NS)
+        : resolveMetadataNamespace(args.namespace, true);
+      const target = validateProjectItemTarget(args);
+      const project = await activeProject(true);
+      const clip = await resolveClipProjectItem(project, target);
+      const projectItem = castProjectItem(clip);
+      const before = await metadataSnapshot(clip);
+      const packetXml = packet === "project" ? before.projectMetadata : before.xmpMetadata;
+      let meta;
+      try { meta = new xmp.XMPMeta(packetXml || ""); } catch (_) {
+        throw commandError("UXP_INVALID_HOST_STATE", "Premiere did not return a parseable " + packet + " metadata packet");
+      }
+      if (!meta || typeof meta.getProperty !== "function" || typeof meta.setProperty !== "function" || typeof meta.serialize !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "uxp.XMPMeta cannot read, set, and serialize properties");
+      }
+      const current = propertyString(meta.getProperty(namespace, name));
+      if (expectedValue != null && current !== expectedValue) {
+        throw commandError("UXP_STALE_METADATA_FIELD", "The field value changed before it was updated; inspect and retry");
+      }
+      if (current === value) {
+        return mutationResult(true, {
+          updated: false, unchanged: true, packet, namespace, name, value: current
+        }, "metadata_field_readback", "Update clip metadata field");
+      }
+      meta.setProperty(namespace, name, value);
+      const serialized = String(meta.serialize() || "");
+      let committed = false;
+      project.lockedAccess(() => {
+        committed = project.executeTransaction((compoundAction) => {
+          if (packet === "project") {
+            const projectAction = ppro.Metadata.createSetProjectMetadataAction(projectItem, serialized, [name]);
+            if (!projectAction || compoundAction.addAction(projectAction) === false) {
+              throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the project metadata action");
+            }
+          } else {
+            const xmpAction = ppro.Metadata.createSetXMPMetadataAction(projectItem, serialized);
+            if (!xmpAction || compoundAction.addAction(xmpAction) === false) {
+              throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the XMP metadata action");
+            }
+          }
+        }, "Update clip metadata field");
+      });
+      assertCommitted(committed, "metadata field update");
+      const after = await metadataSnapshot(clip);
+      const afterXml = packet === "project" ? after.projectMetadata : after.xmpMetadata;
+      let readback = "";
+      try { readback = propertyString(new xmp.XMPMeta(afterXml || "").getProperty(namespace, name)); } catch (_) {}
+      const verified = readback === value;
+      return mutationResult(verified, {
+        updated: true, packet, namespace, name, value: readback, requestedValue: value
+      }, "metadata_field_readback", "Update clip metadata field");
     }
 
     async function footageSnapshot(clip) {
@@ -914,6 +1491,29 @@
           supportedGraphicsWhiteLuminances: Array.from(await settings.getSupportedGraphicsWhiteLuminances() || [])
         },
         clip: { projectItemId: await projectItemIdentifier(context.clip), name: String(context.clip.name || ""), ...footage.values }
+      };
+    }
+
+    async function inspectEnvironment(args) {
+      assertObject(args); assertOnlyKeys(args, []);
+      const project = await activeProject(false);
+      if (!ppro.Utils || typeof ppro.Utils.isAEInstalled !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "After Effects installation detection is unavailable");
+      }
+      if (typeof project.getColorSettings !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Project color settings are unavailable");
+      }
+      const settings = await project.getColorSettings();
+      if (!settings || typeof settings.getGraphicsWhiteLuminance !== "function" ||
+        typeof settings.getSupportedGraphicsWhiteLuminances !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere did not return complete project color settings");
+      }
+      return {
+        afterEffectsInstalled: !!await ppro.Utils.isAEInstalled(),
+        projectColor: {
+          graphicsWhiteLuminance: await settings.getGraphicsWhiteLuminance(),
+          supportedGraphicsWhiteLuminances: Array.from(await settings.getSupportedGraphicsWhiteLuminances() || [])
+        }
       };
     }
 
@@ -1122,6 +1722,7 @@
     function canUseVideoEffects() { return !!(ppro.VideoFilterFactory && typeof ppro.VideoFilterFactory.createComponent === "function" && typeof ppro.VideoFilterFactory.getMatchNames === "function"); }
     function canUseAudioEffects() { return !!(ppro.AudioFilterFactory && typeof ppro.AudioFilterFactory.createComponentByDisplayName === "function" && typeof ppro.AudioFilterFactory.getDisplayNames === "function"); }
     function canUseEffects() { return canInspectProject() && (canUseVideoEffects() || canUseAudioEffects()); }
+    function canInspectTrackItemIdentity() { return canInspectProject() && !!(ppro.Constants && ppro.Constants.TrackItemType); }
     function canUseSelection() { return canInspectProject() && !!(ppro.Constants && ppro.Constants.TrackItemType); }
     async function canManageSelection() {
       if (!canUseSelection() || !ppro.TrackItemSelection || typeof ppro.TrackItemSelection.createEmptySelection !== "function") return false;
@@ -1140,7 +1741,36 @@
     function canUseProjectSettings() { return canInspectProject() && !!(ppro.ProjectSettings && typeof ppro.ProjectSettings.getScratchDiskSettings === "function"); }
     function canUseIngest() { return canInspectProject() && !!(ppro.ProjectSettings && typeof ppro.ProjectSettings.getIngestSettings === "function" && typeof ppro.ProjectSettings.createSetIngestSettingsAction === "function"); }
     function canUseMetadata() { return canUseClipItems() && !!(ppro.Metadata && typeof ppro.Metadata.getProjectMetadata === "function" && typeof ppro.Metadata.getXMPMetadata === "function" && typeof ppro.Metadata.createSetProjectMetadataAction === "function" && typeof ppro.Metadata.createSetXMPMetadataAction === "function"); }
+    function canUseMetadataFields() {
+      const xmp = resolveXmpModule();
+      return canUseMetadata() && !!(xmp && typeof xmp.XMPMeta === "function");
+    }
+    function canGetProjectColumnsMetadata() { return canUseClipItems() && !!(ppro.Metadata && typeof ppro.Metadata.getProjectColumnsMetadata === "function"); }
+    function canGetProjectPanelMetadata() { return canInspectProject() && !!(ppro.Metadata && typeof ppro.Metadata.getProjectPanelMetadata === "function"); }
+    function canCreateProjectMetadataSchema() {
+      return canGetProjectPanelMetadata() && !!(ppro.Metadata && typeof ppro.Metadata.addPropertyToProjectMetadataSchema === "function"
+        && ppro.Metadata.METADATA_TYPE_INTEGER != null && ppro.Metadata.METADATA_TYPE_REAL != null
+        && ppro.Metadata.METADATA_TYPE_TEXT != null && ppro.Metadata.METADATA_TYPE_BOOLEAN != null);
+    }
+    async function canSetProjectPanelMetadata() {
+      if (!canGetProjectPanelMetadata() || !ppro.Metadata || typeof ppro.Metadata.setProjectPanelMetadata !== "function") return false;
+      try {
+        const project = await ppro.Project.getActiveProject();
+        return !project || typeof project.lockedAccess === "function";
+      } catch (_) { return false; }
+    }
     function canInspectColor() { return canUseClipItems(); }
+    async function canInspectEnvironment() {
+      if (!canInspectProject() || !ppro.Utils || typeof ppro.Utils.isAEInstalled !== "function") return false;
+      try {
+        const project = await ppro.Project.getActiveProject();
+        if (!project) return true;
+        if (typeof project.getColorSettings !== "function") return false;
+        const settings = await project.getColorSettings();
+        return !!settings && typeof settings.getGraphicsWhiteLuminance === "function" &&
+          typeof settings.getSupportedGraphicsWhiteLuminances === "function";
+      } catch (_) { return false; }
+    }
     function canConformFootage() { return canUseClipItems(); }
     function canInspectSourceMonitor() {
       return !!(ppro.SourceMonitor && typeof ppro.SourceMonitor.getPosition === "function" && typeof ppro.SourceMonitor.getProjectItem === "function");
@@ -1165,6 +1795,17 @@
       mediaType: enumValue(args.mediaType, "mediaType", ["video", "audio"]),
       trackIndex: nonNegativeInt(args.trackIndex, "trackIndex"), clipIndex: nonNegativeInt(args.clipIndex, "clipIndex")
     };
+  }
+
+  function validateTrackItemIdentityArgs(args) {
+    assertObject(args); assertOnlyKeys(args, ["mediaType", "trackIndex", "clipIndex", "expectedSequenceGuid"]);
+    const result = {
+      mediaType: enumValue(args.mediaType, "mediaType", ["video", "audio"]),
+      trackIndex: nonNegativeInt(args.trackIndex, "trackIndex"),
+      clipIndex: nonNegativeInt(args.clipIndex, "clipIndex")
+    };
+    if (args.expectedSequenceGuid != null) result.expectedSequenceGuid = boundedString(args.expectedSequenceGuid, "expectedSequenceGuid", 512);
+    return result;
   }
 
   function validateEffectAdd(args, selection) {
@@ -1282,6 +1923,18 @@
   function assertOnlyKeys(value, allowed) { const unknown = Object.keys(value).filter((key) => !allowed.includes(key)); if (unknown.length) throw commandError("UXP_INVALID_ARGUMENT", "Unknown argument: " + unknown[0]); }
   function boundedString(value, name, maximum) { if (typeof value !== "string" || !value.trim() || value.length > maximum) throw commandError("UXP_INVALID_ARGUMENT", name + " must be a non-empty string of at most " + maximum + " characters"); return value; }
   function boundedStringAllowEmpty(value, name, maximum) { if (typeof value !== "string" || value.length > maximum) throw commandError("UXP_INVALID_ARGUMENT", name + " must be a string of at most " + maximum + " characters"); return value; }
+  function boundedUtf8StringAllowEmpty(value, name, maximumBytes) {
+    if (typeof value !== "string" || utf8ByteLength(value) > maximumBytes) {
+      throw commandError("UXP_INVALID_ARGUMENT", name + " must be a UTF-8 string of at most " + maximumBytes + " bytes");
+    }
+    return value;
+  }
+  function requiredOperationId(value, name) {
+    if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value)) {
+      throw commandError("UXP_INVALID_ARGUMENT", name + " must be a 1-128 character token for safe replay");
+    }
+    return value;
+  }
   function nonNegativeInt(value, name) { if (!Number.isInteger(value) || value < 0) throw commandError("UXP_INVALID_ARGUMENT", name + " must be a non-negative integer"); return value; }
   function boundedInt(value, name, minimum, maximum) { if (!Number.isInteger(value) || value < minimum || value > maximum) throw commandError("UXP_INVALID_ARGUMENT", name + " must be an integer from " + minimum + " to " + maximum); return value; }
   function finiteNumber(value, name, minimum, maximum) { const number = Number(value); if (!Number.isFinite(number) || number < minimum || number > maximum) throw commandError("UXP_INVALID_ARGUMENT", name + " must be from " + minimum + " to " + maximum); return number; }

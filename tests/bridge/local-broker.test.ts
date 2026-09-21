@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
+import { testTempBase } from "../setup/clean-temp-dir.js";
 import type { Socket } from "node:net";
 import { PassThrough } from "node:stream";
 import { createServer } from "node:net";
@@ -57,7 +58,7 @@ async function initialize(socket: Socket, id: number): Promise<Record<string, an
 
 describe("local MCP broker", () => {
   it("serves multiple MCP proxy sessions through one UXP owner", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "premiere-mcp-broker-"));
+    const tempDir = await mkdtemp(path.join(testTempBase(), "premiere-mcp-broker-"));
     tempDirs.push(tempDir);
     const broker = await startLocalBroker({
       bridgeOptions: { tempDir },
@@ -85,7 +86,7 @@ describe("local MCP broker", () => {
   });
 
   it("starts one broker when no local endpoint is available", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "premiere-mcp-broker-"));
+    const tempDir = await mkdtemp(path.join(testTempBase(), "premiere-mcp-broker-"));
     tempDirs.push(tempDir);
     const endpoint = getLocalBrokerEndpoint({ username: `spawn-${randomUUID()}` });
     let brokerPromise: Promise<LocalBroker> | undefined;
@@ -117,7 +118,7 @@ describe("local MCP broker", () => {
   });
 
   it("forwards one stdio session without creating another UXP listener", async () => {
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "premiere-mcp-broker-"));
+    const tempDir = await mkdtemp(path.join(testTempBase(), "premiere-mcp-broker-"));
     tempDirs.push(tempDir);
     const broker = await startLocalBroker({
       bridgeOptions: { tempDir },

@@ -101,13 +101,25 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
         }
 
         const script = buildToolScript(`
+          var beforeSequenceIds = {};
+          for (var i = 0; i < app.project.sequences.numSequences; i++) {
+            beforeSequenceIds[String(app.project.sequences[i].sequenceID)] = true;
+          }
           app.enableQE();
           qe.project.newSequence("${escapeForExtendScript(args.name)}", "${escapeForExtendScript(presetPath)}");
           var seq = app.project.activeSequence;
           if (!seq || seq.name !== "${escapeForExtendScript(args.name)}") {
             return __error("Failed to create sequence from preset: ${escapeForExtendScript(presetPath)}");
           }
-          return __result({ created: true, name: seq.name, id: seq.sequenceID, presetUsed: "${escapeForExtendScript(presetPath)}" });
+          var sequenceId = String(seq.sequenceID);
+          if (beforeSequenceIds[sequenceId]) {
+            return __error("Premiere did not create a new sequence; the active sequence already existed before the preset request.");
+          }
+          var created = __findSequence(sequenceId);
+          if (!created || String(created.sequenceID) !== sequenceId) {
+            return __error("Premiere did not add the new sequence to the project collection; no creation success is reported.");
+          }
+          return __result({ created: true, verified: true, name: created.name, id: sequenceId, presetUsed: "${escapeForExtendScript(presetPath)}" });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -236,9 +248,9 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
           var seq = __getCurrentActiveSequence();
           if (!seq) return __error("No active sequence");
 
-          var before = [];
+          var before = {};
           for (var i = 0; i < app.project.sequences.numSequences; i++) {
-            before.push(String(app.project.sequences[i].sequenceID));
+            before[String(app.project.sequences[i].sequenceID)] = true;
           }
           var newSeq = seq.createSubsequence(${args.ignore_track_targeting ? "true" : "false"});
           if (!newSeq) return __error("Failed to create subsequence");
@@ -250,7 +262,7 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
               break;
             }
           }
-          if (!exists || before.indexOf(newId) !== -1) {
+          if (!exists || before[newId] === true) {
             return __error("Premiere did not expose a newly created subsequence in the current project");
           }
           return __result({
@@ -504,7 +516,8 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
     },
 
     attach_custom_property: {
-      description: "Attach a custom property (key/value pair) to the active sequence",
+      description:
+        "Attach a custom property (key/value pair) to the active sequence and confirm it against the sequence project item's XMP packet. Reports failure when the property never lands in XMP.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -520,11 +533,57 @@ export function getSequenceTools(bridgeOptions: BridgeOptions) {
         required: ["property_id", "property_value"],
       },
       handler: async (args: { property_id: string; property_value: string }) => {
+        if (typeof args.property_id !== "string" || !args.property_id.trim()) {
+          return { success: false, error: "property_id must be a non-empty string" };
+        }
+        if (typeof args.property_value !== "string" || !args.property_value.length) {
+          return { success: false, error: "property_value must be a non-empty string" };
+        }
+        const propertyId = escapeForExtendScript(args.property_id);
+        const propertyValue = escapeForExtendScript(args.property_value);
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          seq.attachCustomProperty("${escapeForExtendScript(args.property_id)}", "${escapeForExtendScript(args.property_value)}");
-          return __result({ attached: true, propertyId: "${escapeForExtendScript(args.property_id)}", value: "${escapeForExtendScript(args.property_value)}" });
+          if (typeof seq.attachCustomProperty !== "function") {
+            return __error("This Premiere build does not expose sequence.attachCustomProperty; no custom property was attached.");
+          }
+
+          // A custom property is only real once it is in the sequence project
+          // item's XMP packet, so read that packet on both sides of the write.
+          var sequenceItem = null;
+          try { sequenceItem = seq.projectItem; } catch (itemError) { sequenceItem = null; }
+          if (!sequenceItem || typeof sequenceItem.getXMPMetadata !== "function") {
+            return __error("The active sequence exposes no readable project item XMP packet, so an attached custom property cannot be verified. No property was attached.");
+          }
+
+          var beforePacket = "";
+          try { beforePacket = String(sequenceItem.getXMPMetadata() || ""); } catch (beforeError) { beforePacket = ""; }
+          if (!beforePacket) {
+            return __error("Premiere returned no readable XMP packet for the active sequence, so an attached custom property cannot be verified. No property was attached.");
+          }
+
+          try {
+            seq.attachCustomProperty("${propertyId}", "${propertyValue}");
+          } catch (attachError) {
+            return __error("Premiere could not attach the custom property: " + attachError.toString());
+          }
+
+          var afterPacket = "";
+          try { afterPacket = String(sequenceItem.getXMPMetadata() || ""); } catch (afterError) { afterPacket = ""; }
+          if (!afterPacket) {
+            return __error("Premiere returned no readable XMP packet after attachCustomProperty, so the custom property is not verified.");
+          }
+          if (afterPacket === beforePacket || afterPacket.indexOf("${propertyValue}") === -1) {
+            return __error("Premiere accepted attachCustomProperty without an error, but the sequence XMP packet does not contain the property value, so the property was not persisted. No success is reported.");
+          }
+
+          return __result({
+            attached: true,
+            verified: true,
+            propertyId: "${propertyId}",
+            value: "${propertyValue}",
+            verification: "sequence_project_item_xmp_readback"
+          });
         `);
         return sendCommand(script, bridgeOptions);
       },

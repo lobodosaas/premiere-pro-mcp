@@ -481,7 +481,8 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
     },
 
     set_sequence_pixel_aspect_ratio: {
-      description: "Change the pixel aspect ratio of the active sequence.",
+      description:
+        "Change the pixel aspect ratio of the active sequence, or return a capability error when the legacy host does not expose a writable setting.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -494,6 +495,9 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         required: ["ratio"],
       },
       handler: async (args: { ratio: string }) => {
+        if (typeof args.ratio !== "string") {
+          return { success: false, error: "ratio must be a positive decimal string such as '1.0' or '1.4222'." };
+        }
         const ratio = args.ratio.trim();
         if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(ratio) || Number(ratio) <= 0) {
           return { success: false, error: "ratio must be a positive decimal string such as '1.0' or '1.4222'." };
@@ -505,14 +509,51 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
           var settings = seq.getSettings();
           if (!settings) return __error("Could not get sequence settings");
 
-          settings.videoPixelAspectRatio = "${ratio}";
-          seq.setSettings(settings);
-          var observed = seq.getSettings();
-          if (!observed || String(observed.videoPixelAspectRatio) !== "${ratio}") {
+          var requestedRatio = "${ratio}";
+          var currentRatio;
+          try {
+            currentRatio = settings.videoPixelAspectRatio;
+          } catch (eRead) {
+            return __error("This Premiere host does not expose a readable sequence pixel-aspect-ratio setting: " + eRead.toString());
+          }
+          if (typeof currentRatio === "undefined") {
+            return __error("This Premiere host does not expose a writable sequence pixel-aspect-ratio setting. No sequence settings were changed.");
+          }
+
+          try {
+            settings.videoPixelAspectRatio = requestedRatio;
+          } catch (eAssign) {
+            return __error("This Premiere host rejected the sequence pixel-aspect-ratio update. No sequence settings were changed: " + eAssign.toString());
+          }
+          var settingsApplied;
+          try {
+            settingsApplied = seq.setSettings(settings);
+          } catch (eSet) {
+            return __error("Premiere could not apply the sequence pixel-aspect-ratio update: " + eSet.toString());
+          }
+          if (settingsApplied === false) {
+            return __error("Premiere rejected the sequence pixel-aspect-ratio update. No sequence settings were changed.");
+          }
+
+          var observed;
+          try {
+            observed = seq.getSettings();
+          } catch (eVerify) {
+            return __error("Premiere could not read back the sequence pixel-aspect-ratio update: " + eVerify.toString());
+          }
+          if (!observed) return __error("Premiere did not return sequence settings after the pixel-aspect-ratio update");
+
+          var observedRatio;
+          try {
+            observedRatio = String(observed.videoPixelAspectRatio);
+          } catch (eObserved) {
+            return __error("Premiere did not expose the applied sequence pixel-aspect ratio for verification: " + eObserved.toString());
+          }
+          if (observedRatio !== requestedRatio) {
             return __error("Premiere did not apply the requested sequence pixel aspect ratio.");
           }
 
-          return __result({ ratio: "${ratio}", sequence: seq.name, verified: true });
+          return __result({ ratio: requestedRatio, sequence: seq.name, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -648,9 +689,15 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
               var item = bin.children[i];
               try {
                 var mp = item.getMediaPath();
-                if (mp) {
-                  if (!pathMap[mp]) pathMap[mp] = [];
-                  pathMap[mp].push({ nodeId: item.nodeId, name: item.name, treePath: item.treePath });
+                var nodeId = String(item.nodeId || "");
+                // A project item can be exposed more than once while Premiere walks
+                // bins. Only distinct, stable node IDs can establish a duplicate.
+                if (mp && nodeId) {
+                  if (!pathMap[mp]) pathMap[mp] = { items: [], nodeIds: {} };
+                  if (!pathMap[mp].nodeIds[nodeId]) {
+                    pathMap[mp].nodeIds[nodeId] = true;
+                    pathMap[mp].items.push({ nodeId: nodeId, name: item.name, treePath: item.treePath });
+                  }
                 }
               } catch(e) {}
               if (item.type === 2) scan(item);
@@ -660,8 +707,8 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
 
           var duplicates = [];
           for (var path in pathMap) {
-            if (pathMap.hasOwnProperty(path) && pathMap[path].length > 1) {
-              duplicates.push({ mediaPath: path, count: pathMap[path].length, items: pathMap[path] });
+            if (pathMap.hasOwnProperty(path) && pathMap[path].items.length > 1) {
+              duplicates.push({ mediaPath: path, count: pathMap[path].items.length, items: pathMap[path].items });
             }
           }
 
@@ -817,8 +864,13 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           ${seqLookup}
 
+          var selectedSequence = { id: String(seq.sequenceID), name: String(seq.name || "") };
+          var markerCollection = seq.markers;
+          if (!markerCollection || typeof markerCollection.getFirstMarker !== "function" || typeof markerCollection.getNextMarker !== "function") {
+            return __error("The requested sequence does not expose a readable marker collection");
+          }
           var markers = [];
-          var m = seq.markers.getFirstMarker();
+          var m = markerCollection.getFirstMarker();
           while (m) {
             if (m.type === "${escapeForExtendScript(args.marker_type)}") {
               markers.push({
@@ -829,10 +881,10 @@ export function getUtilityTools(bridgeOptions: BridgeOptions) {
                 type: m.type
               });
             }
-            m = seq.markers.getNextMarker(m);
+            m = markerCollection.getNextMarker(m);
           }
 
-          return __result({ type: "${escapeForExtendScript(args.marker_type)}", count: markers.length, markers: markers });
+          return __result({ sequence: selectedSequence, type: "${escapeForExtendScript(args.marker_type)}", count: markers.length, markers: markers });
         `);
         return sendCommand(script, bridgeOptions);
       },

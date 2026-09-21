@@ -5,6 +5,76 @@ const require = createRequire(import.meta.url);
 const Events = require("../../uxp-plugin/events.cjs");
 
 describe("UXP host event journal", () => {
+  it("maps only documented stable SnapEvent constants to passive timeline receipts", () => {
+    const definitions = Events.createTimelineSnapEventDefinitions({
+      EVENT_SNAP_TO_KEYFRAME: "snap-keyframe",
+      EVENT_SNAP_TO_TRACKITEM: "snap-track-item",
+      EVENT_SNAP_TO_GUIDES: "snap-guides",
+      EVENT_SNAP_RAZOR_TO_PLAYHEAD: "snap-razor-playhead",
+      EVENT_SNAP_RAZOR_TO_MARKER: "snap-razor-marker",
+      EVENT_SNAP_PLAYHEAD_TO_TRACKITEM_EDGE: "snap-playhead-edge",
+      UNDOCUMENTED_EVENT: "must-not-register",
+    });
+
+    expect(definitions).toEqual([
+      { category: "timeline", name: "timeline.snap.keyframe", eventName: "snap-keyframe", stateInvalidating: false, coalesceKey: null },
+      { category: "timeline", name: "timeline.snap.trackItem", eventName: "snap-track-item", stateInvalidating: false, coalesceKey: null },
+      { category: "timeline", name: "timeline.snap.guides", eventName: "snap-guides", stateInvalidating: false, coalesceKey: null },
+      { category: "timeline", name: "timeline.snap.razor.playhead", eventName: "snap-razor-playhead", stateInvalidating: false, coalesceKey: null },
+      { category: "timeline", name: "timeline.snap.razor.marker", eventName: "snap-razor-marker", stateInvalidating: false, coalesceKey: null },
+      { category: "timeline", name: "timeline.snap.playhead.trackItemEdge", eventName: "snap-playhead-edge", stateInvalidating: false, coalesceKey: null },
+    ]);
+    expect(Events.createTimelineSnapEventDefinitions({
+      EVENT_SNAP_TO_KEYFRAME: 1,
+      EVENT_SNAP_TO_TRACKITEM: "",
+    })).toEqual([]);
+    expect(Events.createTimelineSnapEventDefinitions(null)).toEqual([]);
+  });
+
+  it("filters timeline SnapEvent receipts without exposing host payload fields", () => {
+    const journal = Events.createEventJournal({ capacity: 16 });
+    journal.recordHostEvent({
+      category: "timeline",
+      name: "timeline.snap.keyframe",
+      detail: { state: 4, target: "private clip", path: "D:/private.prproj" },
+    });
+
+    expect(journal.list({ categories: ["timeline"], eventNames: ["timeline.snap.keyframe"] }))
+      .toMatchObject({ events: [{ category: "timeline", name: "timeline.snap.keyframe", detail: { state: 4 } }] });
+  });
+
+  it("maps only documented root operation-boundary events and coalesces drag-over receipts", () => {
+    const definitions = Events.createOperationBoundaryEventDefinitions({
+      EVENT_CLIP_EXTEND_REACHED: "clip-extend-reached",
+      EVENT_EFFECT_DRAG_OVER: "effect-drag-over",
+      EVENT_EXPORT_MEDIA_COMPLETE: "already-handled-completion",
+    });
+
+    expect(definitions).toEqual([
+      { category: "operation", name: "operation.clip.extend.reached", eventName: "clip-extend-reached", stateInvalidating: false, coalesceKey: null },
+      { category: "operation", name: "operation.effect.drag.over", eventName: "effect-drag-over", stateInvalidating: false, coalesceKey: "operation.effect.drag.over" },
+    ]);
+    expect(Events.createOperationBoundaryEventDefinitions({
+      EVENT_CLIP_EXTEND_REACHED: 1,
+      EVENT_EFFECT_DRAG_OVER: "",
+    })).toEqual([]);
+    expect(Events.createOperationBoundaryEventDefinitions(null)).toEqual([]);
+
+    const journal = Events.createEventJournal({ capacity: 16 });
+    journal.recordHostEvent({
+      category: "operation", name: definitions[1].name, coalesceKey: definitions[1].coalesceKey,
+      detail: { state: 1, path: "D:/private.prproj" },
+    });
+    journal.recordHostEvent({
+      category: "operation", name: definitions[1].name, coalesceKey: definitions[1].coalesceKey,
+      detail: { state: 2, target: "private clip" },
+    });
+    expect(journal.list({ eventNames: ["operation.effect.drag.over"] })).toMatchObject({
+      latestRevision: 2,
+      events: [{ category: "operation", name: "operation.effect.drag.over", detail: { state: 2 }, coalesced: 1 }],
+    });
+  });
+
   it("keeps a bounded revisioned history and reports overflow", () => {
     let now = 1_700_000_000_000;
     const journal = Events.createEventJournal({ capacity: 16, now: () => now++ });

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "servers": {
+      "premiere-pro": {
+        "type": "local",
+        "command": [
+          "C:\\Program Files\\nodejs\\node.exe",
+          "C:\\Users\\gusta\\OneDrive\\Desktop\\Trae\\mcp adobe premiere\\dist\\index.js",
+          "--proxy"
+        ],
+        "cwd": "C:\\Users\\gusta\\OneDrive\\Desktop\\Trae\\mcp adobe premiere",
+        "environment": {
+          "PREMIERE_MCP_PROMPTS": "off",
+          "PREMIERE_UXP_TOKEN": "zWkbcsfkkECd2Odt85AJ1zXVX06lVe3y96uytpzIwpE",
+          "PREMIERE_TIMEOUT_MS": "60000",
+          "PREMIERE_MCP_TOOL_PACKS": "full",
+          "PREMIERE_MCP_CAPABILITIES": "inspect,edit,export,filesystem"
+        },
+        "timeout": {
+          "catalog": 120000,
+          "execution": 120000
+        }
+      }
+    }
+  }
+}

@@ -2,6 +2,13 @@
 
 ## Sources Researched
 
+Film editor and assistant-editor workflow research is implemented as the local
+`inspect_film_editorial_workflow` coverage/handoff packet tool. See
+[usage and execution boundaries](docs/film-editorial-workflows.md) and
+[research PR #476](https://github.com/leancoderkavy/premiere-pro-mcp/pull/476).
+The packet verifies captured identities and revisions; it does not establish
+live host timing, creative acceptance, vendor acknowledgement, or export success.
+
 1. **ExtendScript Scripting Guide** (ppro-scripting.docsforadobe.dev) — Complete official reference
 2. **QE DOM API** (vakago-tools.com, community.adobe.com) — Undocumented internal API via `app.enableQE()`
 3. **UXP API Reference** (developer.adobe.com/premiere-pro/uxp/) — Modern API (v25.6+), action-based
@@ -178,7 +185,7 @@ Publish `premiere-pro-mcp@1.2.0` from `main` with a current npm authenticator OT
 | `clip.isAdjustmentLayer()` | Is adjustment layer? | ✅ |
 | `clip.isSelected()` | Selection state | ✅ |
 | `clip.setSelected(state, updateUI)` | Set selection | ✅ |
-| `clip.remove(inRipple, inAlignToVideo)` | Remove clip | ✅ |
+| `clip.remove(inRipple, inAlignToVideo)` | Remove clip (the `inRipple` flag is accepted and ignored) | ✅ |
 | `clip.move(newInPoint)` | Move clip | ✅ |
 | `clip.disabled` | Enable/disable | ✅ |
 | `clip.getMGTComponent()` | MOGRT params | ✅ |
@@ -328,7 +335,7 @@ Publish `premiere-pro-mcp@1.2.0` from `main` with a current npm authenticator OT
 | `qeClip.addTransition(transition, ...)` | Add transition | ✅ |
 | `qeClip.removeEffects()` | Remove ALL effects | ✅ |
 | `qeClip.remove()` | Remove from timeline | ✅ |
-| `qeClip.rippleDelete()` | Ripple delete | ✅ |
+| `qeClip.rippleDelete()` | Ripple delete | ⚠️ non-functional — see below |
 | `qeClip.move(newTime)` | Move clip | ❌ |
 | `qeClip.moveToTrack(trackIdx)` | Move to different track | ✅ |
 | `qeClip.roll(newTime)` | Roll edit | ✅ |
@@ -355,6 +362,33 @@ Publish `premiere-pro-mcp@1.2.0` from `main` with a current npm authenticator OT
 | `qeClip.getProjectItem()` | Source item | ❌ |
 
 ---
+
+### Ripple delete: both native routes are dead on 26.x (verified 26.3.2)
+
+Measured, not inferred:
+
+- **`qeClip.rippleDelete()` returns `false` and changes nothing.** Tested under four
+  conditions — clip selected first, sync lock off on every track, targeting the last
+  clip on a track, and targeting a gap (`Empty`) item. `false` every time.
+- **`TrackItem.remove(true, false)` removes the clip and leaves the gap.** The
+  `inRipple` flag is accepted and ignored.
+
+So a ripple has to be implemented explicitly: remove the clip, then shift every later
+clip earlier by the gap size. Two things make that non-trivial:
+
+- **Sync-lock state is only readable through QE** (`qeTrack.isSyncLocked()`); the public
+  DOM does not expose it. Without it there is no way to know which tracks Premiere
+  itself would have rippled, and shifting only the clip's own track silently desyncs
+  audio.
+- **Clips must be shifted in ascending start order**, writing `start` before `end`.
+  Premiere rejects a `start` write that would push `start` past the clip's current
+  `end`, and writing `start` never carries `end` with it. Moving earlier, start-then-end
+  keeps `start < end` at every intermediate step; the other order fails silently.
+
+`ripple_delete` in `advanced.ts` implements this, pre-flighting every participating
+track before mutating anything so that a clip straddling the ripple point, a partially
+overlapping clip, or a locked participating track is refused with the timeline
+untouched.
 
 ## Implementation Status — Priority List
 

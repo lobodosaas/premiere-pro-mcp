@@ -52,6 +52,8 @@ describe("Codex plugin package", () => {
     expect(skill).toContain("Call `ping`");
     expect(skill).toContain("preview_edit_plan");
     expect(skill).toContain("export_sequence");
+    expect(skill).toContain("Clip metadata and XMP");
+    expect(skill).toContain("premiere-metadata-review");
     expect(skill).not.toContain("TODO");
   });
 });
@@ -105,6 +107,15 @@ describe("Claude distributions", () => {
     expect(claudeSkill).toBe(codexSkill);
   });
 
+  it("keeps the Claude and Codex develop skills identical", () => {
+    const readSkill = (distribution: "plugins" | "claude-plugins") => readFileSync(
+      join(root, distribution, "premiere-pro", "skills", "develop-premiere-pro-mcp", "SKILL.md"),
+      "utf8",
+    );
+    expect(readSkill("claude-plugins")).toBe(readSkill("plugins"));
+    expect(readSkill("plugins")).toContain("premiere://project/metadata");
+  });
+
   it("defines a self-contained Claude Desktop MCP bundle", () => {
     const pkg = readJson("package.json");
     const manifest = readJson("claude-desktop/manifest.json");
@@ -127,10 +138,15 @@ describe("Claude distributions", () => {
     expect(manifest.user_config.premiere_uxp_token).toMatchObject({
       type: "string",
       sensitive: true,
-      required: true,
+      required: false,
+    });
+    expect(manifest.user_config.premiere_mcp_protocol_mode).toMatchObject({
+      type: "string",
+      required: false,
     });
     expect(manifest.server.mcp_config.env).toEqual({
       PREMIERE_UXP_TOKEN: "${user_config.premiere_uxp_token}",
+      PREMIERE_MCP_PROTOCOL_MODE: "${user_config.premiere_mcp_protocol_mode}",
     });
   });
 });

@@ -22,6 +22,10 @@
     const localStorage = deps.storage || (typeof globalThis !== "undefined" ? globalThis.localStorage : null);
     const GROWING_LEASE_KEY = "premiereMcp.growingMediaLease";
     let growingLease = null, growingTimer = null;
+    // Source-media mutations share a per-project-item tail.  A frame-rate or
+    // pixel-aspect-ratio override must not slip between a guarded timing
+    // update's preflight and readback (or the other way around).
+    const sourceMediaUpdateTails = new Map();
     const definitions = {
       "events.list": {
         readOnly: true,
@@ -202,6 +206,38 @@
         probe: canMaintainMediaHealth,
         handler: findMediaByPath
       },
+      "source.mediaTiming.inspect": {
+        readOnly: true,
+        targetCapabilityProbe: true,
+        minHostVersion: "26.3.0",
+        probe: canManageSourceMediaTiming,
+        handler: inspectSourceMediaTiming
+      },
+      "source.mediaTiming.setStart": {
+        destructive: true,
+        undoable: true,
+        idempotent: true,
+        targetCapabilityProbe: true,
+        minHostVersion: "26.3.0",
+        probe: canManageSourceMediaTiming,
+        handler: setSourceMediaStart
+      },
+      "source.mediaOverrides.inspect": {
+        readOnly: true,
+        targetCapabilityProbe: true,
+        minHostVersion: "26.3.0",
+        probe: canManageSourceMediaOverrides,
+        handler: inspectSourceMediaOverrides
+      },
+      "source.mediaOverrides.update": {
+        destructive: true,
+        undoable: true,
+        idempotent: true,
+        targetCapabilityProbe: true,
+        minHostVersion: "26.3.0",
+        probe: canManageSourceMediaOverrides,
+        handler: updateSourceMediaOverrides
+      },
       "track.state.inspect": {
         readOnly: true,
         targetCapabilityProbe: true,
@@ -285,6 +321,14 @@
 
     function canMaintainMediaHealth() {
       return !!(ppro && ppro.ClipProjectItem && typeof ppro.ClipProjectItem.cast === "function");
+    }
+
+    function canManageSourceMediaTiming() {
+      return !!(canMaintainMediaHealth() && ppro.TickTime && typeof ppro.TickTime.createWithSeconds === "function");
+    }
+
+    function canManageSourceMediaOverrides() {
+      return !!canMaintainMediaHealth();
     }
 
     async function canManageTrackState() {
@@ -744,12 +788,13 @@
     }
 
     async function inspectMediaHealth(args) {
-      assertOnlyKeys(args, ["projectItemIds", "includePaths"]);
+      assertOnlyKeys(args, ["projectItemIds", "includePaths", "includeMediaTiming"]);
       const project = await activeProject(true);
       const clips = await resolveMediaHealthClips(project, args.projectItemIds);
       const includePaths = optionalBoolean(args.includePaths, false, "includePaths");
+      const includeMediaTiming = optionalBoolean(args.includeMediaTiming, false, "includeMediaTiming");
       const items = [];
-      for (let i = 0; i < clips.length; i += 1) items.push(await mediaHealthSnapshot(clips[i], includePaths));
+      for (let i = 0; i < clips.length; i += 1) items.push(await mediaHealthSnapshot(clips[i], includePaths, includeMediaTiming));
       return { count: items.length, items, pathDisclosure: includePaths ? "requested" : "redacted" };
     }
 
@@ -862,6 +907,318 @@
       };
     }
 
+    async function inspectSourceMediaTiming(args) {
+      assertOnlyKeys(args, ["projectItemId"]);
+      const projectItemId = boundedIdentifier(args.projectItemId, "projectItemId");
+      const project = await activeProject(true);
+      const clips = await resolveMediaHealthClips(project, [projectItemId]);
+      return {
+        ...await sourceMediaTimingSnapshot(clips[0], projectItemId),
+        verificationBoundary: "source_media_timing_readback"
+      };
+    }
+
+    async function setSourceMediaStart(args) {
+      assertOnlyKeys(args, ["projectItemId", "expectedTiming", "startSeconds", "confirmSetStart", "operationId"]);
+      requireConfirmation(args.confirmSetStart, "confirmSetStart", "Changing a source media start time changes its timecode offset");
+      const projectItemId = boundedIdentifier(args.projectItemId, "projectItemId");
+      const expectedTiming = requiredSourceMediaTiming(args.expectedTiming, "expectedTiming");
+      const startSeconds = boundedSeconds(args.startSeconds, "startSeconds");
+      const initialProject = await activeProject(true);
+      const projectId = guidString(initialProject.guid);
+      if (!projectId) throw commandError("UXP_COMMAND_UNAVAILABLE", "The active project does not expose a stable GUID");
+      return withSourceMediaUpdateLock(projectId + "\u0000" + projectItemId, async function () {
+        const project = await activeProject(true);
+        if (guidString(project.guid) !== projectId) {
+          throw commandError("UXP_STALE_TARGET", "The active project changed before the source media timing update");
+        }
+        const clips = await resolveMediaHealthClips(project, [projectItemId]);
+        const clip = clips[0];
+        const before = await sourceMediaTimingSnapshot(clip, projectItemId);
+        if (!sameSourceMediaTiming(before, expectedTiming)) {
+          throw commandError("UXP_STALE_TARGET", "The source media timing changed before the transaction");
+        }
+        const media = await sourceMediaForUpdate(clip);
+        let committed = false;
+        project.lockedAccess(function () {
+          const current = synchronousSourceMediaTimingSnapshot(media, projectItemId);
+          if (!sameSourceMediaTiming(current, expectedTiming)) {
+            throw commandError("UXP_STALE_TARGET", "The source media timing changed before action creation");
+          }
+          const action = media.createSetStartAction(ppro.TickTime.createWithSeconds(startSeconds));
+          if (!action) throw commandError("UXP_ACTION_REJECTED", "Premiere did not create the source media start action");
+          committed = project.executeTransaction(function (compoundAction) {
+            if (compoundAction.addAction(action) === false) {
+              throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the source media start action");
+            }
+          }, "Set source media start time");
+        });
+        if (!committed) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not commit the source media timing transaction");
+        const afterProject = await activeProject(true);
+        if (guidString(afterProject.guid) !== projectId) {
+          throw commandError("UXP_VERIFICATION_FAILED", "The active project changed before source media timing readback");
+        }
+        const afterClip = (await resolveMediaHealthClips(afterProject, [projectItemId]))[0];
+        const after = await sourceMediaTimingSnapshot(afterClip, projectItemId);
+        if (!sameSeconds(after.startSeconds, startSeconds) || !sameSeconds(after.durationSeconds, expectedTiming.durationSeconds)) {
+          throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not retain the requested source media timing");
+        }
+        return {
+          updated: true,
+          projectItemId,
+          before,
+          after,
+          outcome: "verified",
+          verificationBoundary: "source_media_timing_readback",
+          undoLabel: "Set source media start time"
+        };
+      });
+    }
+
+    async function inspectSourceMediaOverrides(args) {
+      assertOnlyKeys(args, ["projectItemId"]);
+      const projectItemId = boundedIdentifier(args.projectItemId, "projectItemId");
+      const project = await activeProject(true);
+      const projectGuid = guidString(project.guid);
+      if (!projectGuid) throw commandError("UXP_COMMAND_UNAVAILABLE", "The active project does not expose a stable GUID");
+      const clips = await resolveMediaHealthClips(project, [projectItemId]);
+      return {
+        ...await sourceMediaOverrideSnapshot(projectGuid, clips[0], projectItemId),
+        verificationBoundary: "source_media_effective_interpretation_readback"
+      };
+    }
+
+    async function updateSourceMediaOverrides(args) {
+      assertOnlyKeys(args, ["projectItemId", "expectedOverrides", "frameRate", "pixelAspectRatio", "confirmMediaInterpretation", "operationId"]);
+      requireConfirmation(args.confirmMediaInterpretation, "confirmMediaInterpretation", "Changing source media interpretation can alter editorial timing and framing");
+      const projectItemId = boundedIdentifier(args.projectItemId, "projectItemId");
+      const expected = requiredSourceMediaOverrides(args.expectedOverrides, "expectedOverrides");
+      const requested = requestedSourceMediaOverrides(args);
+      requireOperationId(args.operationId, "operationId");
+      const initialProject = await activeProject(true);
+      const projectGuid = guidString(initialProject.guid);
+      if (!projectGuid) throw commandError("UXP_COMMAND_UNAVAILABLE", "The active project does not expose a stable GUID");
+      if (projectGuid !== expected.projectGuid) {
+        throw commandError("UXP_STALE_TARGET", "The active project does not match the inspected source media override snapshot");
+      }
+      return withSourceMediaUpdateLock(projectGuid + "\u0000" + projectItemId, async function () {
+        const project = await activeProject(true);
+        if (guidString(project.guid) !== projectGuid) {
+          throw commandError("UXP_STALE_TARGET", "The active project changed before the source media override update");
+        }
+        const clip = (await resolveMediaHealthClips(project, [projectItemId]))[0];
+        const before = await sourceMediaOverrideSnapshot(projectGuid, clip, projectItemId);
+        if (!sameSourceMediaOverrides(before, expected)) {
+          throw commandError("UXP_STALE_TARGET", "The source media interpretation changed before the transaction");
+        }
+        let committed = false;
+        project.lockedAccess(function () {
+          // getFootageInterpretation() is asynchronous in the documented API,
+          // so the complete stale snapshot is intentionally taken immediately
+          // before this synchronous locked action-creation boundary.  The
+          // per-item tail prevents another MCP mutation from interleaving here.
+          if (guidString(project.guid) !== projectGuid) {
+            throw commandError("UXP_STALE_TARGET", "The active project changed before source media override action creation");
+          }
+          const actions = [];
+          if (requested.frameRate != null) {
+            if (typeof clip.createSetOverrideFrameRateAction !== "function") {
+              throw commandError("UXP_COMMAND_UNAVAILABLE", "This source clip cannot create an override frame-rate action");
+            }
+            actions.push(clip.createSetOverrideFrameRateAction(requested.frameRate));
+          }
+          if (requested.pixelAspectRatio != null) {
+            if (typeof clip.createSetOverridePixelAspectRatioAction !== "function") {
+              throw commandError("UXP_COMMAND_UNAVAILABLE", "This source clip cannot create an override pixel-aspect-ratio action");
+            }
+            actions.push(clip.createSetOverridePixelAspectRatioAction(
+              requested.pixelAspectRatio.numerator, requested.pixelAspectRatio.denominator
+            ));
+          }
+          committed = project.executeTransaction(function (compoundAction) {
+            for (let i = 0; i < actions.length; i += 1) {
+              if (!actions[i] || compoundAction.addAction(actions[i]) === false) {
+                throw commandError("UXP_ACTION_REJECTED", "Premiere rejected a source media override action");
+              }
+            }
+          }, "Set source media interpretation override");
+        });
+        if (!committed) throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not commit the source media override transaction");
+        const afterProject = await activeProject(true);
+        if (guidString(afterProject.guid) !== projectGuid) {
+          throw commandError("UXP_VERIFICATION_FAILED", "The active project changed before source media override readback");
+        }
+        const afterClip = (await resolveMediaHealthClips(afterProject, [projectItemId]))[0];
+        const after = await sourceMediaOverrideSnapshot(projectGuid, afterClip, projectItemId);
+        const expectedAfter = {
+          projectGuid,
+          projectItemId,
+          frameRate: requested.frameRate == null ? expected.frameRate : requested.frameRate,
+          pixelAspectRatio: requested.pixelAspectRatio == null
+            ? expected.pixelAspectRatio
+            : requested.pixelAspectRatio.numerator / requested.pixelAspectRatio.denominator
+        };
+        if (!sameSourceMediaOverrides(after, expectedAfter)) {
+          throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not retain the requested source media interpretation override");
+        }
+        return {
+          updated: true,
+          projectItemId,
+          before,
+          after,
+          requested,
+          outcome: "verified",
+          verificationBoundary: "source_media_effective_interpretation_readback",
+          undoLabel: "Set source media interpretation override"
+        };
+      });
+    }
+
+    function withSourceMediaUpdateLock(key, operation) {
+      const previous = sourceMediaUpdateTails.get(key) || Promise.resolve();
+      let release;
+      const gate = new Promise(function (resolve) { release = resolve; });
+      const tail = previous.catch(function () { return undefined; }).then(function () { return gate; });
+      sourceMediaUpdateTails.set(key, tail);
+      return previous.catch(function () { return undefined; }).then(operation).finally(function () {
+        release();
+        if (sourceMediaUpdateTails.get(key) === tail) sourceMediaUpdateTails.delete(key);
+      });
+    }
+
+    async function sourceMediaOverrideSnapshot(projectGuid, clip, projectItemId) {
+      if (!clip || typeof clip.getFootageInterpretation !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This project item cannot expose source media interpretation");
+      }
+      const interpretation = await clip.getFootageInterpretation();
+      if (!interpretation || typeof interpretation.getFrameRate !== "function" || typeof interpretation.getPixelAspectRatio !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This source media cannot read its effective frame rate and pixel aspect ratio");
+      }
+      return {
+        projectGuid,
+        projectItemId,
+        frameRate: boundedSourceFrameRate(interpretation.getFrameRate(), "host frameRate"),
+        pixelAspectRatio: boundedPixelAspectRatio(interpretation.getPixelAspectRatio(), "host pixelAspectRatio")
+      };
+    }
+
+    function requiredSourceMediaOverrides(value, name) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw commandError("UXP_INVALID_ARGUMENT", name + " must be an inspect snapshot object");
+      }
+      assertOnlyKeys(value, ["projectGuid", "frameRate", "pixelAspectRatio"]);
+      return {
+        projectGuid: optionalToken(value.projectGuid, name + ".projectGuid"),
+        frameRate: boundedSourceFrameRate(value.frameRate, name + ".frameRate"),
+        pixelAspectRatio: boundedPixelAspectRatio(value.pixelAspectRatio, name + ".pixelAspectRatio")
+      };
+    }
+
+    function requestedSourceMediaOverrides(args) {
+      const frameRate = args.frameRate == null ? null : boundedSourceFrameRate(args.frameRate, "frameRate");
+      let pixelAspectRatio = null;
+      if (args.pixelAspectRatio != null) {
+        const value = args.pixelAspectRatio;
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw commandError("UXP_INVALID_ARGUMENT", "pixelAspectRatio must be a ratio object");
+        }
+        assertOnlyKeys(value, ["numerator", "denominator"]);
+        pixelAspectRatio = {
+          numerator: integer(value.numerator, "pixelAspectRatio.numerator", 1, 10000),
+          denominator: integer(value.denominator, "pixelAspectRatio.denominator", 1, 10000)
+        };
+        boundedPixelAspectRatio(pixelAspectRatio.numerator / pixelAspectRatio.denominator, "pixelAspectRatio");
+      }
+      if (frameRate == null && pixelAspectRatio == null) {
+        throw commandError("UXP_INVALID_ARGUMENT", "Provide frameRate and/or pixelAspectRatio to update");
+      }
+      return { frameRate, pixelAspectRatio };
+    }
+
+    function boundedSourceFrameRate(value, name) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 1 || number > 240) {
+        throw commandError("UXP_INVALID_ARGUMENT", name + " must be between 1 and 240 frames per second");
+      }
+      return number;
+    }
+
+    function boundedPixelAspectRatio(value, name) {
+      const number = Number(value);
+      if (!Number.isFinite(number) || number < 0.01 || number > 100) {
+        throw commandError("UXP_INVALID_ARGUMENT", name + " must be between 0.01 and 100");
+      }
+      return number;
+    }
+
+    function sameSourceMediaOverrides(left, right) {
+      return !!left && !!right && left.projectGuid === right.projectGuid &&
+        (right.projectItemId == null || left.projectItemId === right.projectItemId) &&
+        sameSeconds(left.frameRate, right.frameRate) && sameSeconds(left.pixelAspectRatio, right.pixelAspectRatio);
+    }
+
+    async function sourceMediaForUpdate(clip) {
+      if (!clip || typeof clip.getMedia !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This project item cannot expose source media timing");
+      }
+      const media = await clip.getMedia();
+      if (!media || typeof media.createSetStartAction !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This source media cannot create a start-time action");
+      }
+      return media;
+    }
+
+    async function sourceMediaTimingSnapshot(clip, projectItemId) {
+      const media = await sourceMediaForRead(clip);
+      const start = await mediaTimingValue(media, "start");
+      const duration = await mediaTimingValue(media, "duration");
+      if (start.seconds == null || duration.seconds == null) {
+        throw commandError("UXP_VERIFICATION_FAILED", "Premiere did not return a bounded source media timing snapshot");
+      }
+      return { projectItemId, startSeconds: start.seconds, durationSeconds: duration.seconds };
+    }
+
+    async function sourceMediaForRead(clip) {
+      if (!clip || typeof clip.getMedia !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This project item cannot expose source media timing");
+      }
+      const media = await clip.getMedia();
+      if (!media) throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere did not return source media for this project item");
+      return media;
+    }
+
+    function synchronousSourceMediaTimingSnapshot(media, projectItemId) {
+      const start = synchronousMediaTimingValue(media, "start");
+      const duration = synchronousMediaTimingValue(media, "duration");
+      if (start == null || duration == null) {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "This host cannot synchronously read stable source media timing during action creation");
+      }
+      return { projectItemId, startSeconds: start, durationSeconds: duration };
+    }
+
+    function synchronousMediaTimingValue(media, propertyName) {
+      try {
+        const value = media[propertyName];
+        if (value && typeof value.then === "function") return null;
+        return boundedMediaTimingSeconds(value);
+      } catch (_) { return null; }
+    }
+
+    function requiredSourceMediaTiming(value, name) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw commandError("UXP_INVALID_ARGUMENT", name + " must be an inspect snapshot object");
+      }
+      assertOnlyKeys(value, ["startSeconds", "durationSeconds"]);
+      return {
+        startSeconds: boundedSeconds(value.startSeconds, name + ".startSeconds"),
+        durationSeconds: boundedSeconds(value.durationSeconds, name + ".durationSeconds")
+      };
+    }
+
+    function sameSourceMediaTiming(left, right) {
+      return !!left && !!right && sameSeconds(left.startSeconds, right.startSeconds) && sameSeconds(left.durationSeconds, right.durationSeconds);
+    }
+
     async function resolveMediaHealthClips(project, projectItemIds) {
       if (projectItemIds == null) {
         if (!ppro.ProjectUtils || typeof ppro.ProjectUtils.getSelection !== "function") {
@@ -925,7 +1282,7 @@
       return projectItemId(clip);
     }
 
-    async function mediaHealthSnapshot(clip, includePaths) {
+    async function mediaHealthSnapshot(clip, includePaths, includeMediaTiming) {
       const id = await clipProjectItemId(clip);
       const offline = typeof clip.isOffline === "function" ? !!(await clip.isOffline()) : null;
       const hasProxy = typeof clip.hasProxy === "function" ? !!(await clip.hasProxy()) : null;
@@ -945,7 +1302,49 @@
         result.originatingProjectPath = typeof clip.getOriginatingProjectPath === "function"
           ? String(await clip.getOriginatingProjectPath() || "") : null;
       }
+      if (includeMediaTiming) result.mediaTiming = await mediaTimingSnapshot(clip);
       return result;
+    }
+
+    async function mediaTimingSnapshot(clip) {
+      const unavailable = function () {
+        return {
+          available: false,
+          startSeconds: null,
+          durationSeconds: null,
+          startAccessor: null,
+          durationAccessor: null
+        };
+      };
+      if (!clip || typeof clip.getMedia !== "function") return unavailable();
+      let media;
+      try { media = await clip.getMedia(); } catch (_) { return unavailable(); }
+      if (!media) return unavailable();
+      const start = await mediaTimingValue(media, "start");
+      const duration = await mediaTimingValue(media, "duration");
+      return {
+        available: start.seconds != null && duration.seconds != null,
+        startSeconds: start.seconds,
+        durationSeconds: duration.seconds,
+        startAccessor: start.accessor,
+        durationAccessor: duration.accessor
+      };
+    }
+
+    async function mediaTimingValue(media, propertyName) {
+      try {
+        return { accessor: propertyName, seconds: boundedMediaTimingSeconds(await media[propertyName]) };
+      } catch (_) {
+        return { accessor: propertyName, seconds: null };
+      }
+    }
+
+    function boundedMediaTimingSeconds(value) {
+      try {
+        if (!value || typeof value !== "object" || typeof value.seconds !== "number") return null;
+        const seconds = value.seconds;
+        return Number.isFinite(seconds) && seconds >= 0 && seconds <= 86400000 ? seconds : null;
+      } catch (_) { return null; }
     }
 
     async function inspectTrackState(args) {
@@ -1441,6 +1840,11 @@
       throw commandError("UXP_INVALID_ARGUMENT", name + " must be a 1-128 character token");
     }
     return value;
+  }
+
+  function requireOperationId(value, name) {
+    if (value == null) throw commandError("UXP_INVALID_ARGUMENT", name + " is required for safe replay");
+    return optionalToken(value, name);
   }
 
   function requiredPath(value, name) {

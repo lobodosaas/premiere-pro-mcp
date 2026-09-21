@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { gunzipSync } from "node:zlib";
 import { RequestBodyTooLargeError } from "../src/http-admission.js";
+
+const currentVersion = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version as string;
+const nextVersion = `${Number(currentVersion.split(".")[0]) + 1}.0.0`;
 
 const mocks = vi.hoisted(() => ({
   requestHandler: undefined as undefined | ((req: any, res: any) => Promise<void>),
@@ -10,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   cleanup: vi.fn(),
   connect: vi.fn(async () => {}),
   serveStdio: vi.fn(),
+  stdioServerTransport: vi.fn(),
   closeMcp: vi.fn(async () => {}),
   handleRequest: vi.fn(async (_req: any, res: any) => { res.statusCode = 204; }),
   closeTransport: vi.fn(async () => {}),
@@ -22,10 +29,14 @@ const mocks = vi.hoisted(() => ({
   })),
   runProxy: vi.fn(async () => {}),
   execFileSync: vi.fn(),
+  spawnSync: vi.fn(),
+  fetchLatestNpmVersion: vi.fn(async () => "1.14.8"),
   fsExists: vi.fn(() => false),
   fsStat: vi.fn(() => ({ isDirectory: () => false, isFile: () => true })),
   fsCreateReadStream: vi.fn(),
   fsReadFileSync: vi.fn(),
+  fsReadFile: vi.fn(async () => "<html><head><script>bootstrap()</script></head></html>"),
+  fsOpen: vi.fn(),
   streamOnce: vi.fn(),
   pipe: vi.fn(),
   readBoundedBody: vi.fn(async () => Buffer.from("{}")),
@@ -73,6 +84,10 @@ vi.mock("@modelcontextprotocol/node", () => ({
 }));
 vi.mock("@modelcontextprotocol/server/stdio", () => ({
   serveStdio: (...args: any[]) => mocks.serveStdio(...args),
+  StdioServerTransport: class {
+    constructor() { mocks.stdioServerTransport(); }
+    close = mocks.closeTransport;
+  },
 }));
 vi.mock("../src/http-security.js", () => ({ applyHttpSecurityHeaders: vi.fn() }));
 vi.mock("../src/http-admission.js", async (original) => {
@@ -106,7 +121,11 @@ vi.mock("../src/bridge/local-broker.js", () => ({
   startLocalBroker: mocks.startBroker,
   runLocalBrokerProxy: mocks.runProxy,
 }));
-vi.mock("node:child_process", () => ({ execFileSync: mocks.execFileSync }));
+vi.mock("../src/update.js", () => ({
+  compareVersions: (left: string, right: string) => left.localeCompare(right),
+  fetchLatestNpmVersion: mocks.fetchLatestNpmVersion,
+}));
+vi.mock("node:child_process", () => ({ execFileSync: mocks.execFileSync, spawnSync: mocks.spawnSync }));
 vi.mock("node:fs", async (original) => {
   const actual = await original<typeof import("node:fs")>();
   return {
@@ -120,6 +139,7 @@ vi.mock("node:fs", async (original) => {
     },
   };
 });
+vi.mock("node:fs/promises", () => ({ open: mocks.fsOpen }));
 
 const originalArgv = process.argv;
 const env = { ...process.env };
@@ -132,10 +152,24 @@ beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   mocks.requestHandler = undefined;
+  mocks.fetchLatestNpmVersion.mockResolvedValue("1.14.8");
+  mocks.spawnSync.mockReturnValue({ status: 1, stdout: "" });
   mocks.fsExists.mockReturnValue(false);
   mocks.fsStat.mockReturnValue({ isDirectory: () => false, isFile: () => true });
-  mocks.fsCreateReadStream.mockReturnValue({ once: mocks.streamOnce, pipe: mocks.pipe });
+  mocks.fsCreateReadStream.mockReturnValue({ once: mocks.streamOnce, pipe: mocks.pipe, destroy: vi.fn() });
   mocks.fsReadFileSync.mockReturnValue("<html><head><script>bootstrap()</script></head></html>");
+  mocks.fsReadFile.mockResolvedValue("<html><head><script>bootstrap()</script></head></html>");
+  mocks.fsOpen.mockImplementation(async (filePath: string) => {
+    const source = Buffer.from(await mocks.fsReadFile(filePath, "utf8"));
+    return {
+      read: vi.fn(async (target: Buffer, offset: number, length: number, position: number) => {
+        const bytesRead = Math.min(length, Math.max(0, source.length - position));
+        if (bytesRead > 0) source.copy(target, offset, position, position + bytesRead);
+        return { bytesRead, buffer: target };
+      }),
+      close: vi.fn(async () => {}),
+    };
+  });
   mocks.readBoundedBody.mockResolvedValue(Buffer.from("{}"));
   mocks.serveStdio.mockImplementation((factory: () => unknown) => {
     factory();
@@ -158,10 +192,14 @@ afterEach(() => {
 function response() {
   const res: any = {
     statusCode: 200, headersSent: false, body: "", closeHandler: undefined,
+    headers: {} as Record<string, string>,
+    setHeader: vi.fn((name: string, value: string) => { res.headers[name.toLowerCase()] = value; }),
+    getHeader: vi.fn((name: string) => res.headers[name.toLowerCase()]),
     writeHead: vi.fn((status: number) => { res.statusCode = status; res.headersSent = true; }),
     end: vi.fn((body = "") => { res.body = body; }),
     destroy: vi.fn(),
     on: vi.fn((name: string, handler: () => void) => { if (name === "close") res.closeHandler = handler; }),
+    once: vi.fn((name: string, handler: () => void) => { if (name === "close") res.closeHandler = handler; }),
   };
   return res;
 }
@@ -209,6 +247,66 @@ describe("stdio CLI entry point", () => {
     });
   });
 
+  it("prints a no-write doctor repair plan and applies no writes without the closure confirmation", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let loaded = await importCli(["--doctor", "--plan-fixes"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(JSON.parse(String(log.mock.calls[0][0]))).toMatchObject({
+      schemaVersion: "premiere-pro-mcp.doctor-repair-plan.v1",
+    });
+
+    vi.resetModules();
+    log.mockClear();
+    loaded = await importCli(["--doctor", "--apply-fixes"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(JSON.parse(String(log.mock.calls[0][0]))).toMatchObject({
+      schemaVersion: "premiere-pro-mcp.doctor-repair-result.v1",
+    });
+    expect(JSON.parse(String(log.mock.calls[0][0])).applied).toBe(false);
+  });
+
+  it("checks for a newer release and updates a global npm installation", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    mocks.fetchLatestNpmVersion.mockResolvedValueOnce(nextVersion);
+    let loaded = await importCli(["--check-update"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(log).toHaveBeenCalledWith(expect.stringContaining(`${currentVersion} → ${nextVersion}`));
+
+    vi.resetModules();
+    vi.clearAllMocks();
+    log.mockClear();
+    mocks.fetchLatestNpmVersion.mockResolvedValueOnce(nextVersion);
+    mocks.spawnSync.mockReturnValue({ status: 0, stdout: `${dirname(process.cwd())}\n` });
+    loaded = await importCli(["--update"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(mocks.execFileSync).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining(["install", "--global", "premiere-pro-mcp@latest"]),
+      expect.objectContaining({ stdio: "inherit" }),
+    );
+    expect(mocks.execFileSync).toHaveBeenCalledWith(
+      process.execPath,
+      expect.arrayContaining(["--install-cep"]),
+      expect.objectContaining({ cwd: process.cwd() }),
+    );
+  });
+
+  it("rejects conflicting update actions and leaves a current installation untouched", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    let loaded = await importCli(["--check-update", "--update"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:1");
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("only one update action"));
+
+    vi.resetModules();
+    vi.clearAllMocks();
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    mocks.fetchLatestNpmVersion.mockResolvedValueOnce(currentVersion);
+    loaded = await importCli(["--update"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("is current"));
+    expect(mocks.execFileSync).not.toHaveBeenCalled();
+  });
+
   it("rejects CEP installation on unsupported platforms", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("linux");
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -227,6 +325,33 @@ describe("stdio CLI entry point", () => {
     await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce());
     expect(mocks.cleanup).toHaveBeenCalledWith({ tempDir: "C:\\custom-temp", timeoutMs: 4321 });
     expect(process.env.PREMIERE_MCP_TRANSPORT).toBe("stdio");
+  });
+
+  it("offers an explicit legacy stdio fallback for clients that cannot negotiate server/discover", async () => {
+    process.argv = [process.execPath, "index.js"];
+    process.env.PREMIERE_MCP_PROTOCOL_MODE = "legacy";
+
+    await import("../src/index.js");
+
+    await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledOnce());
+    expect(mocks.stdioServerTransport).toHaveBeenCalledOnce();
+    expect(mocks.serveStdio).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown MCP protocol mode before opening stdio", async () => {
+    process.argv = [process.execPath, "index.js"];
+    process.env.PREMIERE_MCP_PROTOCOL_MODE = "unsupported";
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+
+    await import("../src/index.js");
+
+    await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
+    expect(mocks.serveStdio).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      "[premiere-pro-mcp] Fatal error:",
+      expect.objectContaining({ message: "PREMIERE_MCP_PROTOCOL_MODE must be either auto or legacy." }),
+    );
   });
 
   it("starts the authenticated UXP bridge and emits debug readiness details", async () => {
@@ -338,6 +463,17 @@ describe("stdio CLI entry point", () => {
     ]));
   });
 
+  it("routes After Effects connector actions to the separate host target", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const loaded = await importCli(["--install-after-effects-cep"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(mocks.execFileSync.mock.calls[0][1]).toEqual(expect.arrayContaining([
+      "-ConnectorHost",
+      "AfterEffects",
+    ]));
+  });
+
   it("runs the macOS CEP diagnostic script", async () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     vi.spyOn(console, "log").mockImplementation(() => {});
@@ -349,6 +485,18 @@ describe("stdio CLI entry point", () => {
       expect.objectContaining({ stdio: "inherit" }),
     );
     expect(loaded.exit).toHaveBeenCalledWith(0);
+  });
+
+  it("runs the macOS After Effects diagnostic script with an isolated host flag", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const loaded = await importCli(["--diagnose-after-effects-cep"]);
+    await expect(loaded.promise).rejects.toThrow("EXIT:0");
+    expect(mocks.execFileSync).toHaveBeenCalledWith(
+      "bash",
+      [expect.stringMatching(/install-cep\.sh$/), "--diagnose", "--after-effects"],
+      expect.objectContaining({ stdio: "inherit" }),
+    );
   });
 
   it("runs the macOS CEP uninstaller and rejects conflicting CEP actions", async () => {
@@ -401,8 +549,10 @@ describe("HTTP entry point", () => {
     return mocks.requestHandler!;
   }
 
-  it("serves health and rejects missing bearer credentials", async () => {
+  it("can bind to loopback, serves health, and rejects missing bearer credentials", async () => {
+    process.env.MCP_HTTP_HOST = "127.0.0.1";
     const handler = await loadHttp();
+    expect(mocks.listen).toHaveBeenCalledWith(expect.any(Number), "127.0.0.1", expect.any(Function));
     const health = response();
     await handler({ method: "GET", url: "/health", headers: {} }, health);
     expect(health.statusCode).toBe(200);
@@ -608,10 +758,135 @@ describe("HTTP entry point", () => {
     await handler({ method: "HEAD", url: "/docs/", headers: {} }, res);
     expect(res.statusCode).toBe(200);
     expect(res.body).toBe("");
-    expect(mocks.fsReadFileSync).toHaveBeenCalledOnce();
+    expect(mocks.fsReadFileSync).not.toHaveBeenCalled();
+    expect(mocks.fsReadFile).not.toHaveBeenCalled();
   });
 
-  it("serves extensionless landing routes from their index file", async () => {
+  it("compresses landing HTML after inserting the per-response script nonce", async () => {
+    mocks.fsExists.mockReturnValue(true);
+    const handler = await loadHttp();
+    const res = response();
+    await handler({ method: "GET", url: "/docs/", headers: { "accept-encoding": "br, gzip" } }, res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.objectContaining({
+      "Content-Encoding": "gzip",
+      "Content-Type": "text/html; charset=utf-8",
+    }));
+    expect(res.headers.vary).toBe("Accept-Encoding");
+    expect(gunzipSync(res.body).toString("utf8")).toMatch(/<script nonce="[^"]+">bootstrap\(\)<\/script>/);
+  });
+
+  it("caches only trusted source HTML and injects a fresh nonce for every response", async () => {
+    mocks.fsExists.mockReturnValue(true);
+    const handler = await loadHttp();
+    const first = response();
+    const second = response();
+
+    await handler({ method: "GET", url: "/docs/", headers: {} }, first);
+    await handler({ method: "GET", url: "/docs/", headers: {} }, second);
+
+    expect(mocks.fsReadFile).toHaveBeenCalledOnce();
+    const firstNonce = String(first.body).match(/<script nonce="([^"]+)">/)?.[1];
+    const secondNonce = String(second.body).match(/<script nonce="([^"]+)">/)?.[1];
+    expect(firstNonce).toBeTruthy();
+    expect(secondNonce).toBeTruthy();
+    expect(secondNonce).not.toBe(firstNonce);
+  });
+
+  it("keeps an HTML work slot occupied until an aborted request's read finishes", async () => {
+    process.env.MCP_MAX_CONCURRENT_LANDING_DOCUMENTS = "1";
+    mocks.fsExists.mockReturnValue(true);
+    let finishRead!: (document: string) => void;
+    mocks.fsReadFile.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    const handler = await loadHttp();
+    const abandoned = response();
+    const firstRequest = handler({ method: "GET", url: "/docs/", headers: {} }, abandoned);
+    await vi.waitFor(() => expect(mocks.fsReadFile).toHaveBeenCalledOnce());
+
+    abandoned.destroyed = true;
+    abandoned.closeHandler?.();
+    const rejected = response();
+    await handler({ method: "GET", url: "/docs/", headers: {} }, rejected);
+    expect(rejected.statusCode).toBe(503);
+    expect(rejected.writeHead).toHaveBeenCalledWith(503, expect.objectContaining({ "Retry-After": "1" }));
+
+    const health = response();
+    await handler({ method: "GET", url: "/health", headers: {} }, health);
+    expect(health.statusCode).toBe(200);
+    const asset = response();
+    await handler({ method: "GET", url: "/_next/static/chunks/app.js", headers: {} }, asset);
+    expect(asset.statusCode).toBe(200);
+    expect(mocks.fsCreateReadStream).toHaveBeenCalledOnce();
+
+    finishRead("<html><head><script>bootstrap()</script></head></html>");
+    await firstRequest;
+    expect(abandoned.writeHead).not.toHaveBeenCalled();
+  });
+
+  it("evicts cached source documents before the configured memory budget is exceeded", async () => {
+    process.env.MCP_LANDING_HTML_CACHE_BYTES = "2048";
+    process.env.MCP_LANDING_MAX_HTML_BYTES = "1024";
+    mocks.fsExists.mockReturnValue(true);
+    mocks.fsStat.mockReturnValue({ isDirectory: () => false, isFile: () => true, size: 600 });
+    mocks.fsReadFile.mockResolvedValue(`<html><script>bootstrap()</script>${"x".repeat(550)}</html>`);
+    const handler = await loadHttp();
+
+    for (const url of ["/docs/", "/about/", "/docs/"]) {
+      await handler({ method: "GET", url, headers: {} }, response());
+    }
+
+    expect(mocks.fsReadFile).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects an oversized trusted HTML document before allocating its body", async () => {
+    process.env.MCP_LANDING_MAX_HTML_BYTES = "1024";
+    process.env.MCP_LANDING_HTML_CACHE_BYTES = "2048";
+    mocks.fsExists.mockReturnValue(true);
+    mocks.fsStat.mockReturnValue({ isDirectory: () => false, isFile: () => true, size: 1025 });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handler = await loadHttp();
+    const res = response();
+
+    await handler({ method: "GET", url: "/docs/", headers: {} }, res);
+
+    expect(res.statusCode).toBe(500);
+    expect(mocks.fsReadFile).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      "[premiere-pro-mcp] Landing document read failed:",
+      expect.objectContaining({ name: "LandingDocumentTooLargeError" }),
+    );
+  });
+
+  it("rejects oversized HTML consistently for HEAD without reading its body", async () => {
+    process.env.MCP_LANDING_MAX_HTML_BYTES = "1024";
+    process.env.MCP_LANDING_HTML_CACHE_BYTES = "2048";
+    mocks.fsExists.mockReturnValue(true);
+    mocks.fsStat.mockReturnValue({ isDirectory: () => false, isFile: () => true, size: 1025 });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handler = await loadHttp();
+    const res = response();
+
+    await handler({ method: "HEAD", url: "/docs/", headers: {} }, res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toBe("");
+    expect(mocks.fsReadFile).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(
+      "[premiere-pro-mcp] Landing document read failed:",
+      expect.objectContaining({ name: "LandingDocumentTooLargeError" }),
+    );
+  });
+
+  it("does not open an asset stream for a compressed HEAD response", async () => {
+    mocks.fsExists.mockReturnValue(true);
+    const handler = await loadHttp();
+    const res = response();
+    await handler({ method: "HEAD", url: "/_next/static/chunks/app.js", headers: { "accept-encoding": "gzip" } }, res);
+    expect(res.writeHead).toHaveBeenCalledWith(200, expect.objectContaining({ "Content-Encoding": "gzip" }));
+    expect(res.body).toBe("");
+    expect(mocks.fsCreateReadStream).not.toHaveBeenCalled();
+  });
+
+  it("redirects extensionless landing routes to their canonical directory", async () => {
     mocks.fsExists.mockReturnValue(true);
     mocks.fsStat
       .mockReturnValueOnce({ isDirectory: () => true, isFile: () => false })
@@ -619,11 +894,49 @@ describe("HTTP entry point", () => {
     const handler = await loadHttp();
     const res = response();
     await handler({ method: "GET", url: "/changelog", headers: {} }, res);
-    expect(mocks.fsReadFileSync).toHaveBeenCalledWith(
-      expect.stringMatching(/[\\/]changelog[\\/]index\.html$/),
-      "utf8",
-    );
-    expect(res.statusCode).toBe(200);
+    expect(res.writeHead).toHaveBeenCalledWith(308, expect.objectContaining({ Location: "/changelog/" }));
+    expect(mocks.fsReadFileSync).not.toHaveBeenCalled();
+  });
+
+  it("consolidates index files and public host aliases in one hop, preserving queries", async () => {
+    mocks.fsExists.mockReturnValue(true);
+    const handler = await loadHttp();
+    for (const [url, host, expected] of [
+      ["/index.html", "localhost:3000", "/"],
+      ["/docs/index.html?utm_source=github&x=%2F", "localhost:3000", "/docs/?utm_source=github&x=%2F"],
+      ["/docs/index.html?utm_source=github", "www.premiere-pro-mcp.com", "https://premiere-pro-mcp.com/docs/?utm_source=github"],
+      ["/docs/", "premiere-pro-mcp.fly.dev", "https://premiere-pro-mcp.com/docs/"],
+      ["/", "WWW.PREMIERE-PRO-MCP.COM", "https://premiere-pro-mcp.com/"],
+      ["//untrusted.example/index.html", "localhost:3000", "/untrusted.example/"],
+    ]) {
+      for (const method of ["GET", "HEAD"]) {
+        const res = response();
+        await handler({ method, url, headers: { host } }, res);
+        expect(res.writeHead).toHaveBeenCalledWith(308, expect.objectContaining({ Location: expected }));
+        expect(res.body).toBe("");
+      }
+    }
+    expect(mocks.fsReadFileSync).not.toHaveBeenCalled();
+  });
+
+  it("does not redirect canonical pages or trust forwarded host names", async () => {
+    mocks.fsExists.mockReturnValue(true);
+    const handler = await loadHttp();
+    for (const host of ["premiere-pro-mcp.com", "localhost:3000", "self-hosted.example", "www.premiere-pro-mcp.com.attacker.example"]) {
+      const res = response();
+      await handler({ method: "GET", url: "/docs/?ref=readme", headers: { host, "x-forwarded-host": "www.premiere-pro-mcp.com" } }, res);
+      expect(res.statusCode).toBe(200);
+    }
+  });
+
+  it("keeps public alias assets and API endpoints outside page redirects", async () => {
+    mocks.fsExists.mockReturnValue(true);
+    const handler = await loadHttp();
+    for (const [url, status] of [["/robots.txt", 200], ["/health", 200], ["/mcp", 401]] as const) {
+      const res = response();
+      await handler({ method: "GET", url, headers: { host: "www.premiere-pro-mcp.com" } }, res);
+      expect(res.statusCode).toBe(status);
+    }
   });
 
   it("marks hashed Next static assets immutable", async () => {

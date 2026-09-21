@@ -21,10 +21,12 @@ a failed UXP mutation through CEP.
 | Native marker CRUD | `manage_markers_uxp` | `markers.inspect`, `markers.add`, `markers.update`, `markers.remove` | Marker GUID plus requested-field or absence readback |
 | Transactional bin organizer | `organize_project_items_uxp` | `bins.inspect`, `bins.create`, `bins.createSmart`, `bins.rename`, `bins.move`, `bins.color`, `bins.remove` | Project-item identity, name, parent, color, or absence readback |
 | Sequence settings profiles | `manage_sequence_settings_uxp` | `sequenceSettings.get`, `sequenceSettings.update` | Requested settings read back after one `createSetSettingsAction` transaction |
+| Guarded sequence preview frame | `manage_sequence_preview_frame_uxp` | `sequence.previewFrame.inspect`, `sequence.previewFrame.update` | Explicit sequence GUID, full preview-frame snapshot, confirmation and operation ID; one settings transaction then same-sequence rectangle readback |
 | Workspace-gated imports | `import_project_media_uxp` | `project.import` | New project-item or sequence identities when Premiere exposes them |
-| Typed parameter/keyframe automation | `automate_effect_parameters_uxp` | `parameters.inspect`, `parameters.set`, `parameters.keyframeAdd`, `parameters.keyframeRemove`, `parameters.keyframeRemoveRange`, `parameters.keyframeInterpolation` | Parameter value, keyframe time, absence, or interpolation readback |
+| Typed parameter/keyframe automation | `automate_effect_parameters_uxp` | `parameters.inspect`, `parameters.point.inspect`, `parameters.point.displacement.inspect`, `parameters.point.set`, `parameters.color.inspect`, `parameters.color.set`, `parameters.set`, `parameters.keyframe.inspect`, `parameters.keyframeAdd`, `parameters.keyframeRemove`, `parameters.keyframeRemoveRange`, `parameters.keyframeInterpolation`, `parameters.timeVarying.inspect`, `parameters.timeVarying.set` | Scalar parameter, static PointF x/y, animated PointF endpoint displacement, raw Color RGBA, keyframe time, absence, interpolation, animation mode, or direct keyframe lookup readback |
 | Track-item transformations | `transform_track_item_uxp` | `trackItem.inspect`, `trackItem.update` | Start/end, source in/out, disabled state, and name readback |
 | SequenceEditor timeline layer | `edit_timeline_uxp` | `timeline.insert`, `timeline.overwrite`, `timeline.cloneSelection`, `timeline.removeSelection`, `timeline.mogrtPath`, `timeline.mogrtLibrary` | Action transaction accepted; MOGRT calls return inserted items |
+| Empty sequence creation | `create_empty_sequence_uxp` | `sequences.createEmpty` | New sequence identity from the post-call project collection |
 | Sequence lifecycle and derivatives | `manage_sequences_uxp` | `sequences.inspect`, `sequences.createFromMedia`, `sequences.clone`, `sequences.subsequence`, `sequences.activate`, `sequences.open`, `sequences.close`, `sequences.delete` | Created/cloned identity, host return, or deleted-sequence absence |
 | AME encode controller | `encode_media_uxp` | `encoder.preflight`, `encoder.sequence`, `encoder.projectItem`, `encoder.file` | AME host acceptance only; output-file completion remains unverified |
 
@@ -65,7 +67,7 @@ The following mutations are action based and can report an Adobe undo boundary:
 - marker add/update/remove;
 - bin create/smart-create/rename/move/color/remove;
 - sequence settings update;
-- parameter value and keyframe changes;
+- parameter value, keyframe, and animation-mode changes;
 - track-item timing/state changes;
 - SequenceEditor insert, overwrite, clone, and remove;
 - sequence clone.
@@ -87,6 +89,10 @@ rejected before the relevant host call. Native paths and persistent folder token
 remain inside the panel and are not returned by workspace status.
 
 `import_project_media_uxp` requires `confirm_non_undoable: true` for every mode.
+For file imports without a target bin, the panel passes `null` to select the
+project root, following [Adobe's corrected import sample](https://github.com/AdobeDocs/uxp-premiere-pro-samples/commit/d34e8016dafb36e45df3066017bec13451ed36bc).
+Explicit bins retain their resolved folder object. Mocked contract tests do not
+establish successful import behavior in a licensed Premiere host.
 Path-based MOGRT insertion requires the same confirmation. Encode actions require
 `confirm_external_write: true` because an output can be created or overwritten.
 
@@ -122,6 +128,16 @@ Adobe marks video-frame-rate get/set as 26.2; the other profiled settings date t
 25.6. Because the consolidated get/update contract includes those frame-rate fields,
 both commands advertise a 26.2 minimum.
 
+### `manage_sequence_preview_frame_uxp`
+
+`inspect` accepts one exact sequence GUID and double-reads only that sequence's native
+preview-frame width and height. `update` requires the complete inspected snapshot,
+both bounded dimensions, explicit confirmation, and an operation ID. It serializes
+this bridge's changes per reviewed project/sequence, re-resolves before creating one
+`createSetSettingsAction` transaction, then reads that exact sequence back. It does
+not change video frame dimensions or coordinate with Premiere UI or other extensions;
+Adobe exposes no atomic compare-and-set for this settings value.
+
 ### `import_project_media_uxp`
 
 Modes are `files`, `sequences`, `ae_comps`, and `all_ae_comps`. File batches are
@@ -131,9 +147,35 @@ when the host reports that After Effects is unavailable.
 ### `automate_effect_parameters_uxp`
 
 The tool resolves one audio/video clip, component index, and parameter index. It
-accepts only scalar number, string, or boolean values; point and color values remain
-out of scope until the public schema can represent their Adobe types unambiguously.
+accepts scalar number, string, or boolean values; `inspect_point_value` and
+`set_point_value` separately expose a static `PointF` as explicit x/y fields, while
+`inspect_color_value` and `set_color_value` expose raw `Color` RGBA components. Each
+static composite update requires the complete returned snapshot, confirmation, and an
+operation ID; it rejects time-varying parameters, so PointF and Color keyframe edits,
+color management, and rendered-appearance claims remain out of scope.
+
+`inspect_point_displacement` instead requires a time-varying PointF parameter and two
+strictly increasing bounded seconds. It double-reads the complete target identity,
+animation flag, endpoints, and native `PointF.distanceTo()` result. The returned value
+is only the straight-line endpoint displacement: it is not a total animation-path
+length, keyframe edit, rendered-motion, playback, persistence, Undo, or licensed-host
+claim.
 Keyframe actions support add, remove, inclusive range removal, and interpolation.
+`inspect_keyframe` accepts one bounded reference time with `at`, `next`, or
+`previous`, or `nearest` with an explicit nondecreasing `time_seconds` to
+`end_seconds` range. The nearest form passes both documented native lookup bounds to
+Premiere and reads one returned keyframe's position and temporal interpolation mode; it
+does not infer tie-breaking or navigation semantics. It does not enumerate more
+keyframes, alter animation, inspect a rendered frame, or claim host behavior beyond
+that direct native result. Optional expected component and parameter identifiers guard
+the selected target; a missing native result is reported as `found: false`.
+`inspect_time_varying` returns the current animation mode and its bounded keyframe-time
+snapshot. `set_time_varying` requires the exact inspected sequence, component,
+parameter, mode, and complete keyframe-time snapshot; disabling animation additionally
+requires explicit confirmation. Competing animation-mode updates serialize per
+parameter, create one documented UXP action transaction, and verify native mode
+readback. This proves neither persistence after reopening nor Undo behavior in a
+licensed Premiere host.
 
 ### `transform_track_item_uxp`
 
@@ -149,14 +191,24 @@ direct methods and reports the number of returned track items. Transaction-only
 edits and direct MOGRT calls remain `committed_unverified` until a stable returned-item
 identity or exact post-selection mapping is available.
 
+### `create_empty_sequence_uxp`
+
+The tool creates an empty/default sequence without requiring media selection or a
+preset path. It requires `confirm_non_undoable: true` and `operation_id` so its
+receipt can be replayed without creating a duplicate. It serializes the whole
+project-sequence capacity snapshot, host call, and post-call list readback. It is
+`verified` only when the newly returned sequence identity is present in that readback;
+a host rejection, missing identity, or unreadable readback becomes an idempotently
+replayable `committed_unverified` partial receipt.
+
 ### `manage_sequences_uxp`
 
 The tool inspects all project sequences, creates from selected media IDs, clones,
-derives a subsequence, activates, opens, closes, or deletes. Direct create,
+derives a subsequence, activates, opens, closes, or deletes. Direct media create,
 subsequence, and delete calls require `confirm_non_undoable: true`; deletion also
-supports `expected_name` as a stale-target guard.
-Returned objects from direct create/subsequence calls are acceptance evidence only;
-those operations remain `committed_unverified` without an independent project readback.
+supports `expected_name` as a stale-target guard. Returned objects from direct
+media-create/subsequence calls remain acceptance evidence only without an independent
+project readback.
 Adobe introduced `Project.closeSequence` in 26.2; the other lifecycle calls in this
 tool date to 25.6 and remain individually capability gated.
 
@@ -199,8 +251,8 @@ hash. At minimum:
    reopen persistence.
 5. Import files, sequences, named AE comps, and all AE comps; confirm workspace
    rejection occurs before a host mutation.
-6. Set representative scalar parameters and keyframes for video and audio effects;
-   verify interpolation and Undo.
+6. Set representative scalar parameters, keyframes, and animation modes for video and
+   audio effects; verify interpolation, the disable confirmation, and Undo.
 7. Move, trim, rename, and disable track items, including linked audio/video and
    collisions.
 8. Run all SequenceEditor actions and both MOGRT paths, then inspect the exact

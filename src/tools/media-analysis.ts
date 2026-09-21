@@ -7,7 +7,7 @@ import type { BridgeOptions } from "../bridge/file-bridge.js";
 const execFileAsync = promisify(execFile);
 const ANALYSIS_TIMEOUT_MS = 300_000;
 
-type ExecFailure = Error & { killed?: boolean; stderr?: string };
+type ExecFailure = Error & { killed?: boolean; stderr?: string | Buffer };
 
 function inputPath(value: unknown): string | null {
   if (typeof value !== "string" || value.trim() === "") return null;
@@ -15,10 +15,11 @@ function inputPath(value: unknown): string | null {
   return existsSync(path) && statSync(path).isFile() ? path : null;
 }
 
-function failureMessage(error: unknown, operation: string): string {
+function failureMessage(error: unknown, operation: string, timeoutSeconds = 300): string {
   const failure = error as ExecFailure;
-  if (failure.killed) return `${operation} timed out after 300 seconds`;
-  const detail = (failure.stderr ?? failure.message ?? "unknown error")
+  if (failure.killed) return `${operation} timed out after ${timeoutSeconds} seconds`;
+  const rawDetail = failure.stderr ?? failure.message ?? "unknown error";
+  const detail = (Buffer.isBuffer(rawDetail) ? rawDetail.toString("utf8") : String(rawDetail))
     .split(/\r?\n/).filter(Boolean).slice(-3).join(" ");
   return `${operation} failed: ${detail}`;
 }
@@ -58,6 +59,100 @@ export function parseTransientCandidates(output: string, thresholdDbfs: number, 
     time = null;
   }
   return candidates;
+}
+
+export interface MotionPeakCandidate { timeSeconds: number; difference: number }
+
+export function parseMotionPeakCandidates(output: string, threshold: number, minimumIntervalSeconds: number): MotionPeakCandidate[] {
+  const samples: MotionPeakCandidate[] = [];
+  let time: number | null = null;
+  for (const line of output.split(/\r?\n/)) {
+    const timeMatch = line.match(/\bpts_time:([\d.]+)/);
+    if (timeMatch) time = Number(timeMatch[1]);
+    const differenceMatch = line.match(/lavfi\.signalstats\.YAVG=([\d.]+)/);
+    if (!differenceMatch || time === null) continue;
+    samples.push({ timeSeconds: time, difference: Number(differenceMatch[1]) });
+    time = null;
+  }
+  const peaks: MotionPeakCandidate[] = [];
+  for (let index = 0; index < samples.length; index++) {
+    const sample = samples[index];
+    if (!Number.isFinite(sample.difference) || sample.difference < threshold) continue;
+    if (index > 0 && sample.difference <= samples[index - 1].difference) continue;
+    if (index + 1 < samples.length && sample.difference < samples[index + 1].difference) continue;
+    const previous = peaks.at(-1);
+    if (!previous || sample.timeSeconds - previous.timeSeconds >= minimumIntervalSeconds) peaks.push(sample);
+    else if (sample.difference > previous.difference) peaks[peaks.length - 1] = sample;
+  }
+  return peaks;
+}
+
+export interface VideoScopeReading {
+  pixels: number;
+  waveform: { black: number; shadows: number; median: number; highlights: number; white: number };
+  rgbParade: Record<"red" | "green" | "blue", { low: number; median: number; high: number }>;
+  saturation: { mean: number; high: number };
+  rgbExtremes: { nearBlackPercent: number; nearWhitePercent: number };
+}
+
+export function analyzeRgbScopes(bytes: Uint8Array): VideoScopeReading {
+  if (bytes.length < 3 || bytes.length % 3 !== 0) throw new Error("RGB scope analysis requires complete RGB24 pixels");
+  const red: number[] = [], green: number[] = [], blue: number[] = [], luma: number[] = [], saturation: number[] = [];
+  let below = 0, above = 0;
+  for (let index = 0; index < bytes.length; index += 3) {
+    const r = bytes[index] / 255, g = bytes[index + 1] / 255, b = bytes[index + 2] / 255;
+    const y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    const maximum = Math.max(r, g, b), minimum = Math.min(r, g, b);
+    red.push(r * 100); green.push(g * 100); blue.push(b * 100); luma.push(y * 100);
+    saturation.push(maximum > 0 ? (maximum - minimum) / maximum * 100 : 0);
+    if (y < 16 / 255) below++;
+    if (y > 235 / 255) above++;
+  }
+  for (const values of [red, green, blue, luma, saturation]) values.sort((a, b) => a - b);
+  const percentile = (values: number[], fraction: number) => Number(values[Math.min(values.length - 1, Math.max(0, Math.round((values.length - 1) * fraction)))].toFixed(2));
+  const channel = (values: number[]) => ({ low: percentile(values, 0.1), median: percentile(values, 0.5), high: percentile(values, 0.9) });
+  const pixels = luma.length;
+  return {
+    pixels,
+    waveform: { black: percentile(luma, 0.01), shadows: percentile(luma, 0.1), median: percentile(luma, 0.5), highlights: percentile(luma, 0.9), white: percentile(luma, 0.99) },
+    rgbParade: { red: channel(red), green: channel(green), blue: channel(blue) },
+    saturation: { mean: Number((saturation.reduce((sum, value) => sum + value, 0) / pixels).toFixed(2)), high: percentile(saturation, 0.9) },
+    rgbExtremes: { nearBlackPercent: Number((below / pixels * 100).toFixed(2)), nearWhitePercent: Number((above / pixels * 100).toFixed(2)) },
+  };
+}
+
+export function compareScopeReadings(reference: VideoScopeReading, target: VideoScopeReading) {
+  const delta = (targetValue: number, referenceValue: number) => Number((targetValue - referenceValue).toFixed(2));
+  const redBlueBalance = (reading: VideoScopeReading) => {
+    const red = reading.rgbParade.red.median, blue = reading.rgbParade.blue.median;
+    return red + blue > 0 ? (red - blue) / (red + blue) * 100 : 0;
+  };
+  const referenceBalance = redBlueBalance(reference);
+  const targetBalance = redBlueBalance(target);
+  const balanceDelta = delta(targetBalance, referenceBalance);
+  return {
+    targetMinusReference: {
+      medianLuma: delta(target.waveform.median, reference.waveform.median),
+      shadowLuma: delta(target.waveform.shadows, reference.waveform.shadows),
+      highlightLuma: delta(target.waveform.highlights, reference.waveform.highlights),
+      redMedian: delta(target.rgbParade.red.median, reference.rgbParade.red.median),
+      greenMedian: delta(target.rgbParade.green.median, reference.rgbParade.green.median),
+      blueMedian: delta(target.rgbParade.blue.median, reference.rgbParade.blue.median),
+      saturationMean: delta(target.saturation.mean, reference.saturation.mean),
+      redBlueBalance: balanceDelta,
+    },
+    suggestedDirections: {
+      exposure: target.waveform.median < reference.waveform.median ? "raise" : target.waveform.median > reference.waveform.median ? "lower" : "hold",
+      warmth: Math.abs(balanceDelta) < 0.25 ? "hold" : balanceDelta < 0 ? "warmer" : "cooler",
+      saturation: target.saturation.mean < reference.saturation.mean ? "raise" : target.saturation.mean > reference.saturation.mean ? "lower" : "hold",
+    },
+  };
+}
+
+async function decodeScopeFrame(path: string, time: number): Promise<VideoScopeReading> {
+  const result = await execFileAsync("ffmpeg", ["-v", "error", "-ss", String(time), "-i", path, "-frames:v", "1", "-vf", "scale=320:180:flags=area", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], { encoding: "buffer", timeout: 60_000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }) as unknown as { stdout: Buffer };
+  if (result.stdout.length !== 320 * 180 * 3) throw new Error("ffmpeg did not return one complete RGB scope frame");
+  return analyzeRgbScopes(result.stdout);
 }
 
 export interface InterlaceAnalysis { tff: number; bff: number; progressive: number; undetermined: number; classification: "tff" | "bff" | "progressive" | "mixed" | "undetermined" }
@@ -158,6 +253,86 @@ export function getMediaAnalysisTools(_bridgeOptions: BridgeOptions) {
           const all = parseTransientCandidates(`${result.stdout}\n${result.stderr}`, threshold, interval);
           return { success: true, data: { mediaPath: path, thresholdDbfs: threshold, minimumIntervalSeconds: interval, totalDetected: all.length, truncated: all.length > maximum, candidates: all.slice(0, maximum), verificationScope: "Peak-derived transient candidates only; confirm rhythm and editorial suitability by listening." } };
         } catch (error) { return { success: false, error: failureMessage(error, "audio transient analysis") }; }
+      },
+    },
+    detect_motion_peaks: {
+      description: "Find probable high-motion moments in a bounded local video sample from decoded frame differences. Read-only editorial candidates; camera movement, flashes, cuts, and subject motion are not semantically distinguished.",
+      parameters: { type: "object", properties: {
+        media_path: { type: "string", description: "Existing local video file" },
+        sample_seconds: { type: "number", description: "Decode duration from 1 through 300 seconds (default: 60)" },
+        samples_per_second: { type: "number", description: "Frame samples per second from 1 through 10 (default: 4)" },
+        threshold: { type: "number", description: "Minimum mean luma-frame difference from 0 through 255 (default: 12)" },
+        minimum_interval_seconds: { type: "number", description: "Minimum peak spacing from 0.1 through 30 seconds (default: 1)" },
+        maximum_events: { type: "integer", description: "Maximum returned candidates from 1 through 1000 (default: 200)" },
+      }, required: ["media_path"] },
+      handler: async (args: { media_path?: string; sample_seconds?: number; samples_per_second?: number; threshold?: number; minimum_interval_seconds?: number; maximum_events?: number }) => {
+        const path = inputPath(args.media_path);
+        if (!path) return { success: false, error: "media_path must identify an existing regular file" };
+        const seconds = args.sample_seconds ?? 60, rate = args.samples_per_second ?? 4;
+        const threshold = args.threshold ?? 12, interval = args.minimum_interval_seconds ?? 1, maximum = args.maximum_events ?? 200;
+        if (!Number.isFinite(seconds) || seconds < 1 || seconds > 300) return { success: false, error: "sample_seconds must be from 1 through 300" };
+        if (!Number.isFinite(rate) || rate < 1 || rate > 10) return { success: false, error: "samples_per_second must be from 1 through 10" };
+        if (!Number.isFinite(threshold) || threshold < 0 || threshold > 255) return { success: false, error: "threshold must be from 0 through 255" };
+        if (!Number.isFinite(interval) || interval < 0.1 || interval > 30) return { success: false, error: "minimum_interval_seconds must be from 0.1 through 30" };
+        if (!Number.isInteger(maximum) || maximum < 1 || maximum > 1000) return { success: false, error: "maximum_events must be an integer from 1 through 1000" };
+        try {
+          const filter = `fps=${rate},scale=160:-2:flags=area,format=gray,tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG`;
+          const result = await execFileAsync("ffmpeg", ["-v", "info", "-i", path, "-t", String(seconds), "-vf", filter, "-an", "-f", "null", "-"], { timeout: ANALYSIS_TIMEOUT_MS, windowsHide: true, maxBuffer: 32 * 1024 * 1024 });
+          const all = parseMotionPeakCandidates(`${result.stdout}\n${result.stderr}`, threshold, interval);
+          return { success: true, data: {
+            mediaPath: path, sampleSeconds: seconds, samplesPerSecond: rate, threshold,
+            minimumIntervalSeconds: interval, totalDetected: all.length, truncated: all.length > maximum,
+            candidates: all.slice(0, maximum),
+            verificationScope: "Mean luma frame-difference peaks from a downscaled decoded sample only. Camera movement, flashes, edits, and subject motion can produce similar scores; confirm candidates visually before editing."
+          } };
+        } catch (error) { return { success: false, error: failureMessage(error, "motion-peak analysis") }; }
+      },
+    },
+    read_video_scopes: {
+      description: "Read waveform percentiles, RGB parade percentiles, saturation, and near-black/near-white RGB occupancy from one bounded decoded local-media frame. Read-only; this is a sampled analytical proxy, not Premiere's rendered scopes.",
+      parameters: { type: "object", properties: {
+        media_path: { type: "string", description: "Existing local video file" },
+        time_seconds: { type: "number", description: "Source-relative frame time from 0 through 86400 seconds (default: 0)" },
+      }, required: ["media_path"] },
+      handler: async (args: { media_path?: string; time_seconds?: number }) => {
+        const path = inputPath(args.media_path);
+        if (!path) return { success: false, error: "media_path must identify an existing regular file" };
+        const time = args.time_seconds ?? 0;
+        if (!Number.isFinite(time) || time < 0 || time > 86_400) return { success: false, error: "time_seconds must be from 0 through 86400" };
+        try {
+          const scopes = await decodeScopeFrame(path, time);
+          return { success: true, data: {
+            mediaPath: path, timeSeconds: time, sampleSize: { width: 320, height: 180 }, ...scopes,
+            verificationScope: "One source-relative frame decoded and downscaled to 320x180. Values are post-conversion RGB/luma sample statistics; near-black/near-white occupancy does not prove source-domain legal-range violations. This is not a Premiere program-monitor render, HDR interpretation, vectorscope trace, or visual grade approval."
+          } };
+        } catch (error) { return { success: false, error: failureMessage(error, "video scope analysis", 60) }; }
+      },
+    },
+    plan_shot_match: {
+      description: "Compare two bounded local-media frame samples and return measured waveform/parade/saturation deltas plus coarse correction directions. Read-only planning only; it does not grade Premiere or claim that primaries alone can match the shots.",
+      parameters: { type: "object", properties: {
+        reference_media_path: { type: "string", description: "Existing local reference video file" },
+        target_media_path: { type: "string", description: "Existing local target video file" },
+        reference_time_seconds: { type: "number", description: "Reference source time from 0 through 86400 seconds (default: 0)" },
+        target_time_seconds: { type: "number", description: "Target source time from 0 through 86400 seconds (default: 0)" },
+      }, required: ["reference_media_path", "target_media_path"] },
+      handler: async (args: { reference_media_path?: string; target_media_path?: string; reference_time_seconds?: number; target_time_seconds?: number }) => {
+        const referencePath = inputPath(args.reference_media_path), targetPath = inputPath(args.target_media_path);
+        if (!referencePath) return { success: false, error: "reference_media_path must identify an existing regular file" };
+        if (!targetPath) return { success: false, error: "target_media_path must identify an existing regular file" };
+        const referenceTime = args.reference_time_seconds ?? 0, targetTime = args.target_time_seconds ?? 0;
+        if (!Number.isFinite(referenceTime) || referenceTime < 0 || referenceTime > 86_400) return { success: false, error: "reference_time_seconds must be from 0 through 86400" };
+        if (!Number.isFinite(targetTime) || targetTime < 0 || targetTime > 86_400) return { success: false, error: "target_time_seconds must be from 0 through 86400" };
+        try {
+          const reference = await decodeScopeFrame(referencePath, referenceTime);
+          const target = await decodeScopeFrame(targetPath, targetTime);
+          return { success: true, data: {
+            reference: { mediaPath: referencePath, timeSeconds: referenceTime, scopes: reference },
+            target: { mediaPath: targetPath, timeSeconds: targetTime, scopes: target },
+            comparison: compareScopeReadings(reference, target),
+            verificationScope: "Two source-relative 320x180 post-conversion RGB samples. Directions are coarse planning hints, not numeric Lumetri settings, a Premiere-render comparison, semantic shot equivalence, or proof that the shots can be matched with primary corrections."
+          } };
+        } catch (error) { return { success: false, error: failureMessage(error, "shot-match planning", 60) }; }
       },
     },
     analyze_video_interlacing: {

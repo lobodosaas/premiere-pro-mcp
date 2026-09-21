@@ -1,4 +1,5 @@
 import type { UxpWebSocketBridge } from "../bridge/uxp-websocket-bridge.js";
+import { planDerivedSilenceRemoval } from "./silence-removal.js";
 
 const WAIT_RESPONSE_BUFFER_MS = 5_000;
 
@@ -36,11 +37,106 @@ function invalidAction(value: unknown) {
   return { success: false, error: `Unsupported workflow action: ${String(value)}` };
 }
 
+type ReviewedMarkerSnapshot = {
+  markerGuid: string;
+  expectedName: string;
+  expectedStartSeconds: number;
+  expectedDurationSeconds: number;
+};
+
+function reviewedMarkerSnapshots(value: unknown): ReviewedMarkerSnapshot[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 128) {
+    throw new Error("marker_snapshots must contain between 1 and 128 reviewed marker snapshots");
+  }
+  const seen = new Set<string>();
+  return value.map((rawSnapshot, index) => {
+    if (!rawSnapshot || typeof rawSnapshot !== "object" || Array.isArray(rawSnapshot)) {
+      throw new Error(`marker_snapshots[${index}] must be an object`);
+    }
+    const snapshot = rawSnapshot as Record<string, unknown>;
+    const allowed = ["marker_guid", "expected_name", "expected_start_seconds", "expected_duration_seconds"];
+    const unknown = Object.keys(snapshot).find((key) => !allowed.includes(key));
+    if (unknown) throw new Error(`marker_snapshots[${index}] has an unknown field: ${unknown}`);
+    if (typeof snapshot.marker_guid !== "string" || !snapshot.marker_guid.trim() || snapshot.marker_guid.length > 128) {
+      throw new Error(`marker_snapshots[${index}].marker_guid must be a non-empty string of at most 128 characters`);
+    }
+    if (seen.has(snapshot.marker_guid)) throw new Error("marker_snapshots must not contain duplicate marker_guid values");
+    seen.add(snapshot.marker_guid);
+    if (typeof snapshot.expected_name !== "string" || snapshot.expected_name.length > 255) {
+      throw new Error(`marker_snapshots[${index}].expected_name must be a string of at most 255 characters`);
+    }
+    for (const [key, item] of Object.entries({
+      expected_start_seconds: snapshot.expected_start_seconds,
+      expected_duration_seconds: snapshot.expected_duration_seconds,
+    })) {
+      if (typeof item !== "number" || !Number.isFinite(item) || item < 0 || item > 86400) {
+        throw new Error(`marker_snapshots[${index}].${key} must be a number from 0 to 86400`);
+      }
+    }
+    return {
+      markerGuid: snapshot.marker_guid,
+      expectedName: snapshot.expected_name,
+      expectedStartSeconds: snapshot.expected_start_seconds as number,
+      expectedDurationSeconds: snapshot.expected_duration_seconds as number,
+    };
+  });
+}
+
 const operationId = {
   type: "string",
   pattern: "^[A-Za-z0-9._:-]{1,128}$",
   description: "Optional idempotency key for a mutating operation.",
 };
+
+const MAX_DISPLAY_FORMAT_CODE = 2_147_483_647;
+
+type DisplayFormatSnapshot = {
+  audioDisplayFormat: number;
+  videoDisplayFormat: number;
+};
+
+function boundedDisplayFormatCode(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > MAX_DISPLAY_FORMAT_CODE) {
+    throw new Error(`${name} must be a non-negative integer no greater than ${MAX_DISPLAY_FORMAT_CODE}`);
+  }
+  return value;
+}
+
+function reviewedDisplayFormats(value: unknown): DisplayFormatSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("expected_display_formats must be an object returned by inspect");
+  }
+  const formats = value as Record<string, unknown>;
+  const allowed = ["audio_display_format", "video_display_format"];
+  const unknown = Object.keys(formats).find((key) => !allowed.includes(key));
+  if (unknown) throw new Error(`expected_display_formats has an unknown field: ${unknown}`);
+  if (!("audio_display_format" in formats) || !("video_display_format" in formats)) {
+    throw new Error("expected_display_formats must include audio_display_format and video_display_format");
+  }
+  return {
+    audioDisplayFormat: boundedDisplayFormatCode(formats.audio_display_format, "expected_display_formats.audio_display_format"),
+    videoDisplayFormat: boundedDisplayFormatCode(formats.video_display_format, "expected_display_formats.video_display_format"),
+  };
+}
+
+function requestedDisplayFormats(value: unknown): Partial<DisplayFormatSnapshot> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("updates must be an object");
+  }
+  const formats = value as Record<string, unknown>;
+  const allowed = ["audio_display_format", "video_display_format"];
+  const unknown = Object.keys(formats).find((key) => !allowed.includes(key));
+  if (unknown) throw new Error(`updates has an unknown field: ${unknown}`);
+  const result: Partial<DisplayFormatSnapshot> = {};
+  if ("audio_display_format" in formats) {
+    result.audioDisplayFormat = boundedDisplayFormatCode(formats.audio_display_format, "updates.audio_display_format");
+  }
+  if ("video_display_format" in formats) {
+    result.videoDisplayFormat = boundedDisplayFormatCode(formats.video_display_format, "updates.video_display_format");
+  }
+  if (!Object.keys(result).length) throw new Error("updates must include audio_display_format or video_display_format");
+  return result;
+}
 
 const sequenceId = {
   type: "string",
@@ -102,13 +198,34 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
       },
     },
 
-    manage_markers_uxp: {
-      description: "Inspect, add, update/move, or remove sequence and clip markers by stable marker GUID using documented, undoable Premiere actions.",
+    inspect_project_tree_uxp: {
+      description: "Read a bounded, depth-limited native Project-panel tree rooted at the active project. Returns stable IDs, names, types, parent IDs, bin state, and optional color-label indexes only; it never returns media paths, metadata, or rendered media. Items without a stable ID are skipped rather than failing the whole tree.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
         properties: {
-          action: { type: "string", enum: ["inspect", "add", "update", "remove"] },
+          max_items: { type: "integer", minimum: 1, maximum: 512, description: "Maximum non-root project items to snapshot; defaults to 256." },
+          max_depth: { type: "integer", minimum: 0, maximum: 16, description: "Maximum depth below the Project root to inspect; defaults to 6." },
+        },
+      },
+      operationalCapability: {
+        backend: "UXP" as const,
+        backends: ["uxp" as const],
+        minimumPremiereVersion: "26.3",
+        verificationBoundary: "structured_uxp_readback" as const,
+        hostVerificationRequired: true,
+        notes: ["Available only through an authenticated UXP bridge whose runtime capability handshake advertises projectTree.inspect."],
+      },
+      handler: async (args: AdvancedArgs) => invoke(bridge, "projectTree.inspect", compact({ maxItems: args.max_items, maxDepth: args.max_depth })),
+    },
+
+    manage_markers_uxp: {
+      description: "Inspect, add, update/move, remove, or explicitly review-then-remove a bounded marker batch by stable GUID using documented, undoable Premiere actions; mutations for one marker owner are serialized through preflight and readback.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["inspect", "add", "update", "remove", "remove_many"] },
           owner_type: { type: "string", enum: ["sequence", "project_item"] },
           sequence_id: sequenceId,
           project_item_id: projectItemId,
@@ -120,18 +237,41 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           duration_seconds: { type: "number", minimum: 0, maximum: 86400 },
           comments: { type: "string", maxLength: 4000 },
           color_index: { type: "integer", minimum: 0, maximum: 6 },
+          marker_snapshots: {
+            type: "array",
+            minItems: 1,
+            maxItems: 128,
+            description: "Required for remove_many. Explicit read snapshots from inspect: every target GUID, name, start, and duration must still match before action creation.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                marker_guid: { type: "string", minLength: 1, maxLength: 128 },
+                expected_name: { type: "string", maxLength: 255 },
+                expected_start_seconds: { type: "number", minimum: 0, maximum: 86400 },
+                expected_duration_seconds: { type: "number", minimum: 0, maximum: 86400 },
+              },
+              required: ["marker_guid", "expected_name", "expected_start_seconds", "expected_duration_seconds"],
+            },
+          },
+          confirm_destructive: { type: "boolean", description: "Required true for remove_many after reviewing every explicit marker snapshot." },
           operation_id: operationId,
         },
         required: ["action"],
       },
       handler: async (args: AdvancedArgs) => {
-        const common = compact({
+        const markerOwner = compact({
           ownerType: args.owner_type === "project_item" ? "projectItem" : args.owner_type,
           sequenceId: args.sequence_id,
           projectItemId: args.project_item_id,
-          markerGuid: args.marker_guid,
-          expectedName: args.expected_name,
         });
+        const common = {
+          ...markerOwner,
+          ...compact({
+            markerGuid: args.marker_guid,
+            expectedName: args.expected_name,
+          }),
+        };
         if (args.action === "inspect") return invoke(bridge, "markers.inspect", common);
         if (args.action === "add") return invoke(bridge, "markers.add", { ...common, ...compact({
           name: args.name, markerType: args.marker_type, startSeconds: args.start_seconds,
@@ -142,7 +282,84 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           durationSeconds: args.duration_seconds, comments: args.comments, colorIndex: args.color_index,
         }), ...operation(args) });
         if (args.action === "remove") return invoke(bridge, "markers.remove", { ...common, ...operation(args) });
+        if (args.action === "remove_many") {
+          try {
+            if (args.confirm_destructive !== true) {
+              return { success: false, error: "remove_many is destructive; pass confirm_destructive=true after reviewing every marker snapshot" };
+            }
+            return invoke(bridge, "markers.removeMany", {
+              ...markerOwner,
+              markerSnapshots: reviewedMarkerSnapshots(args.marker_snapshots),
+              confirmDestructive: true,
+              ...operation(args),
+            });
+          } catch (error) {
+            return { success: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        }
         return invalidAction(args.action);
+      },
+    },
+
+    apply_beat_markers_uxp: {
+      description: "Apply a reviewed beat grid as native sequence markers in one undoable Premiere 26.3+ UXP transaction, with bounded inputs and GUID/time readback for every marker.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          beat_times_seconds: { type: "array", minItems: 1, maxItems: 512, items: { type: "number", minimum: 0, maximum: 86400 }, description: "Strictly increasing unique beat times, such as beatTimesSeconds returned by detect_beats." },
+          sequence_id: sequenceId,
+          offset_seconds: { type: "number", minimum: -86400, maximum: 86400, description: "Timeline offset added to every beat time; every result must remain between 0 and 86400 seconds." },
+          name_prefix: { type: "string", minLength: 1, maxLength: 64, description: "Marker label prefix; defaults to Beat." },
+          comments: { type: "string", maxLength: 1000 },
+          marker_type: { type: "string", minLength: 1, maxLength: 128 },
+          operation_id: operationId,
+        },
+        required: ["beat_times_seconds"],
+      },
+      handler: async (args: AdvancedArgs) => invoke(bridge, "markers.addBeatGrid", {
+        beatTimesSeconds: args.beat_times_seconds,
+        ...compact({ sequenceId: args.sequence_id, offsetSeconds: args.offset_seconds, namePrefix: args.name_prefix, comments: args.comments, markerType: args.marker_type }),
+        ...operation(args),
+      }),
+    },
+
+    create_silence_cut_source_stringout_uxp: {
+      description: "Create a new single-source rough-cut stringout from reviewed silence ranges using documented Premiere 26.3+ hard-bounded linked A/V subclips. It does not preserve or modify an existing edited timeline.",
+      parameters: {
+        type: "object" as const, additionalProperties: false,
+        properties: {
+          source_project_item_id: projectItemId,
+          sequence_name: { type: "string", minLength: 1, maxLength: 255 },
+          duration_seconds: { type: "number", exclusiveMinimum: 0, maximum: 86400 },
+          frame_rate: { type: "number", exclusiveMinimum: 0, maximum: 240 },
+          silence_ranges: { type: "array", minItems: 1, maxItems: 512, items: { type: "object", additionalProperties: false, properties: {
+            start_seconds: { type: "number", minimum: 0, maximum: 86400 }, end_seconds: { type: "number", minimum: 0, maximum: 86400 },
+          }, required: ["start_seconds", "end_seconds"] } },
+          keep_handle_frames: { type: "integer", minimum: 0, maximum: 2400 },
+          maximum_removals: { type: "integer", minimum: 1, maximum: 512 },
+          target_bin_id: projectItemId,
+          confirm_non_undoable: { type: "boolean", description: "Required true. Derived sequence creation is a direct host call and partial generated artifacts can remain." },
+          operation_id: operationId,
+        },
+        required: ["source_project_item_id", "sequence_name", "duration_seconds", "frame_rate", "silence_ranges", "confirm_non_undoable"],
+      },
+      handler: async (args: AdvancedArgs) => {
+        try {
+          const plan = planDerivedSilenceRemoval({
+            durationSeconds: Number(args.duration_seconds), frameRate: Number(args.frame_rate),
+            silenceRanges: (args.silence_ranges as Array<{ start_seconds: number; end_seconds: number }>).map((range) => ({ startSeconds: range.start_seconds, endSeconds: range.end_seconds })),
+            keepHandleFrames: args.keep_handle_frames as number | undefined,
+            maximumRemovals: args.maximum_removals as number | undefined,
+          });
+          if (plan.keepRanges.length > 64) return { success: false, error: "Source stringout requires more than 64 keep segments; narrow the reviewed plan." };
+          const keepRanges = plan.keepRanges.map((range) => ({ ...range, startSeconds: range.startFrame / plan.frameRate, endSeconds: range.endFrame / plan.frameRate }));
+          const result = await invoke(bridge, "silence.deriveSequence", {
+            sourceProjectItemId: args.source_project_item_id, name: args.sequence_name, keepRanges,
+            ...compact({ targetBinId: args.target_bin_id, confirmNonUndoable: args.confirm_non_undoable }), ...operation(args),
+          });
+          return "data" in result ? { ...result, data: { ...result.data, plan } } : result;
+        } catch (error) { return { success: false, error: error instanceof Error ? error.message : String(error) }; }
       },
     },
 
@@ -231,6 +448,61 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
       },
     },
 
+    manage_sequence_display_format_uxp: {
+      description: "Inspect or update a sequence's native audio/video time-display formats. Updates require the exact inspected sequence GUID and complete display-format snapshot, serialize competing updates per sequence, commit one undoable UXP transaction, and verify native readback. Cancellation is not supported after dispatch.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["inspect", "update"] },
+          sequence_id: sequenceId,
+          expected_sequence_guid: {
+            type: "string", minLength: 1, maxLength: 128,
+            description: "Required for update; copy sequence.guid from inspect. The update targets this GUID even if the active sequence changes.",
+          },
+          expected_display_formats: {
+            type: "object", additionalProperties: false,
+            properties: {
+              audio_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE },
+              video_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE },
+            },
+            required: ["audio_display_format", "video_display_format"],
+            description: "Required for update; copy both display-format codes returned by inspect without changes.",
+          },
+          updates: {
+            type: "object", additionalProperties: false,
+            properties: {
+              audio_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE },
+              video_display_format: { type: "integer", minimum: 0, maximum: MAX_DISPLAY_FORMAT_CODE },
+            },
+            description: "One or both documented display-format codes returned in supportedDisplayFormats by inspect.",
+          },
+          operation_id: operationId,
+        },
+        required: ["action"],
+      },
+      handler: async (args: AdvancedArgs) => {
+        if (args.action === "inspect") return invoke(bridge, "sequence.displayFormat.inspect", compact({ sequenceId: args.sequence_id }));
+        if (args.action !== "update") return invalidAction(args.action);
+        if (typeof args.expected_sequence_guid !== "string" || !args.expected_sequence_guid.trim() || args.expected_sequence_guid.length > 128) {
+          return { success: false, error: "update requires expected_sequence_guid from inspect" };
+        }
+        try {
+          const expectedDisplayFormats = reviewedDisplayFormats(args.expected_display_formats);
+          const updates = requestedDisplayFormats(args.updates);
+          return invoke(bridge, "sequence.displayFormat.update", {
+            ...compact({ sequenceId: args.sequence_id }),
+            expectedSequenceGuid: args.expected_sequence_guid,
+            expectedDisplayFormats,
+            updates,
+            ...operation(args),
+          });
+        } catch (error) {
+          return { success: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
+    },
+
     import_project_media_uxp: {
       description: "Import workspace-contained media files, sequences, or After Effects compositions through documented Project APIs with post-state evidence.",
       parameters: {
@@ -265,22 +537,102 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     automate_effect_parameters_uxp: {
-      description: "Inspect or transactionally set scalar or 2D point ({x, y}) effect parameters and add, remove, range-remove, or interpolate keyframes through documented UXP actions; time_basis selects raw property time (default) or clip-relative resolution against the source in-point domain where keyframes live.",
+      description: "Inspect or transactionally set scalar effect parameters; inspect or guardedly set static PointF x/y and Color RGBA parameters; locate individual keyframes including a bounded native nearest-range lookup; adjust keyframes/interpolation; and control explicit time-varying animation mode through documented UXP actions. Disabling animation requires a complete inspected keyframe-time snapshot and confirmation. time_basis selects raw property time (default) or clip-relative resolution against the source in-point domain where keyframes live.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
         properties: {
-          action: { type: "string", enum: ["inspect", "set_value", "add_keyframe", "remove_keyframe", "remove_keyframe_range", "set_interpolation"] },
+          action: { type: "string", enum: ["inspect", "inspect_point_value", "inspect_point_displacement", "set_point_value", "inspect_color_value", "set_color_value", "inspect_keyframe", "set_value", "add_keyframe", "remove_keyframe", "remove_keyframe_range", "set_interpolation", "inspect_time_varying", "set_time_varying"] },
           ...timelineTargetProperties,
           component_index: { type: "integer", minimum: 0 },
           param_index: { type: "integer", minimum: 0 },
           expected_component_id: { type: "string", minLength: 1, maxLength: 256 },
           expected_param_name: { type: "string", maxLength: 255 },
           value: { type: ["number", "string", "boolean", "object"] },
+          point: {
+            type: "object", additionalProperties: false,
+            properties: {
+              x: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+              y: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+            },
+            required: ["x", "y"],
+            description: "Requested static PointF x/y value for set_point_value.",
+          },
+          color: {
+            type: "object", additionalProperties: false,
+            properties: {
+              red: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+              green: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+              blue: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+              alpha: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+            },
+            required: ["red", "green", "blue", "alpha"],
+            description: "Requested static Color RGBA value for set_color_value. Values are raw host components, not color-managed or rendered-appearance proof.",
+          },
+          expected_point_snapshot: {
+            type: "object", additionalProperties: false,
+            properties: {
+              project_id: { type: "string", minLength: 1, maxLength: 128 },
+              sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+              media_type: { type: "string", enum: ["video", "audio"] },
+              track_index: { type: "integer", minimum: 0 },
+              clip_index: { type: "integer", minimum: 0 },
+              component_index: { type: "integer", minimum: 0 },
+              component_id: { type: "string", minLength: 1, maxLength: 256 },
+              param_index: { type: "integer", minimum: 0 },
+              param_name: { type: "string", maxLength: 255 },
+              time_varying: { type: "boolean" },
+              point: {
+                type: "object", additionalProperties: false,
+                properties: {
+                  x: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+                  y: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+                },
+                required: ["x", "y"],
+              },
+            },
+            required: ["project_id", "sequence_id", "media_type", "track_index", "clip_index", "component_index", "component_id", "param_index", "param_name", "time_varying", "point"],
+            description: "Required for set_point_value; copy the complete inspect_point_value snapshot unchanged.",
+          },
+          expected_color_snapshot: {
+            type: "object", additionalProperties: false,
+            properties: {
+              project_id: { type: "string", minLength: 1, maxLength: 128 },
+              sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+              media_type: { type: "string", enum: ["video", "audio"] },
+              track_index: { type: "integer", minimum: 0 },
+              clip_index: { type: "integer", minimum: 0 },
+              component_index: { type: "integer", minimum: 0 },
+              component_id: { type: "string", minLength: 1, maxLength: 256 },
+              param_index: { type: "integer", minimum: 0 },
+              param_name: { type: "string", maxLength: 255 },
+              time_varying: { type: "boolean" },
+              color: {
+                type: "object", additionalProperties: false,
+                properties: {
+                  red: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+                  green: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+                  blue: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+                  alpha: { type: "number", minimum: -1_000_000, maximum: 1_000_000 },
+                },
+                required: ["red", "green", "blue", "alpha"],
+              },
+            },
+            required: ["project_id", "sequence_id", "media_type", "track_index", "clip_index", "component_index", "component_id", "param_index", "param_name", "time_varying", "color"],
+            description: "Required for set_color_value; copy the complete inspect_color_value snapshot unchanged.",
+          },
+          confirm_set_point: { type: "boolean", description: "Required true for set_point_value after reviewing the complete point snapshot." },
+          confirm_set_color: { type: "boolean", description: "Required true for set_color_value after reviewing the complete color snapshot." },
           time_seconds: { type: "number", minimum: 0, maximum: 86400 },
-          end_seconds: { type: "number", minimum: 0, maximum: 86400 },
+          end_seconds: { type: "number", minimum: 0, maximum: 86400, description: "Required with inspect_keyframe direction nearest as the documented native outTime, inspect_point_displacement as the strictly later PointF sample, and used as the inclusive end for remove_keyframe_range." },
           time_basis: { type: "string", enum: ["timeline_seconds", "clip_relative"] },
           interpolation: { type: "string", enum: ["linear", "hold", "bezier", "time"] },
+          keyframe_direction: { type: "string", enum: ["at", "next", "previous", "nearest"], description: "Required for inspect_keyframe. nearest requires end_seconds greater than or equal to time_seconds and passes both documented native lookup bounds to Premiere." },
+          expected_sequence_id: { type: "string", minLength: 1, maxLength: 128, description: "Required for set_time_varying; exact sequence ID from inspect_time_varying." },
+          expected_time_varying: { type: "boolean", description: "Required for set_time_varying; exact animation-mode value from inspect_time_varying." },
+          expected_keyframe_times_seconds: { type: "array", maxItems: 256, uniqueItems: true, items: { type: "number", minimum: 0, maximum: 86400 }, description: "Required complete, strictly increasing keyframe-time snapshot for set_time_varying." },
+          time_varying: { type: "boolean", description: "Requested parameter animation mode for set_time_varying." },
+          confirm_disable_time_varying: { type: "boolean", description: "Required true when set_time_varying disables animation, because Premiere can discard its editable animation state." },
           operation_id: operationId,
         },
         required: ["action", "media_type", "track_index", "clip_index", "component_index", "param_index"],
@@ -296,9 +648,98 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
           inspect: "parameters.inspect", set_value: "parameters.set", add_keyframe: "parameters.keyframeAdd",
           remove_keyframe: "parameters.keyframeRemove", remove_keyframe_range: "parameters.keyframeRemoveRange",
           set_interpolation: "parameters.keyframeInterpolation",
+          inspect_keyframe: "parameters.keyframe.inspect",
+          inspect_time_varying: "parameters.timeVarying.inspect", set_time_varying: "parameters.timeVarying.set",
+          inspect_point_value: "parameters.point.inspect", set_point_value: "parameters.point.set",
+          inspect_point_displacement: "parameters.point.displacement.inspect",
+          inspect_color_value: "parameters.color.inspect", set_color_value: "parameters.color.set",
         };
         if (!args.action || !commands[args.action]) return invalidAction(args.action);
-        return invoke(bridge, commands[args.action], { ...common, ...compact({ value: args.value, endSeconds: args.end_seconds, timeBasis: args.time_basis, interpolation: args.interpolation }), ...operation(args) });
+        if (args.action === "inspect_keyframe") {
+          return invoke(bridge, commands[args.action], { ...common, ...compact({ direction: args.keyframe_direction, endSeconds: toFiniteNumber(args.end_seconds) }) });
+        }
+        if (args.action === "inspect_time_varying") {
+          return invoke(bridge, commands[args.action], compact({
+            mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+            componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
+            expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
+          }));
+        }
+        if (args.action === "set_time_varying") {
+          return invoke(bridge, commands[args.action], {
+            ...compact({
+              mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+              componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
+              expectedSequenceId: args.expected_sequence_id, expectedComponentId: args.expected_component_id,
+              expectedParamName: args.expected_param_name, expectedTimeVarying: args.expected_time_varying,
+              expectedKeyframeTimesSeconds: args.expected_keyframe_times_seconds,
+              timeVarying: args.time_varying, confirmDisableTimeVarying: args.confirm_disable_time_varying,
+            }), ...operation(args),
+          });
+        }
+        if (args.action === "inspect_point_value") {
+          return invoke(bridge, commands[args.action], compact({
+            mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+            componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
+            expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
+          }));
+        }
+        if (args.action === "inspect_point_displacement") {
+          return invoke(bridge, commands[args.action], compact({
+            mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+            componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
+            expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
+            startSeconds: toFiniteNumber(args.time_seconds), endSeconds: toFiniteNumber(args.end_seconds),
+          }));
+        }
+        if (args.action === "set_point_value") {
+          const raw = args.expected_point_snapshot;
+          const snapshot = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+          if (!snapshot) return { success: false, error: "set_point_value requires expected_point_snapshot from inspect_point_value" };
+          return invoke(bridge, commands[args.action], {
+            mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+            componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
+            expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
+            point: args.point,
+            expectedSnapshot: {
+              projectId: snapshot.project_id, sequenceId: snapshot.sequence_id, mediaType: snapshot.media_type,
+              trackIndex: snapshot.track_index, clipIndex: snapshot.clip_index, componentIndex: snapshot.component_index,
+              componentId: snapshot.component_id, paramIndex: snapshot.param_index, paramName: snapshot.param_name,
+              timeVarying: snapshot.time_varying,
+              point: snapshot.point,
+            },
+            confirmSetPoint: args.confirm_set_point,
+            ...operation(args),
+          });
+        }
+        if (args.action === "inspect_color_value") {
+          return invoke(bridge, commands[args.action], compact({
+            mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+            componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
+            expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
+          }));
+        }
+        if (args.action === "set_color_value") {
+          const raw = args.expected_color_snapshot;
+          const snapshot = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+          if (!snapshot) return { success: false, error: "set_color_value requires expected_color_snapshot from inspect_color_value" };
+          return invoke(bridge, commands[args.action], {
+            mediaType: args.media_type, trackIndex: toInteger(args.track_index), clipIndex: toInteger(args.clip_index),
+            componentIndex: toInteger(args.component_index), paramIndex: toInteger(args.param_index),
+            expectedComponentId: args.expected_component_id, expectedParamName: args.expected_param_name,
+            color: args.color,
+            expectedSnapshot: {
+              projectId: snapshot.project_id, sequenceId: snapshot.sequence_id, mediaType: snapshot.media_type,
+              trackIndex: snapshot.track_index, clipIndex: snapshot.clip_index, componentIndex: snapshot.component_index,
+              componentId: snapshot.component_id, paramIndex: snapshot.param_index, paramName: snapshot.param_name,
+              timeVarying: snapshot.time_varying,
+              color: snapshot.color,
+            },
+            confirmSetColor: args.confirm_set_color,
+            ...operation(args),
+          });
+        }
+        return invoke(bridge, commands[args.action], { ...common, ...compact({ value: args.value, endSeconds: toFiniteNumber(args.end_seconds), timeBasis: args.time_basis, interpolation: args.interpolation }), ...operation(args) });
       },
     },
 
@@ -379,6 +820,58 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
       },
     },
 
+    inspect_sequence_structure_uxp: {
+      description: "Read a bounded native UXP timeline structure for one sequence: selected video and/or audio tracks with clip timing and state. Opt in to source Project-item IDs only when needed, then optionally classify those sources as sequence, merged, multicam, or offline or return their documented broad content category (any, sequence, or media); a further opt-in returns only a nested source sequence GUID when that classification is exactly sequence. No Project-panel metadata, names, type codes, paths, nested timeline content, or traversal are read. track_counts contains only the requested media types, never a zero placeholder for an unqueried type. The response is capped at 64 tracks and 512 items, omits components, rendered pixels, audio analysis, and caption cues, and is not a locked cross-object snapshot or proof of playback or editorial correctness.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+          expected_sequence_id: { type: "string", minLength: 1, maxLength: 128, description: "Optional stable sequence ID from a prior UXP snapshot. Rejects an active-sequence request if it changed." },
+          media_type: { type: "string", enum: ["all", "video", "audio"] },
+          track_indices: {
+            type: "array", minItems: 1, maxItems: 64, uniqueItems: true,
+            items: { type: "integer", minimum: 0, maximum: 1023 },
+          },
+          include_empty_tracks: { type: "boolean", description: "Return selected empty tracks instead of omitting them." },
+          include_source_project_items: { type: "boolean", description: "Opt in to each returned timeline clip's stable source Project-item ID. The default omits it; this never reads Project-panel metadata, names, types, or media paths." },
+          include_source_project_item_classification: { type: "boolean", description: "Requires include_source_project_items. Also return documented read-only source flags for sequence, merged-clip, multicam-clip, and offline status; unavailable flags are null. It never reads Project-panel metadata, names, types, paths, or project-tree state." },
+          include_source_project_item_content_type: { type: "boolean", description: "Requires include_source_project_items. Also return only the documented ClipProjectItem content category: any, sequence, or media; unavailable or unrecognized values are null. It never returns a Project-panel type code, name, metadata, path, or tree state." },
+          include_source_nested_sequence_identity: { type: "boolean", description: "Requires source Project-item IDs and classification. For a source classified exactly as a sequence, return only its documented nested sequence GUID; unavailable or non-sequence sources return null. It never reads the nested sequence's content or Project-panel state." },
+          max_items: { type: "integer", minimum: 1, maximum: 512, description: "Hard limit for all returned clip snapshots; the request fails rather than returning a partial timeline." },
+        },
+      },
+      handler: async (args: AdvancedArgs) => invoke(bridge, "timeline.structure.inspect", compact({
+        sequenceId: args.sequence_id, expectedSequenceId: args.expected_sequence_id,
+        mediaType: args.media_type, trackIndices: args.track_indices,
+        includeEmptyTracks: args.include_empty_tracks, includeSourceProjectItems: args.include_source_project_items,
+        includeSourceProjectItemClassification: args.include_source_project_item_classification,
+        includeSourceProjectItemContentType: args.include_source_project_item_content_type,
+        includeSourceNestedSequenceIdentity: args.include_source_nested_sequence_identity, maxItems: args.max_items,
+      })),
+    },
+
+    make_split_edit_uxp: {
+      description: "Create an undoable J-cut or L-cut by extending one aligned 1x audio item while preserving source sync, with atomic UXP actions and edge/source readback.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", enum: ["j_cut", "l_cut"] },
+          audio_track_index: { type: "integer", minimum: 0 }, audio_clip_index: { type: "integer", minimum: 0 },
+          video_track_index: { type: "integer", minimum: 0 }, video_clip_index: { type: "integer", minimum: 0 },
+          extension_seconds: { type: "number", minimum: 0.001, maximum: 60 },
+          operation_id: operationId,
+        },
+        required: ["kind", "audio_track_index", "audio_clip_index", "video_track_index", "video_clip_index", "extension_seconds"],
+      },
+      handler: async (args: AdvancedArgs) => invoke(bridge, "trackItem.splitEdit", {
+        kind: args.kind, audioTrackIndex: args.audio_track_index, audioClipIndex: args.audio_clip_index,
+        videoTrackIndex: args.video_track_index, videoClipIndex: args.video_clip_index,
+        extensionSeconds: args.extension_seconds, ...operation(args),
+      }),
+    },
+
     edit_timeline_uxp: {
       description: "Use the documented SequenceEditor to insert, overwrite, clone, remove, or insert MOGRT content without undocumented QE calls.",
       parameters: {
@@ -427,7 +920,7 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     manage_sequences_uxp: {
-      description: "Inspect, create-from-media, clone, derive, activate, open, close, or explicitly delete sequences through documented stable UXP APIs.",
+      description: "Inspect, create-from-media, clone, derive, activate, open, close, or explicitly delete sequences through documented stable UXP APIs. Each action accepts only its own parameters: inspect takes none and lists every sequence; clone/subsequence/activate/open/close/delete take sequence_id; create_from_media takes name and project_item_ids.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -445,18 +938,56 @@ export function getUxpAdvancedWorkflowTools(bridge: UxpWebSocketBridge) {
         required: ["action"],
       },
       handler: async (args: AdvancedArgs) => {
-        const common = compact({
-          sequenceId: args.sequence_id, expectedName: args.expected_name, name: args.name,
-          projectItemIds: args.project_item_ids, targetBinId: args.target_bin_id,
-          ignoreTrackTargeting: args.ignore_track_targeting, confirmNonUndoable: args.confirm_non_undoable,
-        });
         const commands: Record<string, string> = {
           inspect: "sequences.inspect", create_from_media: "sequences.createFromMedia", clone: "sequences.clone",
           subsequence: "sequences.subsequence", activate: "sequences.activate", open: "sequences.open",
           close: "sequences.close", delete: "sequences.delete",
         };
         if (!args.action || !commands[args.action]) return invalidAction(args.action);
-        return invoke(bridge, commands[args.action], { ...common, ...operation(args) });
+
+        // Each sequence command accepts a different argument set and rejects
+        // anything else, so forward only what the chosen action takes instead of
+        // blanket-forwarding every documented parameter.
+        const supplied: Record<string, unknown> = compact({
+          sequence_id: args.sequence_id, expected_name: args.expected_name, name: args.name,
+          project_item_ids: args.project_item_ids, target_bin_id: args.target_bin_id,
+          ignore_track_targeting: args.ignore_track_targeting, confirm_non_undoable: args.confirm_non_undoable,
+          operation_id: args.operation_id,
+        });
+        const hostNames: Record<string, string> = {
+          sequence_id: "sequenceId", expected_name: "expectedName", name: "name",
+          project_item_ids: "projectItemIds", target_bin_id: "targetBinId",
+          ignore_track_targeting: "ignoreTrackTargeting", confirm_non_undoable: "confirmNonUndoable",
+          operation_id: "operationId",
+        };
+        const accepted: Record<string, readonly string[]> = {
+          inspect: [],
+          create_from_media: ["name", "project_item_ids", "target_bin_id", "confirm_non_undoable", "operation_id"],
+          clone: ["sequence_id", "operation_id"],
+          subsequence: ["sequence_id", "ignore_track_targeting", "confirm_non_undoable", "operation_id"],
+          activate: ["sequence_id", "operation_id"],
+          open: ["sequence_id", "operation_id"],
+          close: ["sequence_id", "operation_id"],
+          delete: ["sequence_id", "expected_name", "confirm_non_undoable", "operation_id"],
+        };
+        const allowed = accepted[args.action];
+        const rejected = Object.keys(supplied).filter((key) => !allowed.includes(key));
+        if (rejected.length) {
+          return {
+            success: false,
+            error: allowed.length
+              ? `manage_sequences_uxp action "${args.action}" does not accept ${rejected.join(", ")}. It accepts: ${allowed.join(", ")}.`
+              : `manage_sequences_uxp action "${args.action}" takes no other parameters, so ${rejected.join(", ")} cannot be used. Call it with action alone; it returns every sequence in the active project with its ID and name.`,
+          };
+        }
+
+        return invoke(
+          bridge,
+          commands[args.action],
+          Object.fromEntries(allowed
+            .filter((key) => key in supplied)
+            .map((key) => [hostNames[key], supplied[key]])),
+        );
       },
     },
 

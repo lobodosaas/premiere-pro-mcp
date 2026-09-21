@@ -1,7 +1,8 @@
 import { buildToolScript } from "../bridge/script-builder.js";
 import { getTempDir, sendCommand, BridgeOptions } from "../bridge/file-bridge.js";
 import type { BrokerRuntimeReport } from "../bridge/broker-heartbeat.js";
-import { isToolPermitted, resolveCapabilities, type CapabilityConfig } from "../security/capabilities.js";
+import { resolveCapabilities, type CapabilityConfig } from "../security/capabilities.js";
+import { isToolPermitted } from "../security/index.js";
 import type { ServerBuildInfo } from "../build-info.js";
 import { buildPlatformCapabilityReport } from "../platform-capabilities.js";
 import { buildAdvancedFeatureSupport, type AdvancedFeatureBackend } from "../advanced-feature-support.js";
@@ -24,12 +25,6 @@ export interface HealthToolOptions {
   /** Broker self-report for endpoint diagnosis; absent outside broker mode. */
   brokerReport?: () => BrokerRuntimeReport | null;
 }
-
-const disabledTelemetry: Telemetry = {
-  enabled: false,
-  capture: () => {},
-  shutdown: async () => {},
-};
 
 type UxpDiagnostic = NonNullable<FirstRunReport["uxpDiagnostic"]>;
 
@@ -94,6 +89,12 @@ function buildUxpDiagnostic(
   };
 }
 
+const disabledTelemetry: Telemetry = {
+  enabled: false,
+  capture: () => {},
+  shutdown: async () => {},
+};
+
 export function getHealthTools(
   bridgeOptions: BridgeOptions,
   capabilities: CapabilityConfig = resolveCapabilities(),
@@ -154,11 +155,22 @@ export function getHealthTools(
       },
     },
     get_capabilities: {
-      description: "Report Windows/macOS support, Premiere Pro backend coverage, enabled authority, and whether live host verification is still required. Use tool_names or tool_offset/tool_limit to return a bounded tool catalog.",
+      description: "Discover Premiere operations and report backend coverage, authority, and verification requirements. Use tool_query with task keywords (for example transcript, captions, or review frames) for ranked, bounded matches available in this session. Use tool_names for exact lookups or tool_offset/tool_limit for paging. Discovery never grants authority or proves a live host is ready.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
         properties: {
+          tool_query: {
+            type: "string",
+            minLength: 1,
+            maxLength: 256,
+            pattern: "\\S",
+            description: "Optional case-insensitive keywords matched against tool names and descriptions. Exact names rank first. Search defaults to 20 results with descriptions and session availability; page with tool_offset/tool_limit.",
+          },
+          available_only: {
+            type: "boolean",
+            description: "Filter to tools registered under this session's authority and tool packs. Defaults to true for tool_query, false otherwise. Set false to diagnose unavailable matches; this does not enable them.",
+          },
           tool_names: {
             type: "array",
             items: { type: "string", minLength: 1, maxLength: 256 },
@@ -180,32 +192,51 @@ export function getHealthTools(
           },
         },
       },
-      handler: async (args: { tool_names?: string[]; tool_offset?: number; tool_limit?: number } = {}) => {
-        const toolPacks = options.toolPacks ?? resolveToolPacks();
+      handler: async (args: { tool_query?: string; available_only?: boolean; tool_names?: string[]; tool_offset?: number; tool_limit?: number } = {}) => {
+        if (args.tool_query !== undefined && (
+          typeof args.tool_query !== "string" || !args.tool_query.trim() || args.tool_query.length > 256
+        )) {
+          return { success: false, error: "tool_query must contain 1 through 256 characters and at least one non-whitespace character" };
+        }
+        const catalog = getToolCatalog();
+        const selection = options.toolPacks ?? resolveToolPacks();
         const report = buildPlatformCapabilityReport(
           capabilities,
           process.platform,
           getTempDir(bridgeOptions),
-          getToolCatalog(),
-          buildToolPackReport(toolPacks),
+          catalog,
+          buildToolPackReport(selection),
         );
+        const query = args.tool_query?.trim().toLowerCase();
+        const terms = query?.split(/[\s_\-]+/u).filter(Boolean) ?? [];
+        const availableOnly = args.available_only ?? (query !== undefined);
         const names = Array.isArray(args.tool_names) ? new Set(args.tool_names) : undefined;
-        const matchingTools = names
-          ? report.tools.tools.filter((tool) => names.has(tool.name))
-          : report.tools.tools;
+        const matchingTools = report.tools.tools.flatMap((tool) => {
+          if (names && !names.has(tool.name)) return [];
+          const registered = isToolPermitted(tool.name, capabilities) && isToolInSelectedPacks(tool.name, selection);
+          if (availableOnly && !registered) return [];
+          const description = catalog[tool.name]?.description ?? "";
+          const name = tool.name.toLowerCase();
+          const searchableDescription = description.toLowerCase();
+          const score = query === name ? 1000 : terms.reduce((sum, term) =>
+            sum + (name.includes(term) ? 3 : searchableDescription.includes(term) ? 1 : 0), 0);
+          if (query !== undefined && score === 0) return [];
+          return [{ tool, description, registered, score }];
+        });
+        if (query !== undefined) {
+          // Deterministic tie ordering keeps offset pagination stable.
+          matchingTools.sort((a, b) => b.score - a.score ||
+            (a.tool.name < b.tool.name ? -1 : a.tool.name > b.tool.name ? 1 : 0));
+        }
         const offset = Number.isInteger(args.tool_offset) && (args.tool_offset as number) >= 0 ? args.tool_offset as number : 0;
-        const hasExplicitPage = args.tool_limit !== undefined || args.tool_offset !== undefined;
+        const hasExplicitPage = query !== undefined || args.tool_limit !== undefined || args.tool_offset !== undefined;
         const limit = Number.isInteger(args.tool_limit) && (args.tool_limit as number) > 0
           ? Math.min(args.tool_limit as number, 128)
-          : matchingTools.length;
-        const page = hasExplicitPage ? matchingTools.slice(offset, offset + limit) : matchingTools;
-        // Annotate the pre-filter catalog with effective registration so an
-        // operator can tell "implemented" from "actually listed to this client".
-        const registeredPage = page.map((tool) => ({
-          ...tool,
-          registered: isToolPermitted(tool.name, capabilities)
-            && isToolInSelectedPacks(tool.name, toolPacks),
-        }));
+          : query !== undefined ? 20 : matchingTools.length;
+        const page = (hasExplicitPage ? matchingTools.slice(offset, offset + limit) : matchingTools)
+          .map(({ tool, description, registered }) => query !== undefined || args.available_only !== undefined
+            ? { ...tool, description, registered }
+            : tool);
 
         return {
           success: true,
@@ -222,23 +253,46 @@ export function getHealthTools(
               },
               broker: options.brokerReport?.() ?? { present: false },
               toolPacks: {
-                selected: toolPacks.fullCatalog ? ["full"] : [...toolPacks.selected],
-                fullCatalog: toolPacks.fullCatalog,
+                selected: selection.fullCatalog ? ["full"] : [...selection.selected],
+                fullCatalog: selection.fullCatalog,
               },
               uxp: summarizeUxpPanel(options.uxpBridge),
             },
+            ...(query !== undefined ? {
+              // The full Adobe inventories dominate the legacy response. A
+              // task search needs backend prerequisites, not every API symbol.
+              backends: {
+                cep: {
+                  status: report.backends.cep.status,
+                  platforms: report.backends.cep.platforms,
+                  premiereVersions: report.backends.cep.premiereVersions,
+                  hostVerificationRequired: report.premiere.hostVerificationRequired,
+                },
+                uxp: {
+                  status: report.backends.uxp.status,
+                  platforms: report.backends.uxp.platforms,
+                  premiereVersions: report.backends.uxp.premiereVersions,
+                  hostVerificationRequired: report.backends.uxp.hostVerificationRequired,
+                },
+              },
+              discovery: {
+                mode: "keyword_search",
+                detail: "summary",
+                note: "Detailed backend inventories are omitted from search. Omit tool_query to request the full report. Registered tools still require live prerequisites and action-level authority.",
+              },
+            } : {}),
             tools: {
               ...report.tools,
-              tools: registeredPage,
-              ...(names || hasExplicitPage
+              tools: page,
+              ...(names || hasExplicitPage || args.available_only !== undefined
                 ? {
                     pagination: {
                       offset,
                       limit,
-                      returned: registeredPage.length,
+                      returned: page.length,
                       totalMatching: matchingTools.length,
-                      hasMore: offset + registeredPage.length < matchingTools.length,
-                      nextOffset: offset + registeredPage.length < matchingTools.length ? offset + registeredPage.length : null,
+                      hasMore: offset + page.length < matchingTools.length,
+                      nextOffset: offset + page.length < matchingTools.length ? offset + page.length : null,
                     },
                   }
                 : {}),
@@ -318,8 +372,13 @@ export function getHealthTools(
           try {
             const script = buildToolScript(`
               var projectOpen = !!(app && app.project && typeof app.project.name !== "undefined");
-              var sequenceOpen = !!(projectOpen && __getCurrentActiveSequence());
-              return __result({ projectOpen: projectOpen, sequenceOpen: sequenceOpen });
+              // Use the same simple check the panel uses rather than __getCurrentActiveSequence(),
+              // which validates sequence presence in the project collection. The panel (which shares
+              // this host.jsx) and headless extension contexts can diverge on that stricter check
+              // even when Premiere truly has an active sequence. Align with the panel's boundary.
+              var sequenceOpen = !!(projectOpen && app.project.activeSequence);
+              var context = "cep_" + (typeof CSInterface !== "undefined" && CSInterface.getExtensionID ? String(CSInterface.getExtensionID()).split(".").pop() : "unknown");
+              return __result({ projectOpen: projectOpen, sequenceOpen: sequenceOpen, extensionContext: context });
             `);
             const response = await sendCommand(script, {
               ...bridgeOptions,

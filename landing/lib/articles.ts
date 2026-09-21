@@ -1,7 +1,13 @@
+import { product, sourceCatalog } from "./product"
+import { connectorSetup, localMcpConfig, localMcpEntry } from "./client-setup"
+
 export type ArticleSection = {
   heading: string
   paragraphs: string[]
   bullets?: string[]
+  steps?: string[]
+  codeBlocks?: Array<{ label: string; code: string }>
+  links?: Array<{ label: string; href: string }>
 }
 
 export type ArticleFaq = {
@@ -12,6 +18,7 @@ export type ArticleFaq = {
 export type Article = {
   slug: string
   title: string
+  seoTitle?: string
   description: string
   eyebrow: string
   publishedAt: string
@@ -22,11 +29,450 @@ export type Article = {
   faqs: ArticleFaq[]
   resources: Array<{ label: string; href: string }>
   relatedSlugs?: string[]
+  workflowKit?: string
 }
 
 export const articles: Article[] = [
   {
+    slug: "claude-fable-5-1-premiere-pro-mcp",
+    title: "How to Use Claude Fable 5.1 with Premiere Pro MCP",
+    seoTitle: "Claude Fable 5.1 Premiere Pro MCP",
+    description:
+      "Select Claude Fable 5.1 in Cursor or another compatible client after the local Premiere Pro MCP connection is verified. Discover tools, serialize timeline changes, and keep image review separate from playback proof.",
+    eyebrow: "Claude Fable 5.1 workflows",
+    publishedAt: "2026-09-18",
+    modifiedAt: "2026-09-18",
+    readingTime: "7 min read",
+    workflowKit: "project-check",
+    keywords: [
+      "Claude Fable 5.1 Premiere Pro",
+      "Claude Fable 5.1 Premiere Pro MCP",
+      "Cursor Fable 5.1 Premiere",
+      "claude-fable-5-1 MCP",
+    ],
+    sections: [
+      {
+        heading: "Choose Fable 5.1 after the local connection exists",
+        paragraphs: [
+          "Claude Fable 5.1 is a client model you can use with Premiere Pro MCP. It does not replace the local server, the Premiere connector, or the read-only connection check. Install Cursor, Claude Desktop, or Claude Code with this project's published package, then select Claude Fable 5.1 (`claude-fable-5-1`) when your account has access.",
+          "Fable 5.1 is optional. Other Claude models can call the same MCP tools. Use it for longer-horizon inspect, plan, and verify sessions. A model switch does not prove that Premiere is ready, and this server does not run an Anthropic model itself.",
+        ],
+        links: [
+          { label: "Set up Cursor with Premiere Pro MCP", href: "/blog/cursor-premiere-pro-mcp-setup/" },
+          { label: "Set up Claude Desktop", href: "/blog/claude-desktop-premiere-pro-mcp-setup/" },
+          { label: "Install the published npm package", href: "/blog/install-premiere-pro-mcp-npm/" },
+        ],
+      },
+      {
+        heading: "Enable the model without confusing it for a privacy guarantee",
+        paragraphs: [
+          "Keep the assistant, MCP server, connector, and Premiere on the same computer. A Cursor cloud agent or remote environment does not automatically reach the Premiere project on your desktop. The public website is not a relay to your workstation.",
+          "If Cursor Privacy Mode is on, or you are on an Enterprise plan, an admin must approve Fable 5.1's Anthropic data-retention policy in the Cursor Dashboard before the model appears. Enabling the model does not change Cursor Privacy Mode. Local-first still means tool arguments and results travel through the client to the model provider, including review frames, transcripts, and project context you allow the assistant to send.",
+        ],
+        steps: [
+          "Complete the Cursor or Claude setup for this package and enable one Premiere Pro MCP entry.",
+          "Approve the Fable 5.1 data-retention policy if Cursor requires it for your account.",
+          "Select Claude Fable 5.1. Use the client's thinking or high-effort option only if you want it; the MCP server does not turn thinking on.",
+          "Start a new local Agent conversation and run the read-only connection check below.",
+        ],
+        links: [
+          { label: "Cursor Claude Fable 5.1 documentation", href: "https://cursor.com/docs/models/claude-fable-5-1" },
+          { label: "Anthropic Claude Fable 5.1 overview", href: "https://platform.claude.com/docs/en/models/fable-5-1/overview" },
+        ],
+      },
+      {
+        heading: "Discover the authorized tools before proposing an edit",
+        paragraphs: [
+          "Ask Fable 5.1 to inspect the tools registered for this session. `get_capabilities` is lexical search over names and descriptions, not semantic search. Exact names rank first. Results report registration, backend support, authority requirements, and the verification boundary. A listed tool is not proof that the matching host action succeeded.",
+          "Search defaults to registered tools. Set available_only to false only when diagnosing withheld tools; that response cannot enable them. Packs narrow registration and do not load hidden operations.",
+        ],
+        codeBlocks: [
+          {
+            label: "First request in Cursor",
+            code: "Safely check my Premiere connection with verify_premiere_connection. Make no changes.",
+          },
+          {
+            label: "Compact tool discovery",
+            code: 'Call get_capabilities with {"tool_query":"transcript","tool_limit":10}. Summarize registered tools, backend requirements, and anything still unverified. Make no Premiere changes.',
+          },
+        ],
+        links: [{ label: "Search tool names and availability", href: "/tools/" }],
+      },
+      {
+        heading: "Keep a long Fable 5.1 session reviewable",
+        paragraphs: [
+          "Fable 5.1 is built for multi-step work. Premiere still has one live project state. Serialize operations that change selection, playhead, or the timeline. After an uncertain result, inspect before retrying. Re-check project and sequence identity if Premiere restarted or the session ran a long time.",
+          "Use captured context and preview/apply routes with their exact plan, token, and approval requirements. Transcripts and metadata are evidence, not permission to widen scope. Cursor may fall back to Claude Opus when Fable 5.1's safeguards refuse a request. That is a client routing decision, not a Premiere connection failure. Check which model ran before treating the rest of the session as one verified Fable 5.1 pass.",
+        ],
+        bullets: [
+          "Name the sequence, tracks, clips, and no-change boundary in every mutating request.",
+          "Preview where the tool supports it, then approve only the exact change you reviewed.",
+          "Inspect returned timeline state after each write. Image review of exported frames is not playback, audio, or delivery proof.",
+          "Do not enable unsafe scripting or bypass existing edit guards to \"keep the agent moving.\"",
+        ],
+        links: [
+          { label: "Evaluate with synthetic starter media", href: "/workflows/" },
+          { label: "Follow the connection recovery checklist", href: "/docs/troubleshooting/" },
+        ],
+      },
+    ],
+    faqs: [
+      {
+        question: "Does Premiere Pro MCP require Claude Fable 5.1?",
+        answer:
+          "No. Fable 5.1 is an optional client model. Cursor, Claude Desktop, and Claude Code can use other available Claude models with the same local MCP tools after the connector is installed and the read-only connection check succeeds.",
+      },
+      {
+        question: "Does local-first mean Anthropic never sees my project?",
+        answer:
+          "No. Premiere, the connector, and media stay on your computer, but tool calls still send structured results through the client. Review Cursor's and Anthropic's Fable 5.1 data-retention terms before including transcripts, review frames, or project context.",
+      },
+      {
+        question: "What if Cursor switches to Opus during a Premiere task?",
+        answer:
+          "Cursor can route a refused Fable 5.1 request to Claude Opus so the chat continues. Re-read the tool result, confirm the target sequence, and do not treat the fallback as proof that the original Premiere operation succeeded.",
+      },
+    ],
+    resources: [
+      { label: "Cursor setup for this package", href: "/blog/cursor-premiere-pro-mcp-setup/" },
+      { label: "Claude Desktop setup", href: "/blog/claude-desktop-premiere-pro-mcp-setup/" },
+      { label: "Repository Fable 5.1 workflow notes", href: `${product.links.repository}/blob/main/docs/claude-fable-5-1.md` },
+      { label: "Cursor Claude Fable 5.1 documentation", href: "https://cursor.com/docs/models/claude-fable-5-1" },
+    ],
+    relatedSlugs: [
+      "cursor-premiere-pro-mcp-setup",
+      "claude-desktop-premiere-pro-mcp-setup",
+      "how-to-set-up-premiere-pro-mcp",
+    ],
+  },
+  {
+    slug: "install-premiere-pro-mcp-npm",
+    title: "How to Install premiere-pro-mcp from npm (Package Name Check)",
+    seoTitle: "Install premiere-pro-mcp from npm — Package Name Verification",
+    description: "Install premiere-pro-mcp@1.16.3 from npm, verify its package identity, connect the local CEP panel, and run a read-only Premiere connection check.",
+    eyebrow: "npm install guide",
+    publishedAt: "2026-09-15",
+    modifiedAt: "2026-09-18",
+    readingTime: "6 min read",
+    keywords: [
+      "premiere pro mcp install",
+      "how to install premiere pro mcp",
+      "npm premiere-pro-mcp",
+      "premiere-pro-mcp install",
+      "premiere pro mcp npm",
+      "adobe-premiere-pro-mcp package",
+    ],
+    sections: [
+      {
+        heading: "Who this guide is for",
+        paragraphs: [
+          "Use this guide when your MCP client needs a local npm server for Adobe Premiere Pro — Cursor, VS Code / Copilot, Windsurf, or another desktop client that accepts a command entry. If you can use the Claude Desktop bundle, prefer that path on the homepage install section; this page is the exact package route for npm.",
+          "Current public package: premiere-pro-mcp@1.16.3 (MIT, free).",
+        ],
+        links: [
+          { label: "Homepage install section", href: "/#install" },
+          { label: "Check release requirements", href: "/facts/" },
+        ],
+      },
+      {
+        heading: "Exact package name",
+        paragraphs: [
+          "Install this project with the unscoped name. Run these checks from a directory outside an existing source checkout: npm can otherwise prefer a local installation over the downloaded executable.",
+        ],
+        codeBlocks: [
+          { label: "Install the package with version pin", code: "npm i -g premiere-pro-mcp@1.16.3" },
+        ],
+      },
+      {
+        heading: "Verify the package behind the command",
+        paragraphs: [
+          "This project's package is premiere-pro-mcp, not adobe-premiere-pro-mcp.",
+          "Both packages can expose a command named premiere-pro-mcp. A copied install tip or an older global binary can therefore start the wrong project. Before you configure a client:",
+        ],
+        steps: [
+          "Confirm the package name is premiere-pro-mcp.",
+          "Use npx --yes premiere-pro-mcp@1.16.3 in client configuration to select the intended package and version.",
+          "Expect version 1.16.3, homepage premiere-pro-mcp.com, and source leancoderkavy/premiere-pro-mcp.",
+        ],
+        bullets: [
+          "Both projects are separate open-source efforts; choose the package that matches the documentation you are following.",
+          "For a side-by-side package comparison, see premiere-pro-mcp vs adobe-premiere-pro-mcp.",
+        ],
+        codeBlocks: [
+          { label: "Verify the pinned package identity", code: "npm view premiere-pro-mcp@1.16.3 name version homepage repository.url bin --json\nnpx --yes premiere-pro-mcp@1.16.3 --version" },
+        ],
+        links: [
+          { label: "Compare packages side-by-side", href: "/blog/premiere-pro-mcp-vs-adobe-premiere-pro-mcp/" },
+        ],
+      },
+      {
+        heading: "Prerequisites",
+        bullets: [
+          "Node.js 20.19+ for the npm/npx route",
+          "Adobe Premiere Pro 2020–2026 on macOS or Windows",
+          "CEP connector as the default public first-run path (signed CEP package or --install-cep)",
+          "UXP is capability-gated for compatible Premiere 25.6.0+ workflows; it is not the default installer and does not replace CEP for first setup",
+        ],
+        paragraphs: [
+          "Claude Desktop remains the recommended easiest start when you want a self-contained bundle.",
+        ],
+        links: [
+          { label: "Claude Desktop setup", href: "/blog/claude-desktop-premiere-pro-mcp-setup/" },
+          { label: "Cursor setup", href: "/blog/cursor-premiere-pro-mcp-setup/" },
+          { label: "Codex setup", href: "/blog/codex-premiere-pro-mcp-setup/" },
+          { label: "Full safe setup guide", href: "/blog/how-to-set-up-premiere-pro-mcp/" },
+        ],
+      },
+      {
+        heading: "Install the Premiere connector (CEP-first)",
+        paragraphs: [
+          "Your assistant talks to Premiere through a separate local connector. Fully quit Premiere before running the versioned installer below.",
+          "Alternatively, download the signed CEP package from the v1.16.3 release and open it with a trusted ZXP installer.",
+          "Then reopen Premiere and restart your assistant. Open a disposable project with an active sequence. In Premiere, confirm Window → Extensions → MCP for Adobe Premiere Pro.",
+        ],
+        codeBlocks: [
+          { label: "Install CEP connector with versioned command", code: "npx --yes premiere-pro-mcp@1.16.3 --install-cep" },
+        ],
+        links: [
+          { label: "v1.16.3 release", href: "https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.16.3" },
+        ],
+      },
+      {
+        heading: "Configure the MCP client (versioned command)",
+        paragraphs: [
+          "For clients that use an mcpServers JSON object, merge this entry into the existing configuration. Preserve other server entries. Other clients, including Codex, use their own configuration format; follow the linked client guide.",
+          "Keep Premiere, the connector, and the client on the same computer. Restart the client after saving settings.",
+        ],
+        codeBlocks: [
+          {
+            label: "Client MCP configuration example",
+            code: `{
+  "mcpServers": {
+    "premiere-pro-leancoderkavy": {
+      "command": "npx",
+      "args": ["--yes", "premiere-pro-mcp@1.16.3"]
+    }
+  }
+}`,
+          },
+        ],
+      },
+      {
+        heading: "Safe first prompt (no edits)",
+        paragraphs: [
+          "Open a project and ask:",
+          "A verified connection still depends on a live local host bridge. Preview supported edits before you apply them.",
+        ],
+        codeBlocks: [
+          { label: "First request", code: "Safely check my Premiere connection with verify_premiere_connection. Make no changes." },
+        ],
+      },
+      {
+        heading: "If it does not connect",
+        paragraphs: [
+          "Work through Setup & recovery: restart both apps, confirm an active sequence, confirm the CEP panel is available, then re-run the safe prompt. Share connection state with support — not project media.",
+          "If the version command reports something other than 1.16.3, repeat it outside any existing repository or Node project. Also check the MCP client's working directory for an older local installation before trusting its tool list.",
+        ],
+        links: [
+          { label: "Connection troubleshooting", href: "/docs/troubleshooting/" },
+        ],
+      },
+    ],
+    faqs: [
+      {
+        question: "Is premiere-pro-mcp the same as adobe-premiere-pro-mcp?",
+        answer: "No. Different packages and repositories. Both may register a premiere-pro-mcp command — verify the package name.",
+      },
+      {
+        question: "Should I install from Creative Cloud Marketplace?",
+        answer: "No Marketplace listing is required for this project's CEP default path. Follow the release connector or --install-cep.",
+      },
+      {
+        question: "Does install upload my footage?",
+        answer: "The recommended setup is local-first. The bridge exchanges commands and structured results; your assistant's separate privacy settings still apply.",
+      },
+      {
+        question: "Is speech-to-text / STT included in 1.16.3?",
+        answer: "Guarded Speech-to-Text start and caption style guidance are in public npm 1.16.3. They do not establish a completed transcription or a licensed-host result.",
+      },
+      {
+        question: "Does this guide install unreleased tools from main?",
+        answer: "No. These commands select the published 1.16.3 package. Check the product facts page for the separate released and development catalogs.",
+      },
+    ],
+    resources: [
+      { label: "Homepage install", href: "/#install" },
+      { label: "Documentation", href: "/docs/" },
+      { label: "Product facts", href: "/facts/" },
+      { label: "Tool reference", href: "/tools/" },
+      { label: "npm package", href: "https://www.npmjs.com/package/premiere-pro-mcp" },
+      { label: "GitHub repository", href: "https://github.com/leancoderkavy/premiere-pro-mcp" },
+    ],
+    relatedSlugs: [
+      "premiere-pro-mcp-vs-adobe-premiere-pro-mcp",
+      "how-to-set-up-premiere-pro-mcp",
+      "claude-desktop-premiere-pro-mcp-setup",
+      "claude-fable-5-1-premiere-pro-mcp",
+    ],
+  },
+  {
+    slug: "cursor-premiere-pro-mcp-setup",
+    title: "How to Set Up Cursor with Premiere Pro MCP",
+    seoTitle: "Cursor Premiere Pro MCP Setup",
+    description: "Connect Cursor to local Premiere Pro with a versioned MCP configuration, install the CEP connector, and verify the bridge before editing a project.",
+    eyebrow: "Cursor Premiere Pro setup",
+    publishedAt: "2026-09-10",
+    modifiedAt: "2026-09-10",
+    readingTime: "5 min read",
+    keywords: ["Cursor Premiere Pro MCP", "Cursor Premiere Pro", "Premiere Pro MCP tools", "Cursor mcp.json"],
+    sections: [
+      {
+        heading: "Use Cursor on the computer running Premiere",
+        paragraphs: [
+          "Cursor can call this project's local MCP server, which passes supported operations to the separate Premiere connector. Install Cursor, Node.js, the MCP server, and the connector on the computer running your licensed Premiere application. Begin with a disposable project and an active sequence.",
+          "This guide uses a local stdio process. A Cursor cloud agent or a remote development environment does not automatically have access to the Premiere project on your desktop. The public product website is not a relay to your workstation.",
+        ],
+        links: [{ label: "Check release requirements and package provenance", href: "/facts/" }],
+      },
+      {
+        heading: "Install and diagnose the Premiere connector",
+        paragraphs: [
+          `Use Node.js ${product.nodeVersion}+ and run these commands in a local terminal. Fully quit Premiere before installing its connector. The versioned npm command selects premiere-pro-mcp from leancoderkavy; adobe-premiere-pro-mcp is a separate package whose global executable has the same name.`,
+          "Restart Premiere, open Window > Extensions > MCP for Adobe Premiere Pro, and open your test project. The doctor command reports setup diagnostics; it does not prove that Cursor has reached the current Premiere session.",
+        ],
+        codeBlocks: [{ label: "Install the CEP connector and inspect diagnostics", code: connectorSetup }],
+        links: [{ label: "Compare the two Premiere MCP packages", href: "/blog/premiere-pro-mcp-vs-adobe-premiere-pro-mcp/" }],
+      },
+      {
+        heading: "Add one MCP entry to Cursor",
+        paragraphs: [
+          "Cursor supports project settings in .cursor/mcp.json and user-wide settings in ~/.cursor/mcp.json. Choose one scope. Merge this entry with existing mcpServers rather than replacing the whole file, then enable the server from Cursor's Customize page.",
+          "The first run may download the pinned npm release. If you already configured a different Premiere MCP entry, disable it while evaluating this one so the assistant does not receive two overlapping tool sets. Keep each project's connector and configuration together.",
+        ],
+        codeBlocks: [{ label: "Cursor mcp.json entry for this published package", code: JSON.stringify({ mcpServers: { "premiere-pro-leancoderkavy": { type: "stdio", ...localMcpEntry } } }, null, 2) }],
+        links: [{ label: "Cursor's official MCP configuration reference", href: "https://cursor.com/docs/mcp" }],
+      },
+      {
+        heading: "Verify the connection before a timeline edit",
+        paragraphs: [
+          "In a local Cursor Agent conversation, request the connection tool explicitly. Inspect the returned project, active sequence, connector, and readiness diagnostics. A tool listed by Cursor has been advertised by the server; it is not evidence that the corresponding host action has succeeded.",
+          "After the read-only check succeeds, choose a small inspection or preview workflow from the starter kit. Review arguments and results before approving a mutation. The tool reference explains source action names and availability, while your running session determines which calls are available.",
+        ],
+        codeBlocks: [{ label: "First request in Cursor", code: "Safely check my Premiere connection with verify_premiere_connection. Make no changes." }],
+        links: [{ label: "Search tool names and availability", href: "/tools/" }, { label: "Evaluate with synthetic starter media", href: "/workflows/" }],
+      },
+      {
+        heading: "Resolve setup failures from the returned evidence",
+        paragraphs: ["Check the failing layer before retrying. Keep screenshots and reports free of private project paths, tokens, and client footage."],
+        bullets: [
+          "Server cannot start: confirm Node.js and npx are available to the local Cursor process. Restart Cursor after installing Node, and inspect the MCP startup output.",
+          "Invalid configuration: check JSON syntax, preserve existing entries, and confirm you edited the intended user or project settings file.",
+          "Tools appear but Premiere is disconnected: restart the CEP panel, open a project, and rerun the read-only connection check.",
+          "A UXP tool is absent: it requires an authenticated compatible UXP panel with the required host capability. The default CEP setup does not advertise every UXP addition.",
+        ],
+        links: [{ label: "Follow the connection recovery checklist", href: "/docs/troubleshooting/" }],
+      },
+    ],
+    faqs: [
+      { question: "Does Cursor need a remote MCP URL to edit local Premiere?", answer: "No. This guide uses local stdio so Cursor starts the server beside Premiere. The separate CEP connector is still required." },
+      { question: "Where does the Cursor MCP configuration go?", answer: "Use .cursor/mcp.json in the project or ~/.cursor/mcp.json for user-wide settings. Choose one scope and preserve existing server entries." },
+      { question: "Will the configuration change my Premiere project?", answer: "Adding the server does not itself request an edit. Later tool calls can change a project, so start with verify_premiere_connection and review each proposed operation." },
+      { question: "Can I use Claude Fable 5.1 after this setup?", answer: "Yes, when your Cursor account can select Claude Fable 5.1. Complete this local connection first, then follow the Fable 5.1 workflow guide. The model is optional and does not replace the connector or the read-only check." },
+    ],
+    resources: [
+      { label: "Official Cursor MCP documentation", href: "https://cursor.com/docs/mcp" },
+      { label: "Use Claude Fable 5.1 with this connection", href: "/blog/claude-fable-5-1-premiere-pro-mcp/" },
+      { label: "npm versioned package execution", href: "https://docs.npmjs.com/cli/v11/commands/npx/" },
+      { label: "Our source repository", href: product.links.repository },
+    ],
+    relatedSlugs: ["claude-fable-5-1-premiere-pro-mcp", "how-to-set-up-premiere-pro-mcp", "codex-premiere-pro-mcp-setup", "premiere-pro-mcp-vs-adobe-premiere-pro-mcp"],
+  },
+  {
+    slug: "premiere-pro-mcp-vs-adobe-premiere-pro-mcp",
+    seoTitle: "Compare Two Premiere MCP Packages",
+    title: "premiere-pro-mcp vs adobe-premiere-pro-mcp: Packages, Setup, and Workflows",
+    description: "Compare leancoderkavy and hetpatel-11's separate Premiere MCP projects, verify the npm package, and evaluate the same workflow before switching.",
+    eyebrow: "Package comparison",
+    publishedAt: "2026-09-09",
+    modifiedAt: "2026-09-10",
+    readingTime: "6 min read",
+    keywords: ["premiere-pro-mcp vs adobe-premiere-pro-mcp", "Premiere MCP comparison", "hetpatel Premiere MCP", "Premiere MCP package setup"],
+    sections: [
+      {
+        heading: "Two repositories, two packages, one command name",
+        paragraphs: [
+          "MCP for Adobe Premiere Pro is maintained at leancoderkavy/premiere-pro-mcp and published as premiere-pro-mcp. The separate hetpatel-11/Adobe_Premiere_Pro_MCP repository publishes adobe-premiere-pro-mcp. Installing one package does not install the other project.",
+          "Both packages declare an executable named premiere-pro-mcp. A copied command or an existing global executable can therefore be ambiguous. Check the package identity and use the matching connector and client instructions. This comparison is written by the maintainers of the leancoderkavy project. We inspected the other project's README and package metadata at commit ee31c3d on September 9, 2026; we did not run its tools inside Premiere.",
+        ],
+        codeBlocks: [{ label: "Read public package identity without installing either package", code: "npm view premiere-pro-mcp name version repository.url bin --json\nnpm view adobe-premiere-pro-mcp name version repository.url bin --json" }],
+        links: [
+          { label: "leancoderkavy repository", href: product.links.repository },
+          { label: "hetpatel-11 package at the inspected commit", href: "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/blob/ee31c3def7c3ca1c68662ea7737a9f8e5a2b634f/package.json" },
+        ],
+      },
+      {
+        heading: "Compare workflow scope and evidence",
+        paragraphs: [
+          `Our published v${product.version} artifact contains ${product.coreToolCount} core tools. Its source includes revision-bound editorial planning, a project-intake preview, review-frame workflows, local media and delivery analysis, and guarded After Effects handoff routes. Those are different kinds of capabilities: a local plan is not a timeline mutation, and an import receipt is not playback or render proof.`,
+          "At the inspected commit, hetpatel-11's README describes 283 catalog tools, including search_tools, get_tool_schema, and invoke_tool, plus 13 resources and 10 guided prompts. It emphasizes CEP workflows including product-spot assembly and a live tool sweep. It reports active use and testing on Premiere 26.0 and calls UXP experimental. These are the maintainer's documented claims, not our independent host test results.",
+          "The catalog counts use different groupings and are not a feature-quality score. Both projects offer a local CEP route and require a compatible Premiere installation. Evaluate the operations you need, their prerequisites, and what their returned results actually establish.",
+        ],
+        links: [
+          { label: "Our published package facts and provenance", href: "/facts/" },
+          { label: "Search our supported action contracts", href: "/tools/" },
+          { label: "Other project's README at the inspected commit", href: "https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP/blob/ee31c3def7c3ca1c68662ea7737a9f8e5a2b634f/README.md" },
+        ],
+      },
+      {
+        heading: "Evaluate the same small project in each",
+        paragraphs: ["Use a copied project and the same source media, requested outcome, host version, and operating system for each evaluation. Record the installed package version and connector. Never turn a planned operation or an accepted host response into a completed-edit claim."],
+        steps: [
+          "Start with verify_premiere_connection and request no changes. Record whether the intended project and sequence are ready.",
+          "Inspect one sequence. Compare the report with Premiere and note omissions, stale state, or unsupported operations.",
+          "Request one product-spot preview or another bounded workflow. Check source ranges, tracks, prerequisites, and whether approval is required before any writes.",
+          "If testing an edit, explicitly approve the exact change in the disposable project. Inspect the timeline, Undo behavior, save/reopen result, and playback separately.",
+          "If testing delivery, inspect the exported file separately. Record elapsed time and failures for this fixture; a single run is not a general speed benchmark.",
+        ],
+        links: [{ label: "Download our synthetic workflow starter kit", href: "/workflows/" }],
+      },
+      {
+        heading: "Switch without mixing configurations",
+        paragraphs: [
+          "Save a copy of your client configuration and note which package and connector it starts. Stop that MCP entry and its panel before testing a replacement. Follow the chosen repository's installation instructions; do not assume the connectors, environment variables, or tool names are interchangeable.",
+          "For this project, the Claude Desktop bundle and its separate Premiere connector are the documented release route. In v1.15.1 and later, the --print-client-config helper emits a client entry pointing at the current Node executable and server file. It writes no files. Use it to configure an exact local installation for your client.",
+          "Merge the generated entry into existing settings and preserve other servers. Its local paths may contain your user name; keep the output private. A moved checkout or Node installation requires a refreshed entry. Restart your client and repeat the read-only connection check before editing.",
+        ],
+        links: [
+          { label: "Release setup guide", href: "/blog/how-to-set-up-premiere-pro-mcp/" },
+          { label: "Source configuration helper and commands", href: `${product.links.repository}/blob/main/docs/client-configuration.md` },
+          { label: "Connection troubleshooting", href: "/docs/troubleshooting/" },
+        ],
+      },
+      {
+        heading: "Share a reproducible result",
+        paragraphs: [
+          "After a successful evaluation, a useful contribution is a short account of the workflow, package version, OS, Premiere build, expected result, and observed result. Use synthetic material; exclude client media, paths, tokens, and private transcripts from public reports.",
+          "If this project is useful to you, a GitHub star helps others discover it. The starter kit, installation, and contribution process remain available without a star. Independent workflow reports are more informative than catalog size alone.",
+        ],
+        links: [{ label: "View or star our repository", href: product.links.repository }],
+      },
+    ],
+    faqs: [
+      { question: "Are premiere-pro-mcp and adobe-premiere-pro-mcp the same package?", answer: "No. premiere-pro-mcp belongs to leancoderkavy/premiere-pro-mcp; adobe-premiere-pro-mcp belongs to hetpatel-11/Adobe_Premiere_Pro_MCP. They both declare a premiere-pro-mcp command, so verify the package and repository before installation." },
+      { question: "Does the larger catalog prove that one works better?", answer: "No. Catalog registrations, sub-actions, local plans, and host operations have different scopes. Compare the same workflow on your intended Premiere version and verify the result." },
+      { question: "Can either hosted website edit the Premiere project on my computer?", answer: "A website or repository alone cannot establish a local Premiere connection. Follow the selected project's local server and connector setup. This project's hosted endpoint does not automatically pair with a visitor's computer." },
+    ],
+    resources: [
+      { label: "Our npm package", href: product.links.npm },
+      { label: "Other project's npm package", href: "https://www.npmjs.com/package/adobe-premiere-pro-mcp" },
+      { label: "Our package facts", href: "/facts/" },
+      { label: "npm executable mapping", href: "https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#bin" },
+    ],
+    relatedSlugs: ["how-to-set-up-premiere-pro-mcp", "premiere-pro-ai-workflow-checklist"],
+  },
+  {
     slug: "premiere-pro-project-intake-checklist",
+    seoTitle: "Project Intake Checklist",
     title: "Premiere Pro Project Intake Checklist: Prepare a Read-Only Review Before Organizing Media",
     description:
       "Use this assistant-editor checklist to prepare a bounded, read-only Premiere Pro Project Intake preview with an approved facility template, clear scope, and review steps.",
@@ -126,6 +572,7 @@ export const articles: Article[] = [
   },
   {
     slug: "premiere-pro-project-backup-checklist",
+    seoTitle: "Project Backup Checklist",
     title: "Premiere Pro Project Backup Checklist: Make a Verifiable Copy Before High-Risk Changes",
     description:
       "Use this practical checklist to create and verify a separate Premiere Pro project backup before testing automation, major reorganization, or a delivery-critical change.",
@@ -207,12 +654,14 @@ export const articles: Article[] = [
   },
   {
     slug: "premiere-pro-review-frames-and-scene-detection",
+    seoTitle: "Review Frames & Scene Detection",
+    workflowKit: "review-frames",
     title: "Premiere Pro Review Frames and Scene Detection: Build a Faster Human Review Pass",
     description:
       "Create a bounded Premiere Pro review pass with file-verified sequence frames, clip midpoint samples, and source-relative scene-change candidates—without mistaking samples for editorial approval.",
     eyebrow: "Visual review workflow",
     publishedAt: "2026-08-23",
-    modifiedAt: "2026-08-23",
+    modifiedAt: "2026-09-04",
     readingTime: "7 min read",
     keywords: [
       "Premiere Pro review frames",
@@ -221,6 +670,7 @@ export const articles: Article[] = [
       "Premiere Pro clip review checklist",
     ],
     sections: [
+      { heading: "Try this with disposable sample media", paragraphs: ["The downloadable workflow starter kit contains two synthetic video clips, a caption sample, and step-by-step evaluation prompts. Build a disposable sequence and compare the result with the checklist. The kit is not a recorded demonstration or a verified Premiere project; report any failed or unsupported check accurately."], bullets: ["Install the server and separate Premiere connector before trying the kit.", "Start with a read-only connection check and stop if it is not ready.", "Keep file exports and project changes behind their own explicit confirmation."] },
       {
         heading: "Use sampled frames to focus an editor’s review, not to replace it",
         paragraphs: [
@@ -283,6 +733,7 @@ export const articles: Article[] = [
   },
   {
     slug: "premiere-pro-delivery-qc-and-loudness-checklist",
+    seoTitle: "Delivery QC & Loudness Checklist",
     title: "Premiere Pro Delivery QC and Loudness Checklist: Inspect the Exact File Before Handoff",
     description:
       "Use a practical delivery checklist for black and freeze findings, loudness measurement, and non-overwriting normalization—while keeping subjective mix and editorial approval with a human reviewer.",
@@ -366,15 +817,18 @@ export const articles: Article[] = [
   },
   {
     slug: "premiere-pro-ai-workflow-checklist",
+    seoTitle: "AI Workflow Checklist",
+    workflowKit: "project-check",
     title: "Premiere Pro AI Workflow Checklist: Evaluate Automation Before It Touches a Project",
     description:
       "Use this practical checklist to evaluate an AI-assisted Adobe Premiere Pro workflow: define the boundary, verify the connection, preview the change, and inspect the result.",
     eyebrow: "Premiere Pro AI workflow checklist",
     publishedAt: "2026-08-22",
-    modifiedAt: "2026-08-22",
+    modifiedAt: "2026-09-04",
     readingTime: "6 min read",
     keywords: ["Premiere Pro AI workflow checklist", "Premiere Pro automation checklist", "AI-assisted video editing workflow"],
     sections: [
+      { heading: "Try this with disposable sample media", paragraphs: ["The downloadable workflow starter kit contains two synthetic video clips, a caption sample, and step-by-step evaluation prompts. Build a disposable sequence and compare the result with the checklist. The kit is not a recorded demonstration or a verified Premiere project; report any failed or unsupported check accurately."], bullets: ["Install the server and separate Premiere connector before trying the kit.", "Start with a read-only connection check and stop if it is not ready.", "Keep file exports and project changes behind their own explicit confirmation."] },
       {
         heading: "Use this checklist before an AI-assisted Premiere workflow",
         paragraphs: [
@@ -455,6 +909,7 @@ export const articles: Article[] = [
   },
   {
     slug: "what-is-a-premiere-pro-mcp-server",
+    seoTitle: "What Is a Premiere MCP Server?",
     title: "What Is an MCP Server for Adobe Premiere Pro? A Practical Guide to AI-Assisted Editing",
     description:
       "Learn what an MCP server for Adobe Premiere Pro does, how it connects a compatible AI assistant to Adobe Premiere Pro, and how to start with a safe read-only check.",
@@ -487,7 +942,7 @@ export const articles: Article[] = [
       {
         heading: "What can an AI assistant help with in Premiere Pro?",
         paragraphs: [
-          "The server currently registers 321 core structured tools across timeline work, effects and Lumetri color, audio, captions, markers, keyframes, project organization, project-intake preview, media and proxy workflows, local media and interchange preflight analysis, diagnostics, export, review handoff, and local editorial planning. The default capability profile exposes 319 of those tools. An authenticated compatible UXP host can add 54 capability-gated tools, bringing the connected surface to 373.",
+          `The published v${product.version} package registers ${product.coreToolCount} core structured tools across timeline work, effects and Lumetri color, audio, captions, markers, keyframes, project organization, project-intake preview, media and proxy workflows, local media and interchange preflight analysis, diagnostics, export, review handoff, local editorial planning, and guarded After Effects MOGRT authoring, batch, library, render-queue, source-inspection, and Premiere-handoff workflows. The default capability profile exposes ${product.defaultProfileToolCount} of those tools. A compatible UXP host can add ${product.uxpAdditionalToolCount} capability-gated tools, bringing the connected surface to ${product.connectedUxpToolCount}. The development source separately registers ${sourceCatalog.coreTools} core tools and may include unreleased work.`,
           "Those numbers describe discovery, not a blanket promise. A better question is whether the current host can perform the specific task you need. For example, an editor might ask for the active sequence and its clip structure before requesting a preview of a B-roll assembly. A post-production lead might ask for a project inventory before standardizing bins. A workflow developer might use the structured surface as a starting point rather than building and maintaining a bridge from scratch.",
         ],
       },
@@ -531,6 +986,7 @@ export const articles: Article[] = [
   },
   {
     slug: "ai-video-editing-with-premiere-pro",
+    seoTitle: "AI Video Editing Workflows",
     title: "AI Video Editing with Premiere Pro: Keep Creative Control, Automate the Repetitive Work",
     description:
       "A practical approach to AI video editing in Adobe Premiere Pro: inspect first, automate repeatable work with structured tools, and verify every result.",
@@ -570,7 +1026,7 @@ export const articles: Article[] = [
       {
         heading: "Where an MCP workflow fits",
         paragraphs: [
-          "MCP for Adobe Premiere Pro is free, MIT-licensed, and designed for local-first use. It registers 321 core tools for project inspection, project-intake preview, timeline editing, effects, color, audio, media management, local media and interchange preflight analysis, diagnostics, export, review handoff, and review-only local editorial planning. The default profile deliberately limits the surface to 319 tools; a compatible authenticated UXP host can add 54 capability-gated tools. These boundaries let the client report what is available rather than pretending that every supported feature is ready at every moment.",
+          `MCP for Adobe Premiere Pro is free, MIT-licensed, and designed for local-first use. Published v${product.version} registers ${product.coreToolCount} core tools for project inspection, project-intake preview, timeline editing, effects, color, audio, media management, local media and interchange preflight analysis, diagnostics, export, review handoff, review-only local editorial planning, and guarded After Effects MOGRT authoring, batch, library, render-queue, source-inspection, and Premiere-handoff workflows. The default profile exposes ${product.defaultProfileToolCount} tools; a compatible authenticated UXP host can add ${product.uxpAdditionalToolCount} capability-gated tools. These boundaries let the client report what is available rather than pretending that every supported feature is ready at every moment.`,
           "For an editor, the key benefit is repeatability without moving the project into a separate hosted editor. For a team, it is a consistent way to ask for and check common operations. For a workflow developer, it is a maintained bridge and structured discovery surface instead of a screen-reading macro.",
         ],
       },
@@ -607,15 +1063,18 @@ export const articles: Article[] = [
   },
   {
     slug: "premiere-pro-workflow-automation",
+    seoTitle: "Premiere Workflow Automation",
+    workflowKit: "product-spot",
     title: "Premiere Pro Workflow Automation: Repeat the Work, Not the Edit",
     description:
       "See which Adobe Premiere Pro tasks are good candidates for workflow automation, how to keep edits reviewable, and how to verify an AI-assisted result.",
     eyebrow: "Premiere Pro automation",
     publishedAt: "2026-08-19",
-    modifiedAt: "2026-08-19",
+    modifiedAt: "2026-09-04",
     readingTime: "7 min read",
     keywords: ["Premiere Pro workflow automation", "Premiere Pro automation", "automate video editing workflow"],
     sections: [
+      { heading: "Try this with disposable sample media", paragraphs: ["The downloadable workflow starter kit contains two synthetic video clips, a caption sample, and step-by-step evaluation prompts. Build a disposable sequence and compare the result with the checklist. The kit is not a recorded demonstration or a verified Premiere project; report any failed or unsupported check accurately."], bullets: ["Install the server and separate Premiere connector before trying the kit.", "Start with a read-only connection check and stop if it is not ready.", "Keep file exports and project changes behind their own explicit confirmation."] },
       {
         heading: "Automate the repeated parts of post-production",
         paragraphs: [
@@ -646,7 +1105,7 @@ export const articles: Article[] = [
         heading: "Why structured tools are better than UI guessing",
         paragraphs: [
           "Traditional macros and screen-driven automation infer state from a changing interface. Panels move, workspaces differ, dialogs steal focus, and a visible click does not always prove the project changed. A structured MCP tool surface can expose specific actions and return data or diagnostics about the request.",
-          "MCP for Adobe Premiere Pro combines that structure with a local-first bridge. The server registers 321 core tools, with capabilities, workflow packs, and authority reported separately from static tool support. That matters when different Premiere versions, permission settings, and connection states change what is safe to run. The correct path is to discover the available surface and verify the particular operation at call time.",
+          `MCP for Adobe Premiere Pro combines that structure with a local-first bridge. Published v${product.version} registers ${product.coreToolCount} core tools, with capabilities, workflow packs, and authority reported separately from static tool support. That matters when different Premiere versions, permission settings, and connection states change what is safe to run. The correct path is to discover the available surface and verify the particular operation at call time.`,
         ],
       },
       {
@@ -682,6 +1141,7 @@ export const articles: Article[] = [
   },
   {
     slug: "adobe-premiere-ai-assistant-vs-mcp",
+    seoTitle: "Adobe AI Assistant vs. MCP",
     title: "Adobe Premiere Pro AI Assistant vs. MCP: How to Choose an AI Editing Workflow",
     description:
       "Compare Adobe’s public-beta in-app AI Assistant with a local MCP workflow: client choice, bounded project context, and reviewable Premiere automation.",
@@ -765,61 +1225,176 @@ export const articles: Article[] = [
   },
   {
     slug: "claude-desktop-premiere-pro-mcp-setup",
-    title: "Claude Desktop + Premiere Pro: Start with a Safe MCP Workflow",
+    workflowKit: "project-check",
+    title: "How to Set Up Claude with Premiere Pro MCP",
+    seoTitle: "Claude Premiere Pro MCP Setup",
     description:
-      "Connect Claude Desktop to Adobe Premiere Pro with the local bundle and CEP connector, then verify the bridge before requesting any supported edit.",
-    eyebrow: "Safe Premiere setup",
+      "Set up Claude with Adobe Premiere Pro using the local MCP bundle and CEP connector, then verify the bridge before requesting any supported edit.",
+    eyebrow: "Claude Premiere Pro setup",
     publishedAt: "2026-08-22",
-    modifiedAt: "2026-08-22",
-    readingTime: "6 min read",
+    modifiedAt: "2026-09-10",
+    readingTime: "9 min read",
     keywords: [
+      "Claude Premiere Pro",
+      "how to set up Claude Premiere Pro",
       "Claude Desktop Premiere Pro",
       "Claude Premiere Pro MCP setup",
       "Premiere Pro MCP Claude Desktop",
       "Premiere Pro safe connection check",
     ],
     sections: [
-      {
-        heading: "The first goal is a verified connection, not an edit",
-        paragraphs: [
-          "When you connect an AI client to Adobe Premiere Pro, the first useful question is whether the client can reach the open Premiere session without changing a project. That check separates installation or compatibility problems from editing problems and gives you a low-risk place to start.",
-          "Premiere Pro MCP provides a self-contained Claude Desktop bundle and a separate Premiere CEP connector. Both need to be installed on the same computer as Premiere. The connector is what carries supported commands between the local server and the open host session.",
+    {
+        "heading": "Before you install",
+        "paragraphs": [
+            "Connect Claude Desktop to a running Premiere session with two separate downloads: the Claude bundle provides the MCP server, and the CEP connector provides the link to Premiere. Install both on the same Windows or macOS computer. This project is independent of Adobe and Anthropic.",
+            `Published package: v${product.version}. The CEP route targets Premiere Pro ${product.premiereCompatibility}; individual operations remain host-dependent. UXP support is a separate capability-gated path and does not replace the first-install CEP route.`
         ],
-      },
-      {
-        heading: "Set up the local path",
-        paragraphs: [
-          "Download the Claude Desktop bundle, install the Premiere connector with a trusted ZXP installer, then fully quit and reopen both Claude Desktop and Premiere. Open a Premiere project and make sure an active sequence is selected before you ask Claude to do anything with it.",
-          "The signed CEP connector is the default compatibility route for Premiere Pro 2020–2026 on Windows and macOS. The newer UXP bridge is capability-gated for compatible Premiere 25.6+ workflows, so it does not replace the CEP setup path for a first install.",
+        "bullets": [
+            "Use the desktop Claude app for the local bundle route. A connection configured in the browser is a different setup.",
+            "Choose a disposable project or a copy, open an active sequence, and keep the original edit recoverable.",
+            "Use the matching downloads below. The npm package published by this repository is premiere-pro-mcp; similarly named packages belong to other projects."
         ],
-      },
-      {
-        heading: "Use this exact safe first request",
-        paragraphs: [
-          "In Claude Desktop, ask: Safely check my Premiere connection with verify_premiere_connection. Make no changes. The request is read-only. It does not ask Premiere to change a sequence, and it does not ask you to upload footage.",
-          "If the check returns a connection state, continue by inspecting the active project or sequence. If it returns a diagnostic, resolve that condition before attempting an edit. Repeating a mutating request is not a substitute for understanding whether the connector, host, active project, or capability state is ready.",
+        "links": [
+            {
+                "label": "Download the Claude Desktop bundle",
+                "href": product.downloads.claudeBundle
+            },
+            {
+                "label": "Download the Premiere CEP connector",
+                "href": product.downloads.signedCepConnector
+            },
+            {
+                "label": "Read the matching release notes",
+                "href": product.downloads.releaseNotes
+            }
+        ]
+    },
+    {
+        "heading": "Install the Claude bundle and Premiere connector",
+        "paragraphs": [
+            "The bundle includes its own local server runtime. The recommended bundle route does not require a separate Node.js installation. A managed Claude workspace may restrict custom extensions; follow the workspace administrator's policy."
         ],
-      },
-      {
-        heading: "Choose a first workflow with a clear definition of done",
-        paragraphs: [
-          "After the safe check passes, start with a small task that has named inputs and an observable result. Inspecting the active sequence, collecting a project inventory, or asking for a proposed plan is a better first exercise than a large timeline rewrite.",
-          "For a supported change, name the sequence, tracks, source clips, expected output, and no-change boundaries. Ask for a preview where available. Then review the returned state or diagnostics before you use the result in a larger project.",
+        "steps": [
+            "In Claude Desktop, open Settings > Extensions > Advanced settings. Choose Install Extension and select the downloaded .mcpb file. Complete the displayed configuration.",
+            "Install MCPBridgeCEP.zxp using a ZXP installer you trust. If you do not have an installer, use the npm alternative in the next section.",
+            "Fully quit and reopen Claude Desktop and Premiere Pro. Open your disposable project and select a sequence.",
+            "In Premiere, open Window > Extensions > MCP for Adobe Premiere Pro. Older connector builds may use the label MCP Bridge. Keep the panel open.",
+            "Start a new Claude conversation and run the connection-check prompt below before requesting an edit."
         ],
-        bullets: [
-          "Good first step: inspect an active sequence without changes.",
-          "Good next step: request a bounded preview or plan.",
-          "Use extra care: destructive batches, shared projects, and undocumented host behavior.",
+        "links": [
+            {
+                "label": "Claude's custom-extension installation instructions",
+                "href": "https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop"
+            }
+        ]
+    },
+    {
+        "heading": "Alternative: install the connector with npm",
+        "paragraphs": [
+            "Use this alternative if you need the connector installer or prefer to configure a local server manually. It requires Node.js 20.19 or newer. Run these commands in a terminal on the computer running Premiere. The connector installer enables the Adobe CEP debug setting required by this installation route.",
+            "If you already installed the Claude bundle, do not add a second Claude MCP entry for the same server. Use the commands to install and diagnose the connector, then continue with the bundle."
         ],
-      },
-      {
-        heading: "Troubleshoot without exposing project data",
-        paragraphs: [
-          "If the connection check fails, fully reopen both applications, confirm that a project is open with an active sequence, and look for Window → Extensions → MCP Bridge in Premiere. Share the returned connection state or diagnostic with support rather than project media, prompts, project names, or file paths.",
-          "Your AI client’s own privacy settings still apply. The local-first recommendation describes the Premiere MCP server and connector path; it does not override how a chosen client handles conversations or data.",
+        "codeBlocks": [
+            {
+                "label": "Install the published server and CEP connector",
+                "code": connectorSetup
+            }
         ],
-      },
-    ],
+        "links": [
+            {
+                "label": "Manual client configuration and compatibility",
+                "href": "/docs/"
+            }
+        ]
+    },
+    {
+        "heading": "Run the read-only connection check",
+        "paragraphs": [
+            "Send this prompt in Claude. A tool appearing in the client proves discovery, not that the Premiere panel is connected. Read the tool result and stop if it reports a missing connector, project, sequence, or permission."
+        ],
+        "codeBlocks": [
+            {
+                "label": "First prompt: check the local Premiere connection",
+                "code": "Safely check my Premiere connection with verify_premiere_connection. Make no changes."
+            }
+        ],
+        "bullets": [
+            "Installed: the server and connector are present.",
+            "Configured: the client knows how to start the local server.",
+            "Connected: the connector answers for the intended Premiere session.",
+            "Verified for this task: inspect the particular project, sequence, and capability before relying on a later operation."
+        ]
+    },
+    {
+        "heading": "Walk through your first project inspection",
+        "paragraphs": [
+            "After the connection check succeeds, use this small inspection exercise. It asks for observable project state and leaves editing decisions for a later request. The downloadable starter kit contains synthetic clips for a disposable project; it is an evaluation sample, not a recorded host demonstration."
+        ],
+        "codeBlocks": [
+            {
+                "label": "Second prompt: inspect the active sequence",
+                "code": "Inspect my open Premiere project and active sequence. Report the sequence name, frame rate, duration, video and audio track counts, and any unavailable fields. Make no changes. Do not export files or upload media."
+            }
+        ],
+        "steps": [
+            "Compare the reported sequence name and frame rate with the sequence open in Premiere.",
+            "Compare the returned duration and track counts with the timeline. An unavailable field is not a successful check.",
+            "If an identity or value disagrees, stop and resolve the connection or target before asking for a change.",
+            "For a later edit, name the target, ask for a preview where supported, approve that exact change, and inspect the result."
+        ],
+        "links": [
+            {
+                "label": "Download the disposable workflow starter kit",
+                "href": "/workflows/#project-check"
+            },
+            {
+                "label": "Use the Project Intake checklist",
+                "href": "/project-intake/"
+            },
+            {
+                "label": "Choose a collaboration workflow",
+                "href": "/premiere-pro-collaboration-workflow/"
+            }
+        ]
+    },
+    {
+        "heading": "Fix the failure you actually see",
+        "paragraphs": [
+            "Use the failing layer to choose the next step. Avoid repeating an edit request while the connection remains unresolved."
+        ],
+        "bullets": [
+            "Bundle installed, but tools missing: restart Claude Desktop, check Extensions for the enabled bundle, and start a new conversation. Check managed-workspace restrictions if custom extensions are unavailable.",
+            "No Premiere panel in the Extensions menu: confirm the separate CEP connector was installed for the current user, then fully restart Premiere. Installing the Claude bundle alone does not install this connector.",
+            "Connection timeout: keep the panel open, confirm Premiere is responsive, and check that the server and panel use the same bridge directory. Do not substitute a public hosted endpoint for a local bridge.",
+            "No active project or sequence: open a project and select the intended sequence, then repeat only the read-only check.",
+            "Unsupported tool or host capability: inspect the available capabilities and use a supported route. A larger catalog is not proof that a host supports an operation.",
+            "Need help: include OS, Premiere version, package version, and a redacted diagnostic. Remove project names, media paths, prompts, footage, tokens, and personal data before posting."
+        ],
+        "links": [
+            {
+                "label": "Open the troubleshooting reference",
+                "href": "/docs/troubleshooting/"
+            },
+            {
+                "label": "Report an installation problem",
+                "href": "https://github.com/leancoderkavy/premiere-pro-mcp/issues"
+            }
+        ]
+    },
+    {
+        "heading": "Understand what stays local",
+        "paragraphs": [
+            "The recommended server, connector, and Premiere media path run on your computer. Claude's own conversation and tool-data policies still apply; local execution does not mean that every interaction with the assistant stays on-device. Review the client's privacy controls before sharing project context.",
+            "Keep the local installation distinct from the operator-managed hosted MCP service. The public website does not pair a cloud server with a visitor's Premiere session."
+        ],
+        "links": [
+            {
+                "label": "Privacy and telemetry details",
+                "href": "/privacy/"
+            }
+        ]
+    }
+],
     faqs: [
       {
         question: "Do I need Node.js to connect Claude Desktop?",
@@ -841,6 +1416,361 @@ export const articles: Article[] = [
       { label: "Open the Premiere setup guide", href: "/#install" },
       { label: "Read full technical setup documentation", href: "/docs/" },
       { label: "Understand reviewable Premiere workflows", href: "/blog/premiere-pro-workflow-automation/" },
+    ],
+    relatedSlugs: ["claude-fable-5-1-premiere-pro-mcp", "how-to-set-up-premiere-pro-mcp", "codex-premiere-pro-mcp-setup"],
+  },
+  {
+    slug: "how-to-set-up-premiere-pro-mcp",
+    title: "How to Set Up Premiere Pro MCP Safely",
+    seoTitle: "How to Set Up Premiere Pro MCP",
+    description:
+      "Set up Premiere Pro MCP: install the local server and connector, configure a compatible AI client, and verify the live bridge before your first edit.",
+    eyebrow: "Premiere Pro MCP setup",
+    publishedAt: "2026-09-08",
+    modifiedAt: "2026-09-10",
+    readingTime: "8 min read",
+    keywords: [
+      "how to setup Premiere Pro MCP",
+      "how to set up Premiere Pro MCP",
+      "Premiere Pro MCP setup",
+      "Premiere Pro AI MCP server",
+    ],
+    sections: [
+      {
+        heading: "What you need before you set up Premiere Pro MCP",
+        paragraphs: [
+          "Premiere Pro MCP connects a compatible AI client to a running Adobe Premiere Pro session through a local server and a separate Premiere connector. The recommended arrangement keeps the AI client, MCP server, connector, Premiere, and project media on the same computer. It is not a hosted editing service and it does not make a cloud deployment control the Premiere project open on your workstation.",
+          `For the supported local path, use Windows or macOS, Premiere Pro ${product.premiereCompatibility}, and Node.js ${product.nodeVersion}+ when your chosen client does not use the released Claude Desktop bundle. Keep a duplicate project or small test sequence available for the first supported change. Compatibility and a successful installation do not prove every host operation on every machine.`,
+        ],
+      },
+      {
+        heading: "1. Install the local server and Premiere connector",
+        paragraphs: [
+          "For a compatible client without its own bundle, use the versioned npm commands below. They select this project's package instead of relying on a global executable shared with another Premiere MCP package. The installer puts the per-user CEP connector in Premiere's extensions location and enables the required local debug setting. If you use Claude Desktop, the release bundle supplies the server, but the signed Premiere connector is still a separate install.",
+          "Restart Premiere after the connector is installed. With a project open, use Window > Extensions > MCP for Adobe Premiere Pro to open the connector. Do not move on to an edit request until the connector is available in the live host.",
+        ],
+        codeBlocks: [{ label: "Install and diagnose the versioned connector", code: connectorSetup }],
+      },
+      {
+        heading: "2. Configure one compatible AI client",
+        paragraphs: [
+          "Your AI client needs a local MCP-server entry for this package. The JSON below works as an entry for clients using mcpServers; Codex uses its own configuration format. Merge the entry into existing settings and keep other servers. Follow the specific setup guide for your client.",
+          "Choose one client for the first check. Claude Desktop has a release bundle; Codex has a repository plugin; other clients may use the npm-based local configuration. Keep the client on the same machine as Premiere for this local setup. A public operator-managed HTTP endpoint is not a desktop relay for your local Premiere project.",
+        ],
+        codeBlocks: [{ label: "Versioned local entry for clients using mcpServers", code: localMcpConfig }],
+        links: [{ label: "Cursor configuration and connection check", href: "/blog/cursor-premiere-pro-mcp-setup/" }, { label: "Codex configuration", href: "/blog/codex-premiere-pro-mcp-setup/" }],
+      },
+      {
+        heading: "3. Verify the connection before asking for an edit",
+        paragraphs: [
+          "Fully restart the AI client and Premiere, open a project, and select an active sequence. Then send this exact first request: Safely check my Premiere connection with verify_premiere_connection. Make no changes. It is deliberately read-only, so it separates an installation or bridge problem from an editing problem without requesting a project mutation.",
+          "If the check returns a diagnostic, resolve the reported connection, host, project, sequence, or capability condition first. If it succeeds, inspect the active project or sequence, then ask for a small bounded plan or preview before applying a supported operation. A tool being listed or called is not proof that a Premiere change completed.",
+        ],
+        bullets: [
+          "Start with inspection or a plan, not a large timeline rewrite.",
+          "Name the target sequence, tracks, source clips, and no-change boundaries for a supported edit.",
+          "Review returned state or diagnostics after every meaningful operation.",
+        ],
+      },
+      {
+        heading: "Troubleshoot the setup without sharing media or secrets",
+        paragraphs: [
+          "When the read-only check fails, reopen both applications, confirm the correct Premiere project and active sequence are open, and confirm the connector appears under Premiere's Extensions menu. Share the returned diagnostic with support instead of screenshots of sensitive footage, project names, media paths, prompts, or credentials.",
+          "The local-first Premiere path does not change how your chosen AI client handles conversations or data. Review that client's privacy controls independently. Do not expose the MCP HTTP transport to the public internet without the authentication and edge controls documented for an operator-managed deployment.",
+        ],
+      },
+    ],
+    faqs: [
+      {
+        question: "Do I need to know how to code to set up Premiere Pro MCP?",
+        answer:
+          "No for the Claude Desktop bundle path, although you still install the separate Premiere connector. The npm path is an advanced setup that needs Node.js and an MCP-server entry in your chosen client.",
+      },
+      {
+        question: "Can I set up Premiere Pro MCP without changing a project?",
+        answer:
+          "Yes. Use verify_premiere_connection first, then inspect the project or active sequence. Ask for a preview or plan before approving a supported change.",
+      },
+      {
+        question: "Does the setup upload my Premiere footage?",
+        answer:
+          "The recommended MCP server and connector setup is local. Your selected AI client's data handling and privacy settings remain separate and should be reviewed before you share project context.",
+      },
+    ],
+    resources: [
+      { label: "Read the technical setup reference", href: "/docs/" },
+      { label: "Set up Claude with Premiere Pro MCP", href: "/blog/claude-desktop-premiere-pro-mcp-setup/" },
+      { label: "Use Claude Fable 5.1 with Premiere Pro MCP", href: "/blog/claude-fable-5-1-premiere-pro-mcp/" },
+      { label: "Set up Codex with Premiere Pro MCP", href: "/blog/codex-premiere-pro-mcp-setup/" },
+      { label: "Read the full project README", href: "https://github.com/leancoderkavy/premiere-pro-mcp#quick-start" },
+    ],
+    relatedSlugs: [
+      "set-up-ai-in-premiere-pro",
+      "claude-desktop-premiere-pro-mcp-setup",
+      "codex-premiere-pro-mcp-setup",
+      "claude-fable-5-1-premiere-pro-mcp",
+    ],
+  },
+  {
+    slug: "set-up-ai-in-premiere-pro",
+    title: "How to Set Up AI in Premiere Pro: A Practical Guide",
+    seoTitle: "Set Up AI in Premiere Pro",
+    description:
+      "Set up AI in Premiere Pro with native Adobe features or a compatible MCP assistant, then use a reviewable workflow that keeps creative control.",
+    eyebrow: "AI Premiere Pro setup",
+    publishedAt: "2026-09-08",
+    modifiedAt: "2026-09-08",
+    readingTime: "8 min read",
+    keywords: [
+      "AI Premiere Pro",
+      "Premiere Pro AI",
+      "how to setup Premiere Pro AI",
+      "how to set up AI in Premiere Pro",
+    ],
+    sections: [
+      {
+        heading: "AI in Premiere Pro starts with the workflow, not a prompt",
+        paragraphs: [
+          "People searching for AI Premiere Pro tools are often looking for different things: Adobe's native AI features, a conversational assistant inside Premiere, or an external AI client that can help with a local project. Decide which job you want to improve before installing anything. Generative media, transcript-based editing, media organization, and structured workflow automation are different control paths with different privacy, availability, and review requirements.",
+          "A useful AI setup protects the existing edit. Start with a clear input, a named target, and a way to inspect the outcome. Avoid treating a fluent response, a listed feature, or an attempted tool call as evidence that a timeline is ready for delivery.",
+        ],
+      },
+      {
+        heading: "Set up Adobe's native AI features when they fit the task",
+        paragraphs: [
+          "Premiere's native AI capabilities and beta features change over time, so begin with Adobe's current documentation for the exact Premiere version and feature you use. Adobe's AI Assistant is a first-party, in-app beta for documented organization, footage preparation, and initial-assembly tasks. Generative and assistive tools can have their own availability, model, credit, or cloud-processing conditions.",
+          "Use a duplicate project or test sequence for a new native AI workflow. Confirm what media, frames, prompts, or metadata the feature can send or retain, then inspect the result in the active sequence. Native AI can be the right choice when its documented workflow directly matches your edit; it does not need to be replaced by an external assistant.",
+        ],
+      },
+      {
+        heading: "Set up a compatible AI assistant for structured Premiere work",
+        paragraphs: [
+          "An MCP-based setup is a separate option for editors who want a compatible AI client to use named Premiere tools through a local connection. Install the Premiere MCP server and CEP connector, configure one client, restart the client and Premiere, then run the read-only connection check. The recommended path keeps Premiere, its connector, the server, and project media on the local computer.",
+          "Use the assistant for bounded work that can be checked: inspect a sequence, inventory a project, propose a B-roll assembly, prepare a marker plan, or preflight a delivery. Use names, tracks, time ranges, output expectations, and no-change boundaries. Smaller steps make it easier to identify whether a problem comes from the setup, host capabilities, or the request itself.",
+        ],
+      },
+      {
+        heading: "Use the inspect, plan, preview, and verify loop",
+        paragraphs: [
+          "The first AI request should be read-only: Safely check my Premiere connection with verify_premiere_connection. Make no changes. Once it succeeds, ask to inspect the active sequence. For a possible edit, request a plan or preview, confirm the exact target, and then inspect returned state or diagnostics after the supported operation.",
+          "This approach preserves the editor's role in story, performance, timing, and creative taste. AI can make repeatable setup and verification work more legible, but it does not provide a universal shortcut to editorial judgment.",
+        ],
+        bullets: [
+          "Use Adobe's documented feature when the native AI workflow fits your task.",
+          "Use a compatible MCP client when you need a structured local control path into Premiere.",
+          "Keep client privacy settings and Premiere's local connection as separate decisions.",
+        ],
+      },
+    ],
+    faqs: [
+      {
+        question: "Does Premiere Pro already have AI features?",
+        answer:
+          "Yes. Adobe offers native AI-assisted features and beta workflows whose scope changes by release. Check Adobe's current documentation for the exact feature and conditions before relying on it in a project.",
+      },
+      {
+        question: "Can I use ChatGPT, Claude, or Codex with Premiere Pro?",
+        answer:
+          "They need an appropriate connection path. Claude Desktop has a released bundle, Codex has a repository plugin, and ChatGPT's custom MCP path is remote rather than direct local stdio. Read the client-specific guide before connecting a live project.",
+      },
+      {
+        question: "Is an AI-assisted Premiere result automatically safe to use?",
+        answer:
+          "No. Verify the specific host behavior and returned result. Use a duplicate project or test sequence for a new workflow and keep meaningful changes reviewable.",
+      },
+    ],
+    resources: [
+      { label: "Read Adobe's current Premiere AI Assistant overview", href: "https://helpx.adobe.com/premiere/desktop/premiere-ai-assistant/overview.html" },
+      { label: "Compare Adobe AI Assistant with MCP", href: "/blog/adobe-premiere-ai-assistant-vs-mcp/" },
+      { label: "Learn how to set up Premiere Pro MCP", href: "/blog/how-to-set-up-premiere-pro-mcp/" },
+      { label: "Read the Premiere Pro AI workflow checklist", href: "/blog/premiere-pro-ai-workflow-checklist/" },
+    ],
+    relatedSlugs: [
+      "ai-video-editing-with-premiere-pro",
+      "adobe-premiere-ai-assistant-vs-mcp",
+      "how-to-set-up-premiere-pro-mcp",
+    ],
+  },
+  {
+    slug: "chatgpt-premiere-pro-mcp",
+    title: "ChatGPT + Premiere Pro: Connect MCP the Safe Way",
+    seoTitle: "ChatGPT Premiere Pro MCP Guide",
+    description:
+      "Learn what ChatGPT can do with Premiere Pro, why it cannot connect directly to a local stdio MCP server, and how to evaluate a secure remote MCP setup.",
+    eyebrow: "ChatGPT Premiere Pro guide",
+    publishedAt: "2026-09-08",
+    modifiedAt: "2026-09-08",
+    readingTime: "7 min read",
+    keywords: [
+      "ChatGPT Premiere Pro",
+      "ChatGPT Premiere Pro MCP",
+      "connect ChatGPT to Premiere Pro",
+      "Premiere Pro ChatGPT setup",
+    ],
+    sections: [
+      {
+        heading: "What ChatGPT can and cannot do with Premiere Pro",
+        paragraphs: [
+          "ChatGPT can help you reason about an edit, draft a workflow, or work with tools exposed through a suitable MCP connection. It does not automatically see an open Premiere project, control the Premiere interface, or receive a local project's media just because you mention the project in a chat. Live Premiere access requires an explicit tool connection and a running bridge that exposes only the actions you intend to allow.",
+          "That distinction matters for both setup and security. Use ChatGPT for planning without a live connection when you only need ideas or a review checklist. Use an MCP connection only after you understand what server, tools, credentials, and confirmation boundaries are involved.",
+        ],
+      },
+      {
+        heading: "ChatGPT does not connect directly to a local stdio server",
+        paragraphs: [
+          "ChatGPT's custom MCP-app route uses remote MCP servers; it does not directly attach to a local stdio server running beside Premiere. OpenAI documents Secure MCP Tunnel for a server on a private network, on-premises, or a developer machine. Availability, workspace permissions, and write access vary by ChatGPT plan and are currently evolving, so check the current official documentation before configuring a connector.",
+          "Do not reinterpret a public HTTP endpoint as a way to control the Premiere project open on your computer. The operator-managed Premiere Pro MCP instance is not a desktop relay for public users. A remote design needs explicit pairing or a secure tunnel to the machine that runs the Premiere bridge, not an exposed token pasted into a chat or a URL.",
+        ],
+      },
+      {
+        heading: "Evaluate a remote MCP design before you connect it",
+        paragraphs: [
+          "Start with a narrow read-only tool surface. Confirm the organization and administrator controls required for your ChatGPT workspace, the endpoint and authentication model, the tool list ChatGPT scans, and the way each write or modify action asks for confirmation. Only connect a server you trust and have reviewed for prompt-injection and credential risks.",
+          "For Premiere Pro MCP, the recommended initial setup remains local stdio in an MCP-compatible desktop client. If your organization is evaluating ChatGPT's remote connector path, use a test project, enforce authentication and edge controls, and do not expose raw project paths, media, prompts, or tokens just to make the integration convenient.",
+        ],
+      },
+      {
+        heading: "Keep the first live Premiere task read-only",
+        paragraphs: [
+          "Once a secure connection is genuinely in place, start by checking the bridge and reading current capabilities. Ask for a Premiere connection check with no changes, then inspect the active project or sequence. Do not start with timeline deletion, batch media changes, or an export you cannot independently review.",
+          "A connected assistant can make a workflow easier to direct, but it cannot replace a host-specific verification step. Treat returned state or diagnostics as the evidence to review before you rely on an operation.",
+        ],
+      },
+    ],
+    faqs: [
+      {
+        question: "Can ChatGPT directly control Premiere Pro on my computer?",
+        answer:
+          "Not through a direct local stdio connection. A live setup needs an explicit remote MCP connection path, such as the secure private-server approach described in current OpenAI documentation, and a running local Premiere bridge.",
+      },
+      {
+        question: "Can I use ChatGPT to plan a Premiere edit without connecting a tool?",
+        answer:
+          "Yes. You can discuss a workflow, prompt, or review checklist without granting access to a live project. ChatGPT cannot inspect the actual project state unless you explicitly provide context or connect an approved tool.",
+      },
+      {
+        question: "Should I expose Premiere Pro MCP's HTTP server to the internet?",
+        answer:
+          "No. The HTTP transport requires authentication and documented edge protections. A secure tunnel or organization-approved remote setup should be designed and reviewed before it is used with a live Premiere project.",
+      },
+    ],
+    resources: [
+      { label: "Read OpenAI's current ChatGPT developer-mode and MCP guidance", href: "https://help.openai.com/en/articles/12584461-developer-mode-apps-and-full-mcp-connectors-in-chatgpt-beta" },
+      { label: "Read the Premiere Pro MCP HTTP security boundary", href: "https://github.com/leancoderkavy/premiere-pro-mcp#security" },
+      { label: "Set up Premiere Pro MCP locally first", href: "/blog/how-to-set-up-premiere-pro-mcp/" },
+      { label: "Set up Codex with Premiere Pro MCP", href: "/blog/codex-premiere-pro-mcp-setup/" },
+    ],
+    relatedSlugs: [
+      "how-to-set-up-premiere-pro-mcp",
+      "codex-premiere-pro-mcp-setup",
+      "set-up-ai-in-premiere-pro",
+    ],
+  },
+  {
+    slug: "codex-premiere-pro-mcp-setup",
+    title: "How to Set Up Codex with Premiere Pro MCP",
+    seoTitle: "Codex Premiere Pro MCP Setup",
+    description:
+      "Connect Codex to Adobe Premiere Pro with a local MCP command or the repository plugin, install the CEP bridge, and verify the connection before editing.",
+    eyebrow: "Codex Premiere Pro setup",
+    publishedAt: "2026-09-08",
+    modifiedAt: "2026-09-10",
+    readingTime: "7 min read",
+    keywords: [
+      "Codex Premiere Pro",
+      "Codex Premiere Pro MCP",
+      "how to set up Codex with Premiere Pro",
+      "Premiere Pro MCP Codex plugin",
+    ],
+    sections: [
+{
+    "heading": "Configure Codex with the local server",
+    "paragraphs": [
+        "Use the same computer for Codex, the server, the CEP connector, and Premiere. This direct MCP configuration is an alternative to the repository plugin; choose one route so the server is not registered twice. It requires Node.js 20.19 or newer."
+    ],
+    "codeBlocks": [
+        {
+            "label": "Install, diagnose, and register the local server",
+            "code": `${connectorSetup}\ncodex mcp add premiere-pro-leancoderkavy -- npx --yes premiere-pro-mcp@${product.version}\ncodex mcp list`
+        }
+    ],
+    "steps": [
+        "Restart Premiere and open Window > Extensions > MCP for Adobe Premiere Pro.",
+        "Open a disposable project and active sequence. Start a new Codex session.",
+        "Ask Codex to run verify_premiere_connection without making changes. Inspect the returned diagnostic before proceeding."
+    ],
+    "links": [
+        {
+            "label": "Official Codex MCP configuration",
+            "href": "https://developers.openai.com/codex/mcp/"
+        },
+        {
+            "label": "Connector troubleshooting",
+            "href": "/docs/troubleshooting/"
+        }
+    ]
+},
+      {
+        heading: "What the Codex plugin connects",
+        paragraphs: [
+          "Codex does not control Adobe Premiere Pro by default. This repository includes an installable Codex plugin that bundles the local Premiere Pro MCP server configuration with a safety-oriented editing skill. The plugin still needs the separate CEP connector because that connector carries supported requests between the local server and the open Premiere session.",
+          "Use this setup from a clone of the repository, on the same computer as Codex and Premiere. The first goal is a live, read-only connection check, not a complex edit. Have a duplicate project or a small test sequence ready before you approve any supported mutation.",
+        ],
+      },
+      {
+        heading: "Install the Codex plugin and local Premiere connector",
+        paragraphs: [
+          "From a local clone of the Premiere Pro MCP repository, add the repository as a Codex plugin marketplace, then install the Premiere plugin: codex plugin marketplace add . followed by codex plugin add premiere-pro@premiere-pro-mcp. This registers the packaged MCP configuration for Codex; do not copy a configuration from an unrelated Premiere bridge.",
+          `Next, install the local CEP connector with the versioned package command from the current project README. The current release command is npx -y premiere-pro-mcp@${product.version} --install-cep. The CEP installer is separate from the Codex plugin and is required for the local MCP server to communicate with the running Premiere host.`,
+        ],
+      },
+      {
+        heading: "Restart both applications and open the bridge",
+        paragraphs: [
+          "Restart Premiere Pro, open the project you intend to inspect, and open Window > Extensions > MCP for Adobe Premiere Pro. Then begin a new Codex session so it picks up the installed plugin configuration. Keep the initial connection local; the public operator-managed HTTP service is not a general relay to the project open on your workstation.",
+          "The default CEP route targets Premiere Pro 2020–2026 on Windows and macOS. UXP functionality is capability-gated on compatible hosts and does not replace the CEP setup needed for this first connection.",
+        ],
+      },
+      {
+        heading: "Use a safe first Codex request",
+        paragraphs: [
+          "First ask Codex to inspect the available capabilities, then ask: Safely check my Premiere connection with verify_premiere_connection. Make no changes. When it succeeds, inspect the active project or sequence before proposing an edit. If it returns a diagnostic, resolve that specific condition instead of retrying a mutating request.",
+          "For a later supported change, name the sequence, target tracks, source clips, expected output, and no-change boundaries. Ask for a plan or preview where available, approve only the exact target you reviewed, and inspect returned state or diagnostics afterward. The plugin provides an integration path; it does not turn every operation into a host-proven result.",
+        ],
+        bullets: [
+          "Run the plugin and CEP connector on the same machine as Premiere.",
+          "Begin a new Codex session after installing the plugin.",
+          "Check capabilities and connection state before an edit request.",
+        ],
+      },
+    ],
+    faqs: [
+      {
+        question: "Can Codex edit Premiere Pro without a plugin or bridge?",
+        answer:
+          "Codex needs a configured local MCP server and the separate Premiere CEP connector. You can configure the server directly or use the repository plugin.",
+      },
+      {
+        question: "Does the Codex plugin prove an edit worked?",
+        answer:
+          "No. It makes the local MCP connection available. Verify the specific Premiere operation with returned state, diagnostics, and your own project review.",
+      },
+      {
+        question: "Can I use the Codex plugin with a production project?",
+        answer:
+          "Use a duplicate project or test sequence for a new workflow. Start read-only, review plans, and keep destructive or version-sensitive operations bounded and verifiable.",
+      },
+    ],
+    resources: [
+      { label: "Read the Codex plugin instructions in the project README", href: "https://github.com/leancoderkavy/premiere-pro-mcp#codex-plugin" },
+      { label: "Learn how to set up Premiere Pro MCP", href: "/blog/how-to-set-up-premiere-pro-mcp/" },
+      { label: "Set up Claude with Premiere Pro MCP", href: "/blog/claude-desktop-premiere-pro-mcp-setup/" },
+      { label: "Read the technical documentation", href: "/docs/" },
+    ],
+    relatedSlugs: [
+      "how-to-set-up-premiere-pro-mcp",
+      "chatgpt-premiere-pro-mcp",
+      "claude-desktop-premiere-pro-mcp-setup",
     ],
   },
 ]

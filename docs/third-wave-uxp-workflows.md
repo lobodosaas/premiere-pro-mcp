@@ -18,11 +18,24 @@ cap, a 60-second maximum wait, consecutive progress coalescing, and explicit ove
 signaling. Raw Adobe event objects never cross the bridge; only allowlisted scalar
 state and progress fields can appear in a receipt.
 
+On a compatible 26.3+ host, the documented root `SnapEvent` constants also register
+six passive `timeline.snap.*` notifications: keyframe, track-item, guide, razor-to-
+playhead, razor-to-marker, and playhead-to-track-item-edge. The panel registers only
+non-empty documented constants it can probe, does not invalidate project state for
+those notifications, and records the same bounded redacted receipt shape. It does
+not infer that every host emits each notification or expose the native event object.
+
+The same journal additionally registers the two stable root `OperationCompleteEvent`
+notifications that are not already covered by the import/export/effect-drop completion
+receipts: `operation.clip.extend.reached` and coalesced `operation.effect.drag.over`.
+They remain passive bounded notifications, not success or completion attestations, and
+the host payload is subject to the same scalar-only redaction.
+
 Automated tests cover overflow, progress coalescing, filtering, timeouts, shutdown,
-capability discovery, and the public MCP schema. They do not establish that a real
-Premiere build emits every declared event. Windows and macOS host runs must record
-the exact event names and payload shapes before downstream workflows treat them as
-completion evidence.
+capability discovery, the exact SnapEvent and operation-boundary mappings and redaction, and the public MCP
+schema. They do not establish that a real Premiere build emits every declared event.
+Windows and macOS host runs must record the exact event names and payload shapes
+before downstream workflows treat them as completion evidence.
 
 ## PR 2 — AME terminal receipts
 
@@ -115,6 +128,15 @@ or cross-version property retention in a real Premiere host.
 items for offline, relink, proxy, merged-clip, and multicam capabilities. Media,
 proxy, and originating-project paths remain absent unless the caller explicitly asks
 for them. Project traversal is capped at 10,000 items and path-match results at 512.
+`include_media_timing` is also opt-in and defaults to false. It reads source start
+and duration only when `getMedia()` is available, accepts finite non-negative
+TickTime seconds through the existing 86,400,000-second bound, and identifies the
+stable `start`/`duration` property accessors used. This stays within the 26.3
+declaration baseline. The beta-only callable `getStart()`/`getDuration()` APIs remain
+excluded from production until Adobe ships them in a stable release and they pass the
+licensed-host validation gate. Awaiting the stable properties also tolerates the beta
+deprecated Promise<TickTime> shape; that declaration-drift compatibility is not a
+beta-host support claim. Automated mocks do not prove licensed-host support.
 
 Refresh calls run serially and return per-item acceptance plus offline-state
 readback, so a partial batch is visible instead of being reported atomically. Setting
@@ -150,8 +172,8 @@ Adobe exposes only a set-true action for scale-to-frame and no getter for either
 setting or an unambiguous cleared-in/out sentinel. Those requests are returned as
 `committed_unverified` even though the transaction committed; ordinary in/out sets
 can return `verified` after exact readback. This workflow does not duplicate the
-existing color, frame-rate, or pixel-aspect conformance surfaces. Real-host testing
-remains required for mixed audio/video media and source-monitor behavior.
+existing color-conformance surface. Real-host testing remains required for mixed
+audio/video media and source-monitor behavior.
 
 ## PR 10 — Hybrid acceleration benchmark gate
 
@@ -167,6 +189,101 @@ See [the benchmark and promotion procedure](uxp-hybrid-benchmark.md). No result 
 one development machine can alter the production manifest or justify a native
 performance claim.
 
+## PR 11 — Guarded sequence range updates
+
+`manage_sequence_range_uxp` inspects or updates the active sequence's in point,
+out point, and zero point through Adobe's documented `Sequence` accessors and
+action factories. An update requires the exact sequence GUID and a complete
+in/out/zero-point/end snapshot returned by a prior inspection. The panel rejects a
+changed sequence or range before creating an action, requires the final range to
+satisfy `in <= out <= end`, and bounds all public times to 24 hours.
+
+Requested actions are created synchronously inside `Project.lockedAccess()` and
+added to one `Project.executeTransaction()` group. The panel then re-reads every
+range field and reports `verified` only when the requested values match within a
+microsecond tolerance. The action is idempotent within the panel's existing
+operation-ID replay window; a failed UXP operation is never retried through CEP.
+
+The workflow is an action/readback contract, not proof of Premiere's visible
+timecode display, export-range behavior, persistence after reopening, or Undo on
+a licensed host. Real-host validation must exercise one-field and all-field
+updates, stale snapshots, a range at the sequence end, and Undo on Windows and
+macOS.
+
+## PR 12 — Guarded sequence playhead control
+
+`manage_sequence_playhead_uxp` reads or sets the active sequence player position
+through documented `Sequence.getPlayerPosition()` and `Sequence.setPlayerPosition()`
+APIs. A set requires the exact active sequence GUID and player position returned by
+an earlier inspection. TickTime construction occurs before the per-sequence guard;
+inside that guard the panel re-reads both values, rejects stale state, invokes the
+native setter, and then requires boolean acceptance plus microsecond-tolerant
+position readback.
+
+Requests with different operation IDs serialize per sequence, while the existing
+operation-ID replay window coalesces retries of the same completed request. This
+controls player/UI state only: it deliberately does not claim a project save,
+timeline edit, Undo entry, visible timecode accuracy, or playback behavior. The
+automated contract tests cover validation, stale preflight, concurrent setters,
+replay, rejected setters, and failed readback. A licensed Premiere host must still
+validate the behavior on Windows and macOS before it is described as host-verified.
+
+## PR 13 — Guarded source-media start timing
+
+`manage_source_media_timing_uxp` inspects one explicitly identified source clip's
+media start and duration, then can change only its start time through Adobe's
+documented `Media.createSetStartAction()`. Inspection returns the bounded project
+item ID and timing scalars, never a display name, file path, metadata, selection,
+or Project-panel traversal. The mutation requires that complete snapshot, an
+explicit `confirm_set_start`, and an `operation_id` for replay-safe retries.
+
+Updates serialize from snapshot preflight through post-transaction readback per
+project GUID and project-item ID. Under `Project.lockedAccess()` the panel takes a
+fresh synchronous stable-26.3 `Media.start`/`Media.duration` snapshot, rejects any
+stale target before constructing the action, commits exactly one action in one
+`Project.executeTransaction()`, and then requires both the requested start and an
+unchanged duration to read back. A concurrent request with a different operation ID
+therefore cannot apply an old timing snapshot to a changed clip.
+
+The mutation deliberately relies on the stable 26.3 synchronous `Media.start` and
+`Media.duration` declarations inside its action boundary. The later beta Promise
+property shape and beta-only `getStart()`/`getDuration()` methods are not a mutation
+fallback. Contract tests cover confirmation, stale preflight, serialization,
+operation replay, one transaction, and post-readback; they do not prove a licensed
+Premiere host accepted the action, displayed the new timecode, persisted it, or
+provided a usable Undo entry.
+
+## PR 14 — Guarded source-media interpretation overrides
+
+`manage_source_media_overrides_uxp` inspects the effective frame rate and pixel
+aspect ratio for one explicitly identified source clip, then can set one or both
+explicit overrides using the dedicated documented
+`ClipProjectItem.createSetOverrideFrameRateAction()` and
+`createSetOverridePixelAspectRatioAction()` APIs. It never accepts a selected item
+or name as the mutation target, does not read paths or Project-panel metadata, and
+does not call CEP, QE, or raw evaluation.
+
+An update requires the exact project GUID, project-item ID, frame-rate, and
+pixel-aspect-ratio snapshot returned by `inspect`, an explicit
+`confirm_media_interpretation: true`, and a bounded `operation_id`. It allows a
+finite frame rate from 1 through 240 and a positive rational pixel-aspect ratio
+from 0.01 through 100, with an integer numerator and denominator. The panel
+serializes competing requests through this source-media timing/override protocol
+per project and item, refreshes the asynchronous effective interpretation snapshot
+immediately before action construction, rejects staleness, builds only requested
+actions synchronously inside `Project.lockedAccess()`, commits one transaction,
+and then re-reads both effective values.
+
+Adobe does not document an explicit-override presence getter or a clear-override
+action. Consequently, effective-value readback cannot show whether an explicit
+override persists or distinguish it from matching file-native interpretation; the
+tool deliberately offers no clear operation. The lock cannot exclude Premiere UI
+or a separate workflow changing interpretation after the asynchronous snapshot.
+Contract tests cover confirmation, operation replay, stale preflight, concurrent
+different-ID rejection, one transaction, and effective-value readback; they do not
+prove a licensed Premiere host accepted the action, persisted the override,
+displayed the intended interpretation, or provided a usable Undo entry.
+
 ## Primary Adobe references
 
 - [EventManager](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/eventmanager/)
@@ -175,4 +292,6 @@ performance claim.
 - [Project](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/project/)
 - [ProjectUtils](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/projectutils/)
 - [Properties](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/properties/)
+- [Sequence](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sequence/)
 - [ClipProjectItem](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/clipprojectitem/)
+- [Media](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/media/)

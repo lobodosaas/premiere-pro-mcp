@@ -492,15 +492,50 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Item not found");
 
+          var originalIn = item.getInPoint(${mediaType});
+          var originalOut = item.getOutPoint(${mediaType});
+          var hadOriginalIn = !!originalIn;
+          var hadOriginalOut = !!originalOut;
+          var originalInSeconds = hadOriginalIn ? Number(originalIn.seconds) : 0;
+          var originalOutSeconds = hadOriginalOut ? Number(originalOut.seconds) : 0;
+          var originalInTicks = hadOriginalIn ? String(originalIn.ticks) : "";
+          var originalOutTicks = hadOriginalOut ? String(originalOut.ticks) : "";
+
+          function restoreOriginalMarks() {
+            try {
+              if (hadOriginalIn) item.setInPoint(originalInSeconds, ${mediaType});
+              if (hadOriginalOut) item.setOutPoint(originalOutSeconds, ${mediaType});
+            } catch (restoreErr) {}
+          }
+
+          function marksRestored() {
+            var restoredIn = item.getInPoint(${mediaType});
+            var restoredOut = item.getOutPoint(${mediaType});
+            return (!hadOriginalIn || (restoredIn && String(restoredIn.ticks) === originalInTicks))
+              && (!hadOriginalOut || (restoredOut && String(restoredOut.ticks) === originalOutTicks));
+          }
+
+          function failAfterMarkUpdate(message) {
+            restoreOriginalMarks();
+            if (marksRestored()) {
+              return __error(message + " Original marks were restored.");
+            }
+            return __error(message + " Marks may be in a partial state; use Undo instead of retrying.");
+          }
+
           ${
             args.in_seconds !== undefined
               ? `
           var inTime = new Time();
           inTime.seconds = ${args.in_seconds};
-          item.setInPoint(inTime.ticks, ${mediaType});
+          try {
+            item.setInPoint(inTime.seconds, ${mediaType});
+          } catch (setInErr) {
+            return failAfterMarkUpdate("Premiere rejected the requested project-item in point (" + setInErr.toString() + ").");
+          }
           var observedIn = item.getInPoint(${mediaType});
           if (!observedIn || String(observedIn.ticks) !== String(inTime.ticks)) {
-            return __error("Premiere did not apply the requested project-item in point.");
+            return failAfterMarkUpdate("Premiere did not apply the requested project-item in point.");
           }
           `
               : ""
@@ -511,10 +546,14 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
               ? `
           var outTime = new Time();
           outTime.seconds = ${args.out_seconds};
-          item.setOutPoint(outTime.ticks, ${mediaType});
+          try {
+            item.setOutPoint(outTime.seconds, ${mediaType});
+          } catch (setOutErr) {
+            return failAfterMarkUpdate("Premiere rejected the requested project-item out point (" + setOutErr.toString() + ").");
+          }
           var observedOut = item.getOutPoint(${mediaType});
           if (!observedOut || String(observedOut.ticks) !== String(outTime.ticks)) {
-            return __error("Premiere did not apply the requested project-item out point.");
+            return failAfterMarkUpdate("Premiere did not apply the requested project-item out point.");
           }
           `
               : ""
@@ -1386,20 +1425,14 @@ export function getTrackTargetingTools(bridgeOptions: BridgeOptions) {
     },
 
     redo: {
-      description: "Redo the last undone action in Premiere Pro.",
+      description:
+        "Unavailable: Premiere exposes no supported, observable redo-stack API, so a scripted redo cannot be performed or verified.",
       parameters: {},
-      handler: async () => {
-        const script = buildToolScript(`
-          app.enableQE();
-          try {
-            qe.project.redo();
-            return __result({ redone: true });
-          } catch(e) {
-            return __error("Redo failed: " + e.message);
-          }
-        `);
-        return sendCommand(script, bridgeOptions);
-      },
+      handler: async () => ({
+        success: false,
+        error:
+          "redo is unavailable because Premiere exposes no supported redo API that can be verified: qe.project.redo() returns nothing observable and no undo/redo-stack query exists to check it against, so a reported success would be unfounded. No mutation was attempted. Redo the action from Premiere's Edit menu instead.",
+      }),
     },
 
     multiple_undo: {

@@ -6,6 +6,9 @@ describe("next-wave UXP MCP tools", () => {
   it("publishes a closed and bounded event receipt schema", () => {
     const bridge = { request: vi.fn(), getState: vi.fn() } as unknown as UxpWebSocketBridge;
     const tool = getUxpNextWorkflowTools(bridge).inspect_premiere_events_uxp;
+    expect(tool.description).toContain("timeline.snap.*");
+    expect(tool.description).toContain("operation.clip.extend.reached");
+    expect(tool.description).toContain("raw event payloads are never returned");
     expect(tool.parameters).toMatchObject({
       type: "object",
       additionalProperties: false,
@@ -72,6 +75,42 @@ describe("next-wave UXP MCP tools", () => {
         project_item_ids: { maxItems: 64, uniqueItems: true },
         confirm_set_offline: { type: "boolean" },
         include_paths: { type: "boolean" },
+        include_media_timing: { type: "boolean" },
+      },
+    });
+    const sourceMediaTiming = getUxpNextWorkflowTools(bridge).manage_source_media_timing_uxp;
+    expect(sourceMediaTiming.parameters).toMatchObject({
+      additionalProperties: false,
+      required: ["action", "project_item_id"],
+      properties: {
+        action: { enum: ["inspect", "set_start"] },
+        project_item_id: { maxLength: 512 },
+        expected_timing: {
+          additionalProperties: false,
+          required: ["start_seconds", "duration_seconds"],
+        },
+        start_seconds: { maximum: 86400000 },
+        confirm_set_start: { type: "boolean" },
+      },
+    });
+    const sourceMediaOverrides = getUxpNextWorkflowTools(bridge).manage_source_media_overrides_uxp;
+    expect(sourceMediaOverrides.parameters).toMatchObject({
+      additionalProperties: false,
+      required: ["action", "project_item_id"],
+      properties: {
+        action: { enum: ["inspect", "update"] },
+        project_item_id: { maxLength: 512 },
+        expected_overrides: {
+          additionalProperties: false,
+          required: ["project_guid", "frame_rate", "pixel_aspect_ratio"],
+        },
+        frame_rate: { minimum: 1, maximum: 240 },
+        pixel_aspect_ratio: {
+          additionalProperties: false,
+          required: ["numerator", "denominator"],
+        },
+        confirm_media_interpretation: { type: "boolean" },
+        operation_id: { pattern: "^[A-Za-z0-9._:-]{1,128}$" },
       },
     });
     const tracks = getUxpNextWorkflowTools(bridge).manage_track_state_uxp;
@@ -179,6 +218,28 @@ describe("next-wave UXP MCP tools", () => {
     expect(request).toHaveBeenLastCalledWith("media.health.setOffline", {
       projectItemIds: ["clip-1", "clip-2"], expectedOffline: false,
       confirmSetOffline: true, operationId: "offline-1",
+    });
+
+    const sourceMediaTiming = getUxpNextWorkflowTools(bridge).manage_source_media_timing_uxp;
+    await sourceMediaTiming.handler({ action: "set_start", project_item_id: "clip-1", start_seconds: 12,
+      expected_timing: { start_seconds: 10, duration_seconds: 60 }, confirm_set_start: true, operation_id: "source-time-1" });
+    expect(request).toHaveBeenLastCalledWith("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 10, durationSeconds: 60 },
+      startSeconds: 12, confirmSetStart: true, operationId: "source-time-1",
+    });
+
+    const sourceMediaOverrides = getUxpNextWorkflowTools(bridge).manage_source_media_overrides_uxp;
+    await sourceMediaOverrides.handler({
+      action: "update", project_item_id: "clip-1",
+      expected_overrides: { project_guid: "project-1", frame_rate: 23.976, pixel_aspect_ratio: 1 },
+      frame_rate: 25, pixel_aspect_ratio: { numerator: 4, denominator: 3 },
+      confirm_media_interpretation: true, operation_id: "source-override-1",
+    });
+    expect(request).toHaveBeenLastCalledWith("source.mediaOverrides.update", {
+      projectItemId: "clip-1",
+      expectedOverrides: { projectGuid: "project-1", frameRate: 23.976, pixelAspectRatio: 1 },
+      frameRate: 25, pixelAspectRatio: { numerator: 4, denominator: 3 },
+      confirmMediaInterpretation: true, operationId: "source-override-1",
     });
 
     const tracks = getUxpNextWorkflowTools(bridge).manage_track_state_uxp;
@@ -378,9 +439,9 @@ describe("next-wave UXP MCP tools", () => {
 
     await tool.handler({ action: "inspect" });
     expect(request).toHaveBeenLastCalledWith("media.health.inspect", {});
-    await tool.handler({ action: "inspect", project_item_ids: ["clip-1"], include_paths: false });
+    await tool.handler({ action: "inspect", project_item_ids: ["clip-1"], include_paths: false, include_media_timing: true });
     expect(request).toHaveBeenLastCalledWith("media.health.inspect", {
-      projectItemIds: ["clip-1"], includePaths: false,
+      projectItemIds: ["clip-1"], includePaths: false, includeMediaTiming: true,
     });
     await tool.handler({ action: "refresh" });
     expect(request).toHaveBeenLastCalledWith("media.health.refresh", {});
@@ -405,6 +466,52 @@ describe("next-wave UXP MCP tools", () => {
     });
     await expect(tool.handler({ action: "unsupported" }))
       .resolves.toEqual({ success: false, error: "Unsupported media-health action: unsupported" });
+  });
+
+  it("covers source-media timing inspection, guarded start mapping, and rejection", async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tool = getUxpNextWorkflowTools(bridge).manage_source_media_timing_uxp;
+
+    await tool.handler({ action: "inspect", project_item_id: "clip-1" });
+    expect(request).toHaveBeenLastCalledWith("source.mediaTiming.inspect", { projectItemId: "clip-1" });
+    await tool.handler({ action: "set_start", project_item_id: "clip-1" });
+    expect(request).toHaveBeenLastCalledWith("source.mediaTiming.setStart", { projectItemId: "clip-1" });
+    await tool.handler({
+      action: "set_start", project_item_id: "clip-1", start_seconds: 12,
+      expected_timing: { start_seconds: 10, duration_seconds: 60 }, confirm_set_start: false,
+    });
+    expect(request).toHaveBeenLastCalledWith("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 10, durationSeconds: 60 },
+      startSeconds: 12, confirmSetStart: false,
+    });
+    await expect(tool.handler({ action: "unsupported", project_item_id: "clip-1" }))
+      .resolves.toEqual({ success: false, error: "Unsupported source-media timing action: unsupported" });
+  });
+
+  it("covers source-media override inspection, exact snapshot mapping, and rejection", async () => {
+    const request = vi.fn().mockResolvedValue({ ok: true });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tool = getUxpNextWorkflowTools(bridge).manage_source_media_overrides_uxp;
+
+    await tool.handler({ action: "inspect", project_item_id: "clip-1" });
+    expect(request).toHaveBeenLastCalledWith("source.mediaOverrides.inspect", { projectItemId: "clip-1" });
+    await tool.handler({ action: "update", project_item_id: "clip-1" });
+    expect(request).toHaveBeenLastCalledWith("source.mediaOverrides.update", { projectItemId: "clip-1" });
+    await tool.handler({
+      action: "update", project_item_id: "clip-1",
+      expected_overrides: { project_guid: "project-1", frame_rate: 23.976, pixel_aspect_ratio: 1 },
+      pixel_aspect_ratio: { numerator: 4, denominator: 3 }, confirm_media_interpretation: false,
+      operation_id: "source-override-1",
+    });
+    expect(request).toHaveBeenLastCalledWith("source.mediaOverrides.update", {
+      projectItemId: "clip-1",
+      expectedOverrides: { projectGuid: "project-1", frameRate: 23.976, pixelAspectRatio: 1 },
+      pixelAspectRatio: { numerator: 4, denominator: 3 },
+      confirmMediaInterpretation: false, operationId: "source-override-1",
+    });
+    await expect(tool.handler({ action: "unsupported", project_item_id: "clip-1" }))
+      .resolves.toEqual({ success: false, error: "Unsupported source-media override action: unsupported" });
   });
 
   it("covers track-state inspection, mute defaults, and unsupported actions", async () => {

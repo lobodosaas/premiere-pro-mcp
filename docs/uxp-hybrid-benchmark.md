@@ -68,18 +68,51 @@ diagnostic only and are not accepted as process memory evidence.
 
 ## Promotion criteria
 
-Copy `benchmarks/uxp-hybrid/evidence.template.json`, validate it against the adjacent
-schema, and add one run for each required target: Windows x64, macOS x64, and macOS
-arm64. Every run must use the same full source commit, an identified SDK version, a
-Release binary SHA-256, matching output, and stable Premiere 26.2+.
+Copy `benchmarks/uxp-hybrid/evidence.template.json` (schema version 3), validate it
+against the adjacent v3 schema, and add one run for each required target: Windows x64,
+macOS x64, and macOS arm64. Every run must use the same full source commit, an
+identified SDK version, a Release binary SHA-256, matching output, and stable Premiere
+26.2+.
+
+Create and structurally verify a hash-only UXP Hybrid header receipt from the
+authorized SDK download first. Add the canonical digest printed by the receipt
+verifier as `sdkHeaderReceiptSha256`, retain the actual receipt outside this
+repository, and give its local path to the benchmark verifier. The receipt must
+identify `uxp-hybrid`, and its `source.sdkVersion` must exactly match every run's
+`sdkVersion`.
+
+Before submitting schema-v3 performance evidence, record the candidate
+development bundle with the separate [Hybrid addon-layout receipt](uxp-hybrid-addon-receipt.md),
+then create and verify a [Hybrid CCX archive receipt](uxp-hybrid-ccx-receipt.md).
+The v3 benchmark record commits to all three canonical receipt digests. The
+benchmark verifier re-reads the supplied local `.ccx`, checks its current
+content-free receipt chain including schema-v2 whole-archive ZIP hygiene and
+all-entry local-header consistency, and requires every platform run's
+`addonSha256` to match its corresponding attested binary. It does not publish
+source, binaries, the manifest ID, archive contents, entry names, or local paths.
+
+The frozen `evidence.v1.schema.json` and `evidence.v2.schema.json` plus their
+verifier paths remain available for historical records. v1 has no receipt
+binding and v2 binds only the SDK header receipt; neither can become a new
+package-bound candidate. New submissions must use v3.
 
 The native implementation must improve both p50 and p95 by at least 30% on every
 target while keeping peak working-set regression at or below 10%. Verify with:
 
 ```powershell
-npm run benchmark:uxp-hybrid:verify -- --input .\path\to\evidence.json
+npm run benchmark:uxp-hybrid:verify -- `
+  --input .\path\to\evidence.json `
+  --sdk-header-receipt C:\sdk-evidence\uxp-hybrid-headers.json `
+  --addon-receipt C:\hybrid-evidence\benchmark-addon-layout.json `
+  --ccx-receipt C:\hybrid-evidence\benchmark-ccx.json `
+  --ccx C:\hybrid-evidence\benchmark-plugin.ccx
 ```
 
 Only a zero exit code and `promotionEligible: true` support a later PR that adds the
 native source, reproducible build files, signed/notarized artifacts, manifest v6, and
-addon permission. This benchmark PR itself is not that promotion.
+addon permission. This receipt binding locally verifies the supplied archive's
+hash-only receipt chain and the submitted evidence's SDK and binary identities;
+it does not establish access entitlement, compile an addon, validate signing or
+notarization, prove UDT or Creative Cloud installation, validate an Adobe portal
+record, or prove behavior in a licensed Premiere host. This benchmark PR itself
+is not that promotion.

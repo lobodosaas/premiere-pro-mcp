@@ -7,7 +7,7 @@ panel through `capabilities.get`; package version, static TypeScript declaration
 and unit tests are insufficient evidence that a particular host supports a command.
 
 The later stable-API expansion is documented separately in the
-[stable UXP workflow matrix](uxp-stable-workflows.md). Its eleven coverage entries
+[stable UXP workflow matrix](uxp-stable-workflows.md). Its coverage entries
 share this pinned 26.3 declaration baseline and the same pending live-host gate.
 
 ## Source and version policy
@@ -40,12 +40,48 @@ verification column describes the required evidence, not a completed test run.
 
 | MCP tool | UXP protocol command | Adobe API | Operation | Capability state | Verification evidence |
 | --- | --- | --- | --- | --- | --- |
+| `transcribe_clip_uxp` | `transcript.start` | `Transcript.transcribeClipProjectItem()` | Speech-to-Text start invocation; no completion claim | Supported when the exact project-item identity and action APIs probe true | Request Adobe's Speech-to-Text API for one exact source clip; it does not prove transcript completion, accuracy, or licensed-host validation. Privacy boundary: transcription may use Adobe cloud services per host preferences. |
+| `is_language_pack_available_uxp` | `transcript.languagePack.check` | `Transcript.isLanguagePackAvailable()` | Read-only language-pack availability check | Supported when the documented API probes true | Return Adobe's boolean availability for one language code; does not download language packs or change Premiere. |
 | `rename_track_uxp` | `track.rename` | `AudioTrack`, `VideoTrack`, and `CaptionTrack` `createSetNameAction()` | Undoable project mutation | Supported when the selected track type and action APIs probe true | Read back the target track's name after the committed transaction; live host must also validate Undo. |
 | `create_subclip_uxp` | `subclip.create` | `ClipProjectItem.createSubClipAction()` | Undoable project mutation | Supported when the resolved item is a clip and action APIs probe true | Return and re-resolve the created subclip identity; live host must validate hard boundaries and audio/video options. |
-| `list_markers_uxp` | `marker.list` | `Marker.guid` plus marker accessors | Read-only | Supported when sequence or clip marker APIs probe true | Return marker values and the stable 26.3 `guid`; no project mutation. |
+| `list_markers_uxp` | `marker.list` | `Marker.guid`, `getColor()`, `getUrl()`, `getTarget()`, plus marker accessors | Read-only | Supported when sequence or clip marker APIs probe true | Return marker values and the stable 26.3 `guid`; optional web-link URL/target and raw RGBA component fields require explicit caller opt-in and do not mutate Premiere. |
+| `inspect_premiere_events_uxp` | `events.list`, `events.wait` | `EventManager`, six root `SnapEvent.EVENT_SNAP_*` constants, and root `OperationCompleteEvent.EVENT_CLIP_EXTEND_REACHED` / `EVENT_EFFECT_DRAG_OVER` | Read-only bounded event receipt monitoring | Base event journaling remains capability-gated; each optional root constant must probe as a non-empty event name | Register only available documented constants as passive `timeline.snap.*`, `operation.clip.extend.reached`, and coalesced `operation.effect.drag.over` receipts. Return the ordinary 256-entry/60-second bounded journal with allowlisted scalar detail only; no raw host event payload, guaranteed emission, project-state invalidation, terminal completion, downstream edit completion, or licensed-host proof is claimed. |
 | `set_source_monitor_position_uxp` | `sourceMonitor.position.set` | `SourceMonitor.setPosition()` | Source Monitor state mutation; no edit-history claim | Supported when `setPosition` and position read-back APIs probe true | Read `SourceMonitor.getPosition()` after setting the requested `TickTime`. |
+| `manage_sequence_range_uxp` | `sequence.range.inspect`, `sequence.range.update` | `Sequence` range accessors plus `createSetInPointAction()`, `createSetOutPointAction()`, and `createSetZeroPointAction()` | Undoable sequence-range mutation | Supported when every accessor, action, `TickTime`, and transaction primitive probes true | Read the complete range after one transaction and require it to match the guarded request; live host must also validate Undo. |
+| `manage_sequence_playhead_uxp` | `sequence.playhead.inspect`, `sequence.playhead.set` | `Sequence.getPlayerPosition()` and `Sequence.setPlayerPosition()` | Sequence player-state mutation; no project-save or Undo claim | Supported when the active sequence, `TickTime`, getter, and setter probe true | Require the inspected sequence GUID and exact current position, serialize competing setters, then read the player position back. |
+| `manage_app_preferences_uxp` | `preferences.inspect`, `preferences.set` | `AppPreference.getValue()`, `setValue()`, the three documented preference keys, and persistence constants | Direct application-state update; no project-save, transaction, or Undo claim | Supported when all three named keys, both property-type constants, and the exact getter/setter probe true | Return three bounded native strings. A write accepts only one allow-listed key and string value, requires the exact inspected value, explicit persistence and confirmation, serializes competing writes to that key, and verifies exact native-string readback. This is not a licensed-host proof. |
+| `inspect_installed_mogrt_directory_uxp` | `graphics.mogrtPath.inspect` | `SequenceEditor.getInstalledMogrtPath()` | Read-only installed-MOGRT directory availability readback | Supported when the static documented getter probes true | Validate only one bounded native string. The path remains redacted unless `include_path: true`; the bridge does not enumerate or read the directory, import MOGRTs, prove template compatibility, or validate a licensed host. |
+| `inspect_sequence_timing_uxp` | `sequence.timing.inspect` | `Sequence.getFrameSize()`, `getTimebase()`, audio/video time-display getters, and `getProjectItem()` | Read-only active-sequence timing and ownership snapshot | Supported when the active sequence exposes each listed getter; invocation then requires the returned ProjectItem to expose a valid ID | Return bounded native values and reject a different active sequence at read completion. This is not a locked atomic snapshot, does not detect a transient switch back to the same sequence, and is not licensed-host proof. |
+| `inspect_frame_alignment_uxp` | `time.frameAlignment.inspect` | `FrameRate.createWithValue()`, `TickTime.createWithSeconds()`, `createWithFrameAndFrameRate()`, `alignToFrame()`, and `alignToNearestFrame()` | Read-only native frame-boundary conversion for caller-owned values | Supported when the documented native FrameRate and TickTime factories plus both alignment methods probe true | Accept one bounded rate plus either seconds or a frame count, and return native seconds/tick-string values. It never infers a sequence rate, changes Premiere, or proves timeline placement, playback, persistence, or licensed-host behavior. |
+| `inspect_sequence_timing_by_guid_uxp` | `sequence.timingByGuid.inspect` | `Project.getSequence()`, `Guid.fromString()`, and the bounded sequence-timing accessors | Read-only exact known-sequence timing and ownership snapshot | Supported when Project GUID lookup parses and resolves; the requested target's timing accessors are probed at invocation | Require one exact known sequence GUID, including a non-active target without activating it, and reject a changed project, missing target, GUID mismatch, or any difference across two complete timing snapshots. This is not an atomic host snapshot or licensed-host proof. |
+| `calculate_tick_time_uxp` | `time.tickArithmetic.inspect` | `TickTime.createWithTicks()`, `add()`, `subtract()`, `multiply()`, `divide()`, and tick/second readback | Read-only native tick arithmetic | Supported when the TickTime factory probes true and the selected instance method exists at invocation | Accept only canonical bounded tick strings and non-zero integer multiply/divide factors, then return native ticks and seconds. It accepts no seconds or frame rates, does not align frames or infer timecode, and does not inspect project state, rendering, playback, or a licensed host. |
+| `manage_sequence_display_format_uxp` | `sequence.displayFormat.inspect`, `sequence.displayFormat.update` | `Sequence.getSettings()`, `createSetSettingsAction()`, and `SequenceSettings` audio/video display-format getters, setters, and constants | One undoable sequence-settings mutation | Supported when the getters, setters, documented constants, and transaction primitives probe true | Require the inspected sequence GUID and complete two-code snapshot, serialize all competing updates for that sequence, commit one native settings action, and read both codes back. Contract coverage is not licensed-host or Undo proof. |
+| `automate_effect_parameters_uxp` | `parameters.point.inspect`, `parameters.point.set` | `ComponentParam.getStartValue()`, `isTimeVarying()`, `createKeyframe()`, `createSetValueAction()`, `PointF`, and Project transaction primitives | One undoable static PointF parameter mutation | Supported when the active coordinate resolves a parameter exposing the PointF constructor, point start-value readback, and transaction action APIs | Inspect reads the complete PointF x/y snapshot twice and rejects an intervening change. Update requires that exact snapshot, confirmation, and operation ID; it serializes competing updates for that parameter, creates one action in one transaction, and reads x/y back. Keyframed PointF edits, rendered output, playback, persistence, Undo, and licensed-host behavior are not proven. |
+| `automate_effect_parameters_uxp` | `parameters.point.displacement.inspect` | `ComponentParam.getValueAtTime()`, `TickTime.createWithSeconds()`, and `PointF.distanceTo()` | Read-only animated PointF endpoint displacement | Supported when the active coordinate resolves a time-varying PointF parameter whose two native samples expose `distanceTo()` | Require an exact coordinate and a strictly increasing, bounded two-time interval. Read the complete project/sequence/component/parameter identity, animation state, both native points, and native straight-line distance twice; reject any drift. It is an endpoint displacement, not total path length, a keyframe edit, rendered motion, playback, persistence, Undo, or licensed-host proof. |
+| `automate_effect_parameters_uxp` | `parameters.color.inspect`, `parameters.color.set` | `ComponentParam.getStartValue()`, `isTimeVarying()`, `createKeyframe()`, `createSetValueAction()`, `Color`, and Project transaction primitives | One undoable static Color parameter mutation | Supported when the active coordinate resolves a parameter exposing the Color constructor, color start-value readback, and transaction action APIs | Inspect reads the complete raw RGBA snapshot twice and rejects an intervening change. Update requires that exact snapshot, confirmation, and operation ID; it serializes competing updates for that parameter, creates one action in one transaction, and reads RGBA back. Keyframed Color edits, color management, rendered appearance, playback, persistence, Undo, and licensed-host behavior are not proven. |
+| `inspect_effect_parameter_catalog_uxp` | `parameters.catalog.inspect` | Audio/video component-chain accessors, `Component.getParamCount()`/`getParam()`, and `ComponentParam` descriptor accessors | Read-only bounded component-parameter discovery | Supported when the active coordinate exposes a documented component chain, identity getters, and every parameter descriptor accessor | Return at most 64 parameter indices, display names, and keyframe capability/state entries; never read raw parameter values. Read the complete target twice and reject changed project, active-sequence, component-identity, or descriptor data. This does not prove parameter values, editability, rendering, playback, persistence, Undo, or licensed-host behavior. |
+| `inspect_source_media_provenance_uxp` | `source.provenance.inspect` | `Project.getRootItem()`, `FolderItem.getItems()`, and `ClipProjectItem.getMediaFilePath()` / `getOriginatingProjectPath()` | Read-only, opt-in source-path provenance inspection | Supported when the documented Project, FolderItem, and ClipProjectItem casts probe true | Require one exact Project-item ID and at least one explicit path-disclosure flag. Resolve only that item twice through a 4096-item bounded tree and reject a changed project, target, or selected path. It does not return a tree, access the filesystem, validate a path, establish origin or rights, or prove a licensed host. |
+| `inspect_source_proxy_uxp` | `source.proxy.inspect` | `Project.getRootItem()`, `FolderItem.getItems()`, and `ClipProjectItem.canChangeMediaPath()` / `isOffline()` / `canProxy()` / `hasProxy()` / `getProxyPath()` | Read-only, bounded source-proxy readiness inspection | Supported when the documented Project, FolderItem, and ClipProjectItem casts plus all listed proxy getters probe true | Require one exact Project-item ID. Resolve only that item twice through a 4096-item bounded tree and reject a changed project, target, or selected state. The proxy path getter runs only after explicit opt-in and only for an attached proxy; it does not access the filesystem, attach/relink media, prove proxy compatibility, playback, persistence, or a licensed host. |
+| `manage_source_media_timing_uxp` | `source.mediaTiming.inspect`, `source.mediaTiming.setStart` | `ClipProjectItem.getMedia()`, stable `Media.start`/`duration`, `Media.createSetStartAction()`, `TickTime`, and Project transaction primitives | One undoable source-media start-time mutation | Supported when the resolved clip's media surface, TickTime factory, and transaction primitives probe true | Require the exact project-item ID and a complete start/duration snapshot, serialize competing updates for that clip, reject a changed synchronous timing snapshot under the action lock, then read back the requested start and unchanged duration. Contract coverage is not licensed-host, timecode-display, persistence, or Undo proof. |
+| `manage_source_media_overrides_uxp` | `source.mediaOverrides.inspect`, `source.mediaOverrides.update` | `ClipProjectItem.getFootageInterpretation()`, `FootageInterpretation.getFrameRate()`, `getPixelAspectRatio()`, `createSetOverrideFrameRateAction()`, `createSetOverridePixelAspectRatioAction()`, and Project transaction primitives | One undoable explicit source-media interpretation-override mutation | Supported when the resolved clip, effective interpretation getters, dedicated override actions, and transaction primitives probe true | Require the exact project/item/effective-value snapshot, confirmation, and operation ID; serialize this protocol's competing source-media timing/override updates per item; construct requested actions under one lock and commit one transaction, then read both effective values back. Adobe exposes no explicit-override-presence or clear getter, so matching effective values do not prove persistence or distinguish an override from file-native interpretation. Contract coverage is not licensed-host or Undo proof. |
+| `inspect_track_item_identity_uxp` | `trackItem.identity.inspect` | Audio/video `TrackItem.getMatchName()`, `getType()`, `getMediaType()`, `getTrackIndex()`, and `getIsSelected()` | Read-only single-track-item identity snapshot | Supported when the active sequence, requested track item, and every documented identity getter probe true | Require one bounded audio/video coordinate, optionally reject a stale expected sequence GUID, and re-read the active sequence identity before returning. It returns no paths, effect parameters, rendered output, or visual proof; a switch away and back to the same sequence during the call is not detected, and contract coverage is not licensed-host proof. |
+| `slip_track_item_uxp` | `trackItem.slip.inspect`, `trackItem.slip` | Audio/video `TrackItem` timing getters, `createSetInPointAction()`, `createSetOutPointAction()`, and Project transaction primitives | One undoable source-only slip | Supported when the active sequence exposes the bounded requested clip and all required timing/action APIs | Require a complete reviewed snapshot, explicit confirmation, and operation ID; serialize competing slips per item, create exactly two source-point actions in one transaction, then verify unchanged timeline timing plus the exact shifted source range. It supports only forward 1x items and does not prove media-handle availability, rendered frames, linked-item sync, persistence, Undo, or licensed-host behavior. |
+| `slide_track_item_uxp` | `trackItem.slide.inspect`, `trackItem.slide` | Audio/video `TrackItem` timing getters; `createMoveAction()`, timeline/source trim actions; and Project transaction primitives | One undoable contiguous three-item slide | Supported when the bounded requested center item has immediate contiguous same-track clip neighbours and every required action API probes true | Require a complete three-item snapshot, confirmation, and operation ID; serialize slides and slips on the track, create five actions in one transaction, then verify every source/timeline boundary and both retained cuts. Only forward 1x items with matching source/timeline durations are supported; media handles, linked A/V, rendering, playback, persistence, Undo, and licensed-host behavior remain unproven. |
+| `duplicate_track_item_uxp` | `trackItem.clone.inspect`, `trackItem.clone` | Audio/video `TrackItem` timing/source getters, `SequenceEditor.getEditor()`, `createCloneTrackItemAction()`, `TickTime`, and Project transaction primitives | One undoable append-only same-track duplicate | Supported when the requested final clip item, documented clone action, and transaction primitives probe true | Require a complete final-item snapshot, confirmation, and operation ID; serialize with slips/slides on that track, make exactly one clone action/transaction, then read back only the source and deterministic appended coordinate. It does not clone into occupied ranges or another track, and does not prove media handles, linked A/V, rendering, playback, persistence, Undo, or licensed-host behavior. |
+| `ripple_delete_track_item_uxp` | `trackItem.rippleDelete.inspect`, `trackItem.rippleDelete` | Audio/video `TrackItem` timing/source getters, `TrackItemSelection`, `Constants.MediaType`, `SequenceEditor.getEditor()`, `createRemoveItemsAction()`, and Project transaction primitives | One undoable contiguous same-track ripple delete | Supported when the requested item has an immediate contiguous same-track successor and the documented selection, remove-action, and transaction primitives probe true | Require complete target/successor snapshots, confirmation, and an operation ID; serialize with slips/slides/duplicates on that track, make one single-item ripple action and transaction, then read only the successor at the removed coordinate. Final items, gaps, other tracks, linked A/V, media handles, rendering, playback, persistence, Undo, and licensed-host behavior remain outside this proof. |
+| `manage_timeline_source_label_uxp` | `timeline.sourceLabel.inspect`, `timeline.sourceLabel.update` | Audio/video track item `getProjectItem()`, `ClipProjectItem.cast()`, source `getColorLabelIndex()`/`createSetColorLabelAction()`, and Project transaction primitives | One undoable source Project-item color-label mutation resolved from an active timeline coordinate | Supported when the active coordinate resolves a clip source with the documented color-label action | Require the complete coordinate/source-label snapshot, confirmation, and operation ID; serialize all bridge color-label mutations for that source item, re-resolve before action construction, commit one transaction, and read the coordinate/source label back. A source label is project-global, not a timeline-only instance label; rendered appearance, playback, persistence, Undo, and licensed-host behavior are not proven. |
+| `manage_sequence_preview_frame_uxp` | `sequence.previewFrame.inspect`, `sequence.previewFrame.update` | `Project.getSequences()`, `Sequence.getSettings()`, `SequenceSettings.getPreviewFrameRect()`/`setPreviewFrameRect()`, `RectF`, `Sequence.createSetSettingsAction()`, and Project transaction primitives | One undoable preview-frame rectangle mutation for one exact sequence GUID | Supported when the resolved target exposes the documented preview-frame accessors, RectF constructor, settings action, and transaction primitives | Inspect double-reads a bounded native width/height snapshot. Update requires the complete snapshot, confirmation, and operation ID; it serializes bridge updates by reviewed project/sequence, revalidates before one settings transaction, then reads that exact sequence back. UXP exposes no compare-and-swap or UI/cross-extension lock; video frame dimensions, rendering, playback, persistence, Undo, and licensed-host behavior are not proven. |
+| `create_empty_sequence_uxp` | `sequences.createEmpty` | `Project.createSequence()`, `Project.getSequences()`, and sequence identity accessors | Direct project mutation; no Undo or transaction claim | Supported when the active project exposes documented empty-sequence creation | Require explicit confirmation and an operation ID, serialize the complete project-sequence capacity snapshot through creation and post-call collection readback, and verify the returned identity. Contract coverage is not licensed-host proof. |
+| `create_sequence_with_preset_uxp` | `sequence.createPreset` | `Project.createSequenceWithPresetPath()` and `Project.getSequences()` | Direct project mutation; no Undo or transaction claim | Supported when the active project exposes documented preset-path sequence creation and the workspace broker can validate the preset file | Require explicit confirmation, an operation ID, and one approved-workspace `.sqpreset` path; verify the created sequence GUID in the project collection. Contract coverage is not licensed-host proof. |
+| `inspect_project_tree_uxp` | `projectTree.inspect` | `Project.getRootItem()`, `FolderItem.getItems()`, and project-item identity accessors | Read-only bounded Project-panel tree snapshot | Supported when the active project exposes a readable root folder and runtime folder casts | Return only stable IDs, names, types, parent IDs, bin state, and optional color-label indexes, capped at 512 items and depth 16. It omits media paths, metadata, and content; depth or item truncation is explicit, and this is not licensed-host proof. |
+| `inspect_project_panel_metadata_uxp` | `metadata.columns.get`, `metadata.projectPanel.get` | `Metadata.getProjectColumnsMetadata()` and `Metadata.getProjectPanelMetadata()` | Read-only bounded Project-panel metadata snapshot | Supported when the exact documented accessor probes true; item columns additionally resolve one media item | Return one native metadata string capped at 350,000 characters and 900,000 serialized UTF-8 bytes. This read-only tool intentionally offers no schema creation or write route; it is not an atomic project snapshot or licensed-host proof. |
+| `manage_project_panel_metadata_uxp` | `metadata.projectPanel.get`, `metadata.projectPanel.update` | `Metadata.getProjectPanelMetadata()`, `Metadata.setProjectPanelMetadata()`, `Project.guid`, and `Project.lockedAccess()` | Direct non-undoable active-project panel-metadata replacement | Supported when the exact getter, setter, active-project GUID, and lock probe true | Require exact inspected project GUID and XML, `confirm_update: true`, and an operation ID. Cap each XML string at 12 KiB UTF-8, serialize this bridge's competing updates per project, re-snapshot immediately before starting the setter, then require exact active-project XML readback. Adobe exposes no atomic compare-and-set, so user-interface/extension races, persistence, UI results, Undo, cancellation, and licensed-host behavior are not claimed. |
+| `create_project_metadata_field_uxp` | `metadata.projectSchema.inspect`, `metadata.projectSchema.create` | `Metadata.getProjectPanelMetadata()`, `addPropertyToProjectMetadataSchema()`, four documented metadata-type constants, `Project.guid`, and `Project.lockedAccess()` | Direct non-undoable Project metadata-schema field creation | Supported when the exact panel getter, schema creator, type constants, active-project GUID, and lock probe true | Require exact inspected project GUID and 12 KiB UTF-8-bounded panel XML, a bounded typed name/label, `confirm_create: true`, and an operation ID. Serialize this bridge's schema/create and panel-replacement requests per project, then re-snapshot before invoking the direct API. Adobe provides neither atomic compare-and-set nor a field-level schema getter: host acceptance and changed panel XML are evidence only, so success is always `committed_unverified`; persistence, UI results, Undo, cancellation, and licensed-host behavior are not claimed. |
 | `has_transcript_uxp` | `transcript.has` | `Transcript.hasTranscript()` | Read-only | Native 26.3 support is used when it probes true; the existing 25.6 transcript-export compatibility probe is labeled as a fallback | Return Adobe's native boolean when available; never infer transcript presence from names or transcript text. |
+| `import_transcript_uxp` | `transcript.import` | `Transcript.hasTranscript()`, `exportToJSON()`, `importFromJSON()`, and `createImportTextSegmentsAction()` with Project transaction primitives | One undoable source-transcript replacement | Supported when the exact transcript, project-root traversal, clip-cast, and transaction APIs probe true | Require an exact project GUID, project-item ID, and current transcript SHA-256 (or `null` for an untranscribed clip), explicit confirmation, and an operation ID. Serialize competing imports for that clip; cap input at 24 KiB and snapshots at 1 MiB; re-snapshot before action creation; then require exact export-SHA readback. A committed readback failure is `committed_unverified`, not proof of the imported text, Undo, persistence, or licensed-host behavior. |
 | `export_aaf_uxp` | `interchange.aaf.export` | `ProjectConverter.exportAAF()` and `AAFExportOptions` | Export side effect; no project undo claim | Supported when converter and option APIs probe true | Record Premiere's boolean result and, in a live host, confirm the intended AAF artifact exists and is usable. |
+| `audit_object_masks_uxp` | `objectMask.audit` | `ObjectMaskUtils.hasObjectMask()`, `Project.getSequences()`/`getSequence()`, and sequence GUID/name accessors | Read-only bounded project/sequence Object Mask presence audit | Supported when the documented object-mask and active-project APIs probe true; exact-ID mode additionally requires GUID lookup | Audit at most 64 sequences, read project aggregate and per-sequence booleans twice, and reject any project/sequence/name/boolean drift. This reports presence only—not masks, tracking, rendered pixels, playback, or licensed-host behavior. |
+| `inspect_unique_object_identity_uxp` | `object.uniqueIdentity.inspect` | `UniqueSerializeable.cast()` and `getUniqueID()`, plus bounded Project item/sequence lookup | Read-only opaque native identity inspection | Supported when the documented active-project and unique-serializable APIs probe true; target resolution is checked at invocation | Require exactly one existing project-item ID or sequence GUID. Resolve and read its opaque native identity twice, rejecting project, locator, or identity drift. It exposes no paths, metadata, content, persistence guarantee, edit authority, rendering, playback, or licensed-host proof. |
 
 The 26.3 command-registry entries mark their documented status, 26.3 minimum,
 read-only/destructive/undoable metadata, and an explicit reason if the host does
@@ -53,7 +89,9 @@ not expose the required API. `transcript.has` is a pre-existing protocol command
 its capability record identifies both its 25.6 export-probe compatibility path and
 whether the 26.3 native check is present. A command failure is never retried
 automatically through CEP or QE: a failed UXP mutation can already have changed
-Premiere state.
+Premiere state. `transcript.import` is intentionally separate from the older 25.6
+export/search compatibility path because its guarded target identity and native
+`hasTranscript()` preflight require the stable 26.3 surface.
 
 ## Public argument contract
 
@@ -72,11 +110,217 @@ bounded `operation_id` replay key where applicable.
   exactly one Project-panel selection. `hard_boundaries` defaults to `false`;
   `take_video` and `take_audio` each default to `true`.
 - `list_markers_uxp`: `scope` defaults to `sequence` and may be `project_item`.
+- `inspect_frame_alignment_uxp`: `action` is `align` or `frame`; both require
+  `frame_rate` from 1 through 240. `align` requires `seconds` from 0 through
+  86,400 and rejects `frame_count`; `frame` requires an integer `frame_count`
+  from 0 through 20,736,000 and rejects `seconds`. Both paths return only
+  native TickTime readback for caller-owned inputs.
   The latter accepts one item selector as above. `filters` is an optional list of
-  at most 16 marker-type strings, each at most 64 characters.
+  at most 16 marker-type strings, each at most 64 characters. Web-link `url` and
+  `target` fields are omitted unless `include_web_links=true`, because a URL can
+  contain sensitive query data. Raw `color` components (`red`, `green`, `blue`,
+  and `alpha`) are omitted unless `include_color_values=true`; they are returned
+  exactly as finite host values, without color-profile conversion or a rendered-
+  appearance claim. When opted in, a host that does not expose an individual
+  documented accessor returns `null` for that field; this is a marker metadata
+  snapshot, not a link reachability, browser-navigation, rendered-appearance, or
+  licensed-host validation claim.
 - `set_source_monitor_position_uxp`: `seconds` is finite and non-negative.
+- `manage_sequence_range_uxp`: `inspect` returns the active sequence GUID and its
+  complete in/out/zero-point/end snapshot. `update` requires that GUID and the
+  complete `expected_range` from `inspect`, plus one or more bounded updates.
+  Stale snapshots, unknown fields, and a final range outside `0 <= in <= out <= end`
+  are rejected before any Premiere action is created. Zero point is independently
+  bounded but is not conflated with the sequence in/out export range.
+- `manage_sequence_playhead_uxp`: `inspect` returns the active sequence GUID and
+  current player position. `set` requires both exact values plus a requested
+  position, each finite and within 0 through 86400 seconds. A changed sequence or
+  position outside a one-microsecond tolerance rejects before the setter is called;
+  accepted requests require boolean host confirmation and player-position readback
+  within that same tolerance. It controls UI player
+  state only, so it does not claim a project save or Undo entry.
+- `manage_app_preferences_uxp`: `inspect` returns only the native string values
+  for Adobe's three documented named keys: `auto_peak_generation`,
+  `import_workspace`, and `show_quickstart_dialog`. `set` requires one of those
+  keys, its exact `expected_value` from inspection, a string `value` capped at
+  1024 characters, an explicit `persistent` or `non_persistent` flag,
+  `confirm_preference_change: true`, and a bounded `operation_id`. The panel
+  serializes competing writes for the same key, rechecks the expected native
+  string immediately before the direct setter, requires Adobe's boolean success,
+  then requires exact native-string readback. Adobe exposes no project action,
+  transaction, cancellation, or Undo boundary for this application state, so none
+  is claimed; mock coverage is not licensed-host, persistence, or user-interface
+  behavior proof.
+- `inspect_sequence_timing_uxp`: accepts no arguments and returns the active
+  sequence GUID/name, positive integral native frame dimensions, a positive
+  bounded decimal timebase, non-negative integral
+  audio/video `TimeDisplay.type` codes, and backing Project-item ID/name. Every
+  field is bounded and validated. The panel re-resolves the active sequence
+  after the asynchronous getter set and fails when its GUID no longer matches
+  the sequence captured at request start. Adobe does not expose an atomic
+  snapshot or activation revision here, so a transient switch back to the same
+  sequence is not detectable. It performs no mutation, transaction, or
+  operation replay.
+- `inspect_sequence_timing_by_guid_uxp`: accepts exactly one `sequence_guid`
+  returned by a known native sequence listing or inspection. It parses that GUID
+  through the documented UXP `Guid.fromString()` API and resolves it directly via
+  `Project.getSequence()` without changing the active sequence. It validates a
+  complete bounded timing/Project-item snapshot, re-resolves the active project
+  and requested GUID, and requires an equal complete second snapshot before
+  returning. The protocol therefore rejects target removal, project or GUID
+  mismatch, and observable timing changes during the request; Adobe supplies no
+  atomic snapshot/revision, so same-value changes between observations and
+  licensed-host behavior remain unproven.
+- `manage_sequence_display_format_uxp`: `inspect` returns the resolved sequence
+  GUID, a complete `displayFormats` snapshot containing both native
+  `audio_display_format` and `video_display_format` codes, and the exact
+  `SequenceSettings` constants supported by that host. `update` requires the
+  inspected GUID, both expected codes, at least one requested code from that
+  returned list, and an `operation_id`. The panel serializes the entire
+  resolve/snapshot/stale-check/setter/action/readback flow per sequence,
+  including different operation IDs; it rejects stale codes before either
+  setter or action construction, executes one `createSetSettingsAction()`
+  transaction, and verifies both requested codes through a new settings read.
+  Completed duplicate operation IDs replay through the command registry.
+  Cancellation is explicitly unsupported, and the mock contract does not prove
+  host acceptance, persistence, or Undo behavior.
+- `manage_source_media_timing_uxp`: `inspect` requires one `project_item_id` and
+  returns that ID plus finite non-negative `start_seconds` and `duration_seconds`.
+  `set_start` requires the same ID, the complete `expected_timing` snapshot, a
+  bounded finite non-negative `start_seconds`, `confirm_set_start: true`, and an
+  optional `operation_id`. The panel serializes the full preflight/action/readback
+  boundary per project and item, rechecks the stable synchronous timing properties
+  inside `lockedAccess`, commits exactly one native action in one transaction, and
+  verifies the requested start and unchanged duration afterward. It neither uses
+  beta-only `Media` getters nor accepts a beta Promise-shaped timing property as a
+  mutation fallback.
+- `manage_source_media_overrides_uxp`: `inspect` requires one
+  `project_item_id` and returns its active project GUID, the ID, and bounded
+  effective frame-rate and pixel-aspect-ratio values. `update` requires that
+  complete `expected_overrides` snapshot, an explicit
+  `confirm_media_interpretation: true`, a bounded `operation_id`, and one or both
+  requested overrides. Frame rate is a finite 1 through 240 value; pixel aspect
+  is a positive integer numerator/denominator pair whose resulting ratio is 0.01
+  through 100. The panel serializes this protocol's source-media timing/override
+  operations per project/item, rejects changed effective values before action
+  creation, builds only the requested dedicated override actions under one
+  `lockedAccess()` callback, commits exactly one transaction, and reads both
+  effective values back. `getFootageInterpretation()` is asynchronous, so the
+  effective snapshot is refreshed immediately before the lock rather than
+  falsely claiming an in-lock getter recheck. Adobe provides no documented
+  explicit-override presence or clear API: the tool cannot clear an override or
+  distinguish a matching override from file-native interpretation. Mock and
+  static contract coverage are not licensed-host, persistence, display, or Undo
+  proof.
+- `slip_track_item_uxp`: `inspect` returns a complete bounded active-project,
+  sequence, coordinate, timeline/source timing, speed, and reverse snapshot for
+  one audio or video clip. `apply` requires that exact snapshot,
+  `confirm_slip: true`, a non-zero source offset from -60 to 60 seconds, and an
+  `operation_id`. Slips are serialized per target through stale preflight,
+  action creation, transaction, and readback. The panel creates only the
+  documented source-in and source-out actions in one transaction and requires
+  timeline start/end/duration to remain unchanged on the coordinate-resolved
+  readback. It supports forward 1x items only; a host may reject or normalize a
+  source point beyond available media because this API exposes no source-handle
+  maximum. A readback failure can follow a committed transaction and is not
+  rendered-frame, A/V-link, persistence, Undo, or licensed-host proof.
+- `create_empty_sequence_uxp`: requires a non-empty `name`,
+  `confirm_non_undoable: true`, and a bounded non-empty `operation_id`. It performs
+  no sequence action or transaction because Adobe exposes this as a direct
+  `Project.createSequence()` call. The panel serializes the full project-sequence
+  capacity preflight, creation call, and identity readback. A host rejection after a
+  detected creation, missing identity, or unreadable readback returns a replayable
+  `committed_unverified` partial receipt; it does not claim Undo or cancellation.
+- `create_sequence_with_preset_uxp`: requires a non-empty `name`, a
+  workspace-gated `preset_path`, `confirm_non_undoable: true`, and a bounded
+  non-empty `operation_id`. Adobe documents `Project.createSequenceWithPresetPath()`
+  as the replacement for the deprecated `createSequence(name, presetPath)`
+  argument. This is a direct Project call without an Action undo boundary; the
+  panel requires confirmation, then verifies the created sequence GUID in the
+  project collection. Contract coverage is not licensed-host or Undo proof.
+- `inspect_project_tree_uxp`: accepts optional `max_items` from 1 through 512
+  (default 256) and `max_depth` from 0 through 16 (default 6). The root item is
+  returned separately; only non-root entries count toward `max_items`. Children
+  retain Premiere's returned order and include their depth and known parent ID.
+  `itemLimitReached` and `depthLimitApplied` explicitly mark a partial traversal.
+  This is a read-only structural snapshot, not an atomic project revision,
+  media-path/metadata inventory, playback proof, or licensed-host validation.
+- `inspect_sequence_structure_uxp`: `include_source_project_items` is false by
+  default. Setting it true returns each bounded timeline clip's stable source ID.
+  `include_source_project_item_content_type: true` additionally requires that ID
+  opt-in and returns only the documented broad source category `any`, `sequence`,
+  or `media`; unavailable or unrecognized host values are `null`. It does not
+  return a Project-panel type code, source name, media path, metadata, or tree
+  state. `include_source_project_item_classification: true` additionally requires
+  that ID opt-in and returns only documented source flags for sequence, merged-clip,
+  multicam-clip, and offline status. A source unavailable to Premiere or an
+  unavailable individual getter is represented as `null`; no source name, type,
+  media path, Project-panel metadata, or project-tree traversal is read. Only when
+  explicitly requested by
+  `include_source_nested_sequence_identity: true`, which also requires both
+  source-ID and classification opt-ins. When and only when `isSequence` is
+  exactly `true`, it returns the linked nested sequence's documented GUID; a
+  non-sequence or unavailable nested source is `null`. It neither inspects the
+  nested sequence nor reads Project-panel state. This is a current bounded read,
+  not an atomic source/timeline revision, playback proof,
+  or licensed-host validation.
+- `inspect_project_panel_metadata_uxp`: action `panel` reads the active project's
+  native Project-panel metadata and `item_columns` resolves one media item using
+  the existing ID/name/selection rules before reading its native column metadata.
+  Each returned string may be empty but is capped at 350,000 characters and the
+  complete serialized result at 900,000 UTF-8 bytes. This separate read-only tool
+  has no setter route. The read is not a locked project revision, metadata-schema
+  validation, persistence proof, or licensed-host validation.
+- `manage_project_panel_metadata_uxp`: `inspect` returns the active project panel
+  XML. `update` requires that exact XML and project GUID, a 12 KiB UTF-8-bounded
+  replacement, `confirm_update: true`, and an `operation_id`. The panel serializes
+  competing bridge updates per project, re-snapshots immediately before starting
+  the direct setter under `lockedAccess()`, then requires exact active-project XML
+  readback. Adobe supplies no atomic compare-and-set for this direct setter, so a
+  user-interface or other-extension race is not excluded. The setter is non-undoable
+  with no cancellation claim; mock coverage is not persistence, UI, Undo, or
+  licensed-host proof.
+- `create_project_metadata_field_uxp`: `inspect` returns only the active project's
+  12 KiB UTF-8-bounded panel XML and identity required for `create`. Creation accepts
+  one stable identifier, label, and one of Adobe's documented `integer`, `real`,
+  `text`, or `boolean` types; it requires that exact snapshot, `confirm_create: true`,
+  and an `operation_id`. The panel serializes direct schema creation with direct
+  panel-XML replacement requests for the project, then re-snapshots immediately
+  before the synchronous direct call under `lockedAccess()`. Adobe has no atomic
+  compare-and-set or field-level schema getter, so any host-accepted result remains
+  `committed_unverified` even when the post-call panel XML changed. UI/extension
+  races, field presence, persistence, UI results, Undo, cancellation, and
+  licensed-host behavior are not claimed.
+- `transcribe_clip_uxp`: requires one `project_item_id` (512 characters maximum) or
+  `project_item_name` (255 maximum); `language` is an optional bounded string from
+  `get_transcript_languages_uxp` or `is_language_pack_available_uxp`. Requires
+  `confirm_destructive: true` and a bounded `operation_id`. The panel matches the
+  exact clip identity, invokes `Transcript.transcribeClipProjectItem()`, and returns
+  `committed_unverified` success with a privacy disclosure. This is a guarded
+  Speech-to-Text start boundary; it does not claim transcript completion, accuracy,
+  rendered appearance, playback, or licensed-host validation. Transcription may use
+  Adobe cloud services per host preferences; verify data-handling policies before use.
+  The command resolves nested project items, rejects ambiguous names, and requires
+  Adobe to return `true` before reporting a start request. Per the
+  [official Transcript reference](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transcript/)
+  (checked September 15, 2026), an explicit language is passed as `{ language }`;
+  omitting it uses host preferences. Adobe's auto-detect preference may override
+  the requested language. This contract is also declared in Apache-2.0 package
+  `@adobe/premierepro@26.5.1`; neither source establishes licensed-host execution.
+- `is_language_pack_available_uxp`: requires one bounded `language` string. The panel
+  invokes `Transcript.isLanguagePackAvailable()` and returns Adobe's boolean
+  availability. This is read-only and does not download language packs or change
+  Premiere.
 - `has_transcript_uxp`: accepts at most one resolved `project_item_id` or
   `project_item_name`; omitting both requires exactly one Project-panel selection.
+- `import_transcript_uxp`: requires exact `project_item_id`, `project_guid`, and
+  `expected_transcript_revision` from a current transcript inspection; only an
+  explicit `null` revision may create a transcript where `has_transcript_uxp`
+  reports absence. It rejects stale project or transcript state before action
+  creation, requires `confirm_destructive: true` and a bounded `operation_id`,
+  accepts at most 24 KiB UTF-8 JSON, and does not accept a selected item or name
+  as a mutation target. A successful transaction is still reported
+  `committed_unverified` when the capped export readback is unavailable or differs.
 - `export_aaf_uxp`: `output_file_path` is non-empty and at most 4096 characters.
   Its optional allow-listed `options` fields are boolean `mixdown_video`,
   `explode_to_mono`, `embed_audio`, `trim_sources`, `render_audio_effects`,
@@ -99,7 +343,7 @@ tests with a mock UXP host, not host integration tests.
    `lockedAccess`/`executeTransaction` boundary. Do not await inside either
    callback or return an action for later use.
 4. Treat `Sequence.setSelection()` as synchronous in 26.3; remove `await` or
-   `.then()` chaining from callers. This change is independent of the six new
+   `.then()` chaining from callers. This change is independent of the guarded
    MCP commands but required for 26.3 compatibility.
 5. Do not silently fall back after a UXP mutation error. Return backend,
    `operationId`, result envelope, and verification state so the caller can
@@ -109,11 +353,38 @@ tests with a mock UXP host, not host integration tests.
 
 Automated tests may prove these properties:
 
-- MCP tools/list exposes the six tools only with a UXP bridge;
+- MCP tools/list exposes documented UXP tools only with a UXP bridge;
 - public schemas reject invalid shapes and translate into the documented protocol
   command names and camelCase arguments;
 - capability probes report unavailable APIs without optimistic version guessing and
   distinguish the 26.3 native transcript check from its older export-probe fallback;
+- sequence-range updates require the complete read snapshot, place all requested
+  actions in one transaction, and reject a changed sequence or range before action
+  construction;
+- sequence-playhead requests reject stale sequence or position snapshots, serialize
+  concurrent setters per sequence, and require boolean acceptance plus position
+  readback;
+- sequence-timing inspection probes every required getter, accepts only positive
+  integral `RectF` values within [Premiere's documented 10,240x8,192 sequence
+  maximum](https://helpx.adobe.com/premiere/desktop/edit-projects/change-clip-sequence/sequence-settings-reference.html)
+  and non-negative integral `TimeDisplay.type` codes, bounds Project-item
+  identity values, and rejects an active sequence mismatch at read completion; it
+  does not prove detection of a
+  transient switch back to the same sequence; and
+- sequence-display-format updates require a complete two-code snapshot and
+  sequence GUID, reject stale values within the same per-sequence exclusion
+  boundary, accept only runtime-advertised official constants, commit one
+  settings action, replay a completed operation ID, and verify native readback;
+  and
+- source-media timing updates require confirmation plus a complete timing snapshot,
+  serialize conflicting requests per project-item ID, reject an old snapshot before
+  action construction, commit one action in one transaction, replay completed
+  operation IDs, and require start/duration readback; and
+- transcript import rejects unknown/unbounded input, missing confirmation, stale
+  project or transcript revisions, and oversized project traversal before it
+  creates an action; it serializes distinct operation IDs for one clip, commits
+  exactly one transaction, replays a completed operation ID, and reports only an
+  exact capped transcript-export SHA-256 match as verified; and
 - action commands preserve lock/transaction boundaries and operation replay
   behavior in a contract host; and
 - AAF options are bounded before a call reaches the host adapter.
@@ -130,11 +401,26 @@ AAF, or produced a usable Undo entry. Before release, validate on a real Premier
    project state.
 5. Set the Source Monitor position and read the position back with a sensible
    time tolerance.
-6. Check both a transcribed and non-transcribed clip with `transcript.has`.
-7. Export an AAF with representative options; confirm the resulting artifact is
+6. Inspect a sequence range, change one field and all three fields, verify the
+   returned values, and Undo each update. Confirm stale range snapshots fail before
+   changing the sequence.
+7. Inspect sequence timing, switch to another active sequence before readback
+   completes, and confirm the command rejects the final mismatch. For an
+   unchanged sequence, compare frame size, timebase, both time-display codes, and
+   the backing Project-item identity with the Premiere UI. A transient switch that
+   returns to the same sequence is outside this command's proof boundary.
+8. Inspect display formats, change audio and video codes separately and together,
+   confirm both codes read back, repeat an `operation_id` without a second
+   transaction, confirm a stale full snapshot is rejected, and Undo each accepted
+   update.
+9. Inspect one source clip's media timing, update its start from the returned
+   snapshot, confirm the requested start and unchanged duration read back, retry the
+   same `operation_id`, exercise a stale snapshot, and Undo the accepted action.
+10. Check both a transcribed and non-transcribed clip with `transcript.has`.
+11. Export an AAF with representative options; confirm the resulting artifact is
    present, opens in the intended downstream workflow, and any requested media
    side effects match the options.
-8. Disconnect/reconnect the panel and exercise duplicate `operation_id` calls;
+12. Disconnect/reconnect the panel and exercise duplicate `operation_id` calls;
    confirm that a completed mutation is replayed rather than repeated in the
    same panel session.
 
@@ -145,10 +431,14 @@ specific Premiere version and platform.
 ## Primary references
 
 - [Premiere Pro UXP 26.3 changelog](https://developer.adobe.com/premiere-pro/uxp/changelog/)
+- [Transcript `transcribeClipProjectItem`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transcript) (26.3+, documented since 25.6 beta)
+- [Transcript `isLanguagePackAvailable`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transcript)
 - [AudioTrack `createSetNameAction`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/audiotrack), with matching `VideoTrack` and `CaptionTrack` methods
 - [ClipProjectItem `createSubClipAction`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/clipprojectitem)
 - [Marker `guid`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/marker)
 - [SourceMonitor `setPosition`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sourcemonitor)
+- [Sequence range actions, timing accessors, and display formats](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/sequence)
+- [ClipProjectItem and Media timing/start actions](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/media)
 - [Transcript `hasTranscript`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/transcript)
 - [ProjectConverter `exportAAF`](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/projectconverter) and [AAFExportOptions](https://developer.adobe.com/premiere-pro/uxp/ppro-reference/classes/aafexportoptions)
 - [Adobe official UXP samples](https://github.com/AdobeDocs/uxp-premiere-pro-samples)

@@ -327,13 +327,13 @@ function buildApplyScript(plan: SpotWorkflowPlan): string {
         app.enableQE();
         var qeSequence = qe.project.getActiveSequence();
         qeTrack = qeSequence ? qeSequence.getVideoTrackAt(${plan.video_track_index}) : null;
-        if (qeTrack && typeof qeTrack.addTransition === "function" && qe.project.getVideoTransitionByName) {
+        if (qeTrack && qe.project.getVideoTransitionByName) {
           transitionQE = qe.project.getVideoTransitionByName(transitionName);
         }
-        transitionReady = !!transitionQE;
+        transitionReady = !!qeTrack && !!transitionQE;
         transitionPreflight = transitionReady
           ? { requested: true, ready: true }
-          : { requested: true, ready: false, reason: "The active Premiere build did not expose the requested transition write path" };
+          : { requested: true, ready: false, reason: "The active Premiere build did not expose the requested transition or QE video track" };
       } catch (transitionProbeError) {
         transitionPreflight = { requested: true, ready: false, reason: String(transitionProbeError) };
       }
@@ -343,25 +343,41 @@ function buildApplyScript(plan: SpotWorkflowPlan): string {
     var frameTolerance = __ticksToSeconds(frameTicks) + 0.000001;
     var placed = [];
     var usedNodeIds = {};
-    function findPlacedVideo(itemId, expectedStart) {
-      for (var clipIndex = 0; clipIndex < videoTrack.clips.numItems; clipIndex++) {
-        var candidate = videoTrack.clips[clipIndex];
+    function findPlacedClip(track, itemId, expectedStart) {
+      for (var clipIndex = 0; clipIndex < track.clips.numItems; clipIndex++) {
+        var candidate = track.clips[clipIndex];
         if (!candidate.projectItem || String(candidate.projectItem.nodeId) !== String(itemId) || usedNodeIds[String(candidate.nodeId)]) continue;
         if (Math.abs(__ticksToSeconds(candidate.start.ticks) - expectedStart) <= frameTolerance) return candidate;
       }
       return null;
     }
+    function trimPlacedClip(clip, targetEnd) {
+      var requestedEnd = new Time(); requestedEnd.ticks = __secondsToTicks(targetEnd).toString();
+      clip.end = requestedEnd;
+      return Math.abs(__ticksToSeconds(clip.end.ticks) - targetEnd) <= frameTolerance;
+    }
     for (var placementIndex = 0; placementIndex < requestedItems.length; placementIndex++) {
       var targetStart = placementIndex * ${plan.clip_duration_seconds};
-      seq.insertClip(requestedItems[placementIndex], __secondsToTicks(targetStart).toString(), ${plan.video_track_index}, ${plan.audio_track_index});
-      var placedClip = findPlacedVideo(requestedItemIds[placementIndex], targetStart);
+      var targetEnd = targetStart + ${plan.clip_duration_seconds};
+      var audioCountBefore = audioTrack.clips.numItems;
+      var ins = __insertClipHonoringSyncLock(seq, requestedItems[placementIndex], __secondsToTicks(targetStart).toString(), ${plan.video_track_index}, ${plan.audio_track_index}, "target_tracks");
+      if (!ins.ok) return __error(ins.error);
+      var placedClip = findPlacedClip(videoTrack, requestedItemIds[placementIndex], targetStart);
       if (!placedClip) return __error("Premiere did not add the requested video item at the planned frame; the assembly is not reported as verified");
+      if (!trimPlacedClip(placedClip, targetEnd)) return __error("Premiere did not trim the placed video item to the previewed duration; the assembly is not reported as verified");
+      var audioCountAfter = audioTrack.clips.numItems;
+      if (audioCountAfter > audioCountBefore) {
+        if (audioCountAfter !== audioCountBefore + 1) return __error("Premiere added an unexpected number of audio items; the assembly is not reported as verified");
+        var placedAudio = findPlacedClip(audioTrack, requestedItemIds[placementIndex], targetStart);
+        if (!placedAudio || !trimPlacedClip(placedAudio, targetEnd)) return __error("Premiere did not identify and trim the placed audio item to the previewed duration; the assembly is not reported as verified");
+      }
       usedNodeIds[String(placedClip.nodeId)] = true;
       placed.push({
         nodeId: String(placedClip.nodeId),
         projectItemId: requestedItemIds[placementIndex],
         startSeconds: __ticksToSeconds(placedClip.start.ticks),
         endSeconds: __ticksToSeconds(placedClip.end.ticks),
+        requestedDurationSeconds: ${plan.clip_duration_seconds},
         verified: true
       });
     }
@@ -421,11 +437,26 @@ function buildApplyScript(plan: SpotWorkflowPlan): string {
       }
       var transitionCountBefore = videoTrack.transitions.numItems;
       try {
-        qeTrack.addTransition(transitionQE, true, __secondsToTicks(placed[cutIndex].endSeconds).toString(), __secondsToTicks(transitionDuration).toString(), "0", false);
+        var placedInfo = __findClip(placed[cutIndex + 1].nodeId);
+        var qeClip = placedInfo ? __findQeClipByDomClip(qeTrack, placedInfo.clip) : null;
+        if (!qeClip || typeof qeClip.addTransition !== "function") {
+          transitionResults.push({ applied: false, verified: false, reason: "The target QE clip did not expose addTransition" });
+          continue;
+        }
+        var durationFrames = Math.max(1, Math.round(__secondsToTicks(transitionDuration) / frameTicks));
+        qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true);
         var transitionCountAfter = videoTrack.transitions.numItems;
-        transitionResults.push(transitionCountAfter > transitionCountBefore
+        var expectedCutTicks = __secondsToTicks(placed[cutIndex + 1].startSeconds);
+        var foundAtExpectedCut = false;
+        for (var transitionIndex = 0; transitionIndex < videoTrack.transitions.numItems; transitionIndex++) {
+          var transitionReadback = videoTrack.transitions[transitionIndex];
+          var transitionStartTicks = parseFloat(transitionReadback.start.ticks);
+          var transitionEndTicks = parseFloat(transitionReadback.end.ticks);
+          if (!isNaN(transitionStartTicks) && !isNaN(transitionEndTicks) && Math.abs(((transitionStartTicks + transitionEndTicks) / 2) - expectedCutTicks) <= frameTicks / 2) { foundAtExpectedCut = true; break; }
+        }
+        transitionResults.push(transitionCountAfter > transitionCountBefore && foundAtExpectedCut
           ? { applied: true, verified: true, atSeconds: placed[cutIndex].endSeconds }
-          : { applied: false, verified: false, reason: "Premiere did not add a transition to the track" });
+          : { applied: false, verified: false, reason: transitionCountAfter > transitionCountBefore ? "Premiere added a transition, but not at the requested cut" : "Premiere did not add a transition to the track" });
       } catch (transitionError) {
         transitionResults.push({ applied: false, verified: false, reason: String(transitionError) });
       }

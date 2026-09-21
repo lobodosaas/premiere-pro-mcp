@@ -8,21 +8,36 @@
   const MAX_SELECTION_ITEMS = 64;
   const MAX_PROJECT_ITEMS = 4096;
   const MAX_VIEW_ITEMS = 256;
+  const MAX_PROJECT_TREE_ITEMS = 512;
+  const MAX_PROJECT_TREE_DEPTH = 16;
   const MAX_KEYFRAMES = 256;
   const MAX_MARKERS = 2048;
   const MAX_SEQUENCES = 1024;
   const MAX_BIN_CHILDREN = 1024;
+  const MAX_TIMELINE_TRACKS = 64;
+  const MAX_TIMELINE_ITEMS = 512;
+  const MAX_DISPLAY_FORMAT_CODE = 2147483647;
 
   function createAdvancedWorkflowDefinitions(deps) {
     const ppro = deps.ppro, Protocol = deps.Protocol, workspace = deps.workspace, events = deps.events;
     const appendLocks = new Map();
+    const parameterTimeVaryingLocks = new Map();
+    const pointParameterLocks = new Map();
+    const colorParameterLocks = new Map();
+    const colorLabelLocks = deps.colorLabelLocks && typeof deps.colorLabelLocks.withProjectItemColorLabelLock === "function"
+      ? deps.colorLabelLocks
+      : { withProjectItemColorLabelLock: withColorLabelLock };
+    const colorLabelFallbackTails = new Map();
     const definitions = {
       "projectSelection.views": { readOnly: true, minHostVersion: "25.6.0", probe: canUseProjectViews, handler: listProjectViews },
       "projectSelection.inspect": { readOnly: true, minHostVersion: "25.6.0", probe: canUseProjectViews, handler: inspectProjectSelection },
+      "projectTree.inspect": { readOnly: true, minHostVersion: "26.3.0", probe: canUseProjectTree, handler: inspectProjectTree },
       "markers.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseMarkers, handler: inspectMarkers },
       "markers.add": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseMarkers, handler: addMarker },
+      "markers.addBeatGrid": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseMarkers, handler: addBeatGrid },
       "markers.update": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseMarkers, handler: updateMarker },
       "markers.remove": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseMarkers, handler: removeMarker },
+      "markers.removeMany": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseMarkers, handler: removeManyMarkers },
       "bins.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseBins, handler: inspectBin },
       "bins.create": { destructive: true, undoable: true, minHostVersion: "25.6.0", probe: canUseBins, handler: createBin },
       "bins.createSmart": { destructive: true, undoable: true, minHostVersion: "25.6.0", probe: canUseBins, handler: createSmartBin },
@@ -32,8 +47,15 @@
       "bins.remove": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseBins, handler: removeProjectItem },
       "sequenceSettings.get": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "26.2.0", probe: canUseSequenceSettings, handler: getSequenceSettings },
       "sequenceSettings.update": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "26.2.0", probe: canUseSequenceSettings, handler: updateSequenceSettings },
+      "sequence.displayFormat.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseSequenceDisplayFormats, handler: inspectSequenceDisplayFormats },
+      "sequence.displayFormat.update": { destructive: true, undoable: true, idempotent: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseSequenceDisplayFormats, handler: updateSequenceDisplayFormats },
       "project.import": { destructive: true, undoable: false, requiresWorkspace: true, minHostVersion: "25.6.0", probe: canImportProjectMedia, handler: importProjectMedia },
       "parameters.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: inspectParameter },
+      "parameters.point.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUsePointParameters, handler: inspectPointParameter },
+      "parameters.point.displacement.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUsePointParameters, handler: inspectPointParameterDisplacement },
+      "parameters.point.set": { destructive: true, undoable: true, idempotent: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUsePointParameters, handler: setPointParameter },
+      "parameters.color.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseColorParameters, handler: inspectColorParameter },
+      "parameters.color.set": { destructive: true, undoable: true, idempotent: true, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canUseColorParameters, handler: setColorParameter },
       "parameters.set": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: setParameterValue },
       "parameters.keyframeAdd": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: addParameterKeyframe },
       "parameters.keyframeRemove": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: removeParameterKeyframe },
@@ -41,16 +63,23 @@
       "parameters.keyframeInterpolation": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: setParameterInterpolation },
       "captionAnimation.preview": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: previewCaptionAnimation },
       "captionAnimation.apply": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: applyCaptionAnimation },
+      "parameters.keyframe.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: inspectParameterKeyframe },
+      "parameters.timeVarying.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: inspectParameterTimeVarying },
+      "parameters.timeVarying.set": { destructive: true, undoable: true, idempotent: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseParameters, handler: setParameterTimeVarying },
       "trackItem.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: inspectTrackItem },
       "trackItem.update": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: updateTrackItem },
+      "trackItem.splitEdit": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseTrackItems, handler: makeSplitEdit },
       "timeline.insert": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseSequenceEditor, handler: insertTimelineItem },
       "timeline.overwrite": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseSequenceEditor, handler: overwriteTimelineItem },
       "timeline.cloneSelection": { destructive: true, undoable: true, minHostVersion: "25.6.0", probe: canUseSequenceEditor, handler: cloneTimelineSelection },
       "timeline.removeSelection": { destructive: true, undoable: true, minHostVersion: "25.6.0", probe: canUseSequenceEditor, handler: removeTimelineSelection },
       "timeline.mogrtPath": { destructive: true, undoable: false, requiresWorkspace: true, minHostVersion: "25.6.0", probe: canUseMogrtPath, handler: insertMogrtPath },
       "timeline.mogrtLibrary": { destructive: true, undoable: false, minHostVersion: "25.6.0", probe: canUseMogrtLibrary, handler: insertMogrtLibrary },
+      "timeline.structure.inspect": { readOnly: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canInspectTimelineStructure, handler: inspectTimelineStructure },
       "sequences.inspect": { readOnly: true, minHostVersion: "25.6.0", probe: canUseSequences, handler: inspectSequences },
+      "sequences.createEmpty": { destructive: true, undoable: false, idempotent: true, minHostVersion: "26.3.0", probe: canCreateEmptySequence, handler: createEmptySequence },
       "sequences.createFromMedia": { destructive: true, undoable: false, minHostVersion: "25.6.0", probe: canUseSequences, handler: createSequenceFromMedia },
+      "silence.deriveSequence": { destructive: true, undoable: false, targetCapabilityProbe: true, minHostVersion: "26.3.0", probe: canDeriveSilenceSequence, handler: deriveSilenceSequence },
       "sequences.clone": { destructive: true, undoable: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseSequences, handler: cloneSequence },
       "sequences.subsequence": { destructive: true, undoable: false, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseSequences, handler: createSubsequence },
       "sequences.activate": { idempotent: true, targetCapabilityProbe: true, minHostVersion: "25.6.0", probe: canUseSequences, handler: activateSequence },
@@ -142,9 +171,18 @@
     }
 
     async function projectItemId(item) {
-      if (!item || typeof item.getId !== "function") return "";
-      const value = await item.getId();
-      return value == null ? "" : String(value);
+      if (!item) return "";
+      if (typeof item.getId === "function") {
+        try {
+          const value = await item.getId();
+          if (value != null && String(value)) return String(value);
+        } catch (_) {}
+      }
+      try {
+        const guid = guidString(item.guid);
+        if (guid) return guid;
+      } catch (_) {}
+      return "";
     }
 
     async function projectItemSnapshot(item) {
@@ -152,6 +190,31 @@
       try { if (typeof item.getColorLabelIndex === "function") colorLabelIndex = await item.getColorLabelIndex(); } catch (_) {}
       try { if (typeof item.getParentBin === "function") parentId = await projectItemId(await item.getParentBin()); } catch (_) {}
       return { id: await projectItemId(item), name: String(item && item.name || ""), type: item && item.type != null ? item.type : null, colorLabelIndex, parentId };
+    }
+
+    async function safeProjectItemSnapshots(items) {
+      const snapshots = [];
+      for (const item of items || []) {
+        try { snapshots.push(await projectItemSnapshot(item)); }
+        catch (_) {
+          let name = "", type = null;
+          try { name = String(item && item.name || ""); } catch (_) {}
+          try { type = item && item.type != null ? item.type : null; } catch (_) {}
+          snapshots.push({ id: "", name, type, colorLabelIndex: null, parentId: null });
+        }
+      }
+      return snapshots;
+    }
+
+    async function safeProjectItemIds(items) {
+      const ids = [];
+      for (const item of items || []) {
+        try {
+          const id = await projectItemId(item);
+          if (id) ids.push(id);
+        } catch (_) {}
+      }
+      return ids;
     }
 
     function isFolder(item) {
@@ -175,6 +238,39 @@
         if (clip) return clip;
       } catch (_) {}
       throw commandError("UXP_TARGET_UNSUPPORTED", label + " is not a media clip");
+    }
+
+    async function parentBinOf(project, item, label) {
+      if (item && typeof item.getParentBin === "function") {
+        try {
+          const parent = await item.getParentBin();
+          if (parent) return asFolder(parent, label);
+        } catch (_) {}
+      }
+      if (item && typeof item.getParent === "function") {
+        try {
+          const parent = await item.getParent();
+          if (parent) return asFolder(parent, label);
+        } catch (_) {}
+      }
+      const wantedId = await projectItemId(item);
+      const root = await project.getRootItem();
+      if (!wantedId) {
+        throw commandError("UXP_TARGET_UNSUPPORTED", "Could not resolve " + label + "; Premiere did not expose getParentBin for this clip");
+      }
+      const queue = root ? [root] : [];
+      let visited = 0;
+      while (queue.length) {
+        const folder = queue.shift();
+        const children = folder && typeof folder.getItems === "function" ? Array.from(await folder.getItems() || []) : [];
+        for (const child of children) {
+          visited += 1;
+          if (visited > MAX_PROJECT_ITEMS) throw commandError("UXP_PROJECT_TOO_LARGE", "Parent-bin lookup exceeded " + MAX_PROJECT_ITEMS + " entries");
+          if (await projectItemId(child) === wantedId) return asFolder(folder, label);
+          if (isFolder(child)) queue.push(child);
+        }
+      }
+      throw commandError("UXP_TARGET_UNSUPPORTED", "Could not resolve " + label + "; Premiere did not expose getParentBin for this clip");
     }
 
     async function selectedProjectItems(project, viewId) {
@@ -228,6 +324,14 @@
       return { id: guidString(sequence && sequence.guid), name: String(sequence && sequence.name || "") };
     }
 
+    async function safeSequenceSnapshot(sequence) {
+      if (!sequence) return null;
+      try {
+        if (sequence.guid == null && sequence.id != null) return { id: String(sequence.id), name: String(sequence.name || "") };
+        return await sequenceSnapshot(sequence);
+      } catch (_) { return null; }
+    }
+
     async function boundedSequences(project) {
       const values = typeof project.getSequences === "function" ? Array.from(await project.getSequences() || []) : [];
       if (values.length > MAX_SEQUENCES) throw commandError("UXP_PROJECT_TOO_LARGE", "Sequence lookup exceeds " + MAX_SEQUENCES + " entries");
@@ -270,6 +374,83 @@
       return { selection, items };
     }
 
+    function timelineTrackIndices(value) {
+      if (value == null) return null;
+      if (!Array.isArray(value) || !value.length || value.length > MAX_TIMELINE_TRACKS) {
+        throw commandError("UXP_INVALID_ARGUMENT", "trackIndices must contain 1-" + MAX_TIMELINE_TRACKS + " indices");
+      }
+      const seen = new Set(), indices = [];
+      for (let index = 0; index < value.length; index += 1) {
+        const trackIndex = nonNegativeInt(value[index], "trackIndices[" + index + "]");
+        if (seen.has(trackIndex)) throw commandError("UXP_INVALID_ARGUMENT", "trackIndices must not contain duplicate indices");
+        seen.add(trackIndex); indices.push(trackIndex);
+      }
+      return indices.sort((left, right) => left - right);
+    }
+
+    async function inspectTimelineStructure(args) {
+      assertObject(args); assertOnlyKeys(args, ["sequenceId", "expectedSequenceId", "mediaType", "trackIndices", "includeEmptyTracks", "includeSourceProjectItems", "includeSourceProjectItemClassification", "includeSourceProjectItemContentType", "includeSourceNestedSequenceIdentity", "maxItems"]);
+      const project = await activeProject(false), sequence = await resolveSequence(project, args.sequenceId);
+      const sequenceId = guidString(sequence.guid), expectedSequenceId = args.expectedSequenceId == null ? null : boundedString(args.expectedSequenceId, "expectedSequenceId", 128);
+      if (expectedSequenceId && expectedSequenceId !== sequenceId) {
+        throw commandError("UXP_STALE_SEQUENCE", "The requested sequence identity no longer matches; inspect the current timeline and retry");
+      }
+      const mediaType = enumValue(args.mediaType == null ? "all" : args.mediaType, "mediaType", ["all", "video", "audio"]);
+      const trackIndices = timelineTrackIndices(args.trackIndices), includeEmptyTracks = optionalBoolean(args.includeEmptyTracks, false, "includeEmptyTracks"), includeSourceProjectItems = optionalBoolean(args.includeSourceProjectItems, false, "includeSourceProjectItems"), includeSourceProjectItemClassification = optionalBoolean(args.includeSourceProjectItemClassification, false, "includeSourceProjectItemClassification"), includeSourceProjectItemContentType = optionalBoolean(args.includeSourceProjectItemContentType, false, "includeSourceProjectItemContentType"), includeSourceNestedSequenceIdentity = optionalBoolean(args.includeSourceNestedSequenceIdentity, false, "includeSourceNestedSequenceIdentity");
+      if (includeSourceProjectItemClassification && !includeSourceProjectItems) {
+        throw commandError("UXP_INVALID_ARGUMENT", "includeSourceProjectItemClassification requires includeSourceProjectItems");
+      }
+      if (includeSourceProjectItemContentType && !includeSourceProjectItems) {
+        throw commandError("UXP_INVALID_ARGUMENT", "includeSourceProjectItemContentType requires includeSourceProjectItems");
+      }
+      if (includeSourceNestedSequenceIdentity && (!includeSourceProjectItems || !includeSourceProjectItemClassification)) {
+        throw commandError("UXP_INVALID_ARGUMENT", "includeSourceNestedSequenceIdentity requires source Project-item IDs and classification");
+      }
+      const maxItems = args.maxItems == null ? 128 : boundedInt(args.maxItems, "maxItems", 1, MAX_TIMELINE_ITEMS);
+      const itemType = ppro.Constants && ppro.Constants.TrackItemType;
+      if (!itemType || itemType.CLIP == null) throw commandError("UXP_COMMAND_UNAVAILABLE", "Clip track-item APIs are unavailable");
+      const groups = mediaType === "all" ? ["video", "audio"] : [mediaType], tracks = [], trackCounts = {};
+      let itemCount = 0, emptyTracksOmitted = 0;
+      for (const currentMediaType of groups) {
+        const title = currentMediaType === "video" ? "Video" : "Audio", countMethod = "get" + title + "TrackCount", trackMethod = "get" + title + "Track";
+        if (typeof sequence[countMethod] !== "function" || typeof sequence[trackMethod] !== "function") {
+          throw commandError("UXP_COMMAND_UNAVAILABLE", currentMediaType + " track inspection APIs are unavailable");
+        }
+        trackCounts[currentMediaType] = nonNegativeInt(await sequence[countMethod](), currentMediaType + " track count");
+      }
+      const requestedTrackCount = trackIndices == null
+        ? groups.reduce((total, currentMediaType) => total + trackCounts[currentMediaType], 0)
+        : trackIndices.length * groups.length;
+      if (requestedTrackCount > MAX_TIMELINE_TRACKS) {
+        throw commandError("UXP_TIMELINE_TOO_LARGE", "Requested timeline scope exceeds " + MAX_TIMELINE_TRACKS + " tracks; filter mediaType or trackIndices");
+      }
+      for (const currentMediaType of groups) {
+        const title = currentMediaType === "video" ? "Video" : "Audio", trackMethod = "get" + title + "Track", count = trackCounts[currentMediaType];
+        const indices = trackIndices == null ? Array.from({ length: count }, (_, index) => index) : trackIndices;
+        for (const trackIndex of indices) {
+          if (trackIndex >= count) throw commandError("UXP_TARGET_NOT_FOUND", currentMediaType + " trackIndices contains an out-of-range index");
+          const track = await sequence[trackMethod](trackIndex);
+          if (!track || typeof track.getTrackItems !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", currentMediaType + " track-item APIs are unavailable");
+          const items = Array.from(await track.getTrackItems(itemType.CLIP, false) || []);
+          if (itemCount + items.length > maxItems) {
+            throw commandError("UXP_TIMELINE_TOO_LARGE", "Requested timeline scope exceeds maxItems; filter trackIndices or raise maxItems up to " + MAX_TIMELINE_ITEMS);
+          }
+          if (!items.length && !includeEmptyTracks) { emptyTracksOmitted += 1; continue; }
+          const snapshots = [];
+          for (let clipIndex = 0; clipIndex < items.length; clipIndex += 1) {
+            snapshots.push(await trackItemSnapshot({ item: items[clipIndex], mediaType: currentMediaType, trackIndex, clipIndex, includeSourceProjectItems, includeSourceProjectItemClassification, includeSourceProjectItemContentType, includeSourceNestedSequenceIdentity }));
+          }
+          itemCount += snapshots.length;
+          tracks.push({ mediaType: currentMediaType, trackIndex, name: String(track.name || ""), itemCount: snapshots.length, items: snapshots });
+        }
+      }
+      return {
+        sequence: { id: sequenceId, name: String(sequence.name || "") }, mediaType, trackIndices, maxItems,
+        trackCounts, trackCount: tracks.length, itemCount, emptyTracksOmitted, tracks,
+        verificationBoundary: "bounded_track_item_readback"
+      };
+    }
+
     async function listProjectViews(args) {
       assertObject(args); assertOnlyKeys(args, []);
       const ids = Array.from(await ppro.ProjectUtils.getProjectViewIds() || []), views = [];
@@ -285,6 +466,55 @@
       const project = await activeProject(false), items = await selectedProjectItems(project, args.viewId), snapshots = [];
       for (const item of items) snapshots.push(await projectItemSnapshot(item));
       return { viewId: args.viewId || null, count: snapshots.length, items: snapshots, resolver: "project_view_selection" };
+    }
+
+    async function projectTreeSnapshot(item, parentId, depth) {
+      const id = await projectItemId(item);
+      let colorLabelIndex = null;
+      try { if (typeof item.getColorLabelIndex === "function") colorLabelIndex = await item.getColorLabelIndex(); } catch (_) {}
+      let name = "", type = null;
+      try { name = String(item && item.name || ""); } catch (_) {}
+      try { type = item && item.type != null ? item.type : null; } catch (_) {}
+      return { id, name, type, colorLabelIndex, parentId, depth, isBin: isFolder(item), idUnavailable: !id };
+    }
+
+    async function inspectProjectTree(args) {
+      assertObject(args); assertOnlyKeys(args, ["maxItems", "maxDepth"]);
+      const maxItems = args.maxItems == null ? 256 : boundedInt(args.maxItems, "maxItems", 1, MAX_PROJECT_TREE_ITEMS);
+      const maxDepth = args.maxDepth == null ? 6 : boundedInt(args.maxDepth, "maxDepth", 0, MAX_PROJECT_TREE_DEPTH);
+      const project = await activeProject(false), root = await project.getRootItem();
+      if (!root) throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere did not return a project root item");
+      const rootSnapshot = await projectTreeSnapshot(root, null, 0);
+      if (!rootSnapshot.id) throw commandError("UXP_ITEM_ID_UNAVAILABLE", "The project root did not expose a stable ID");
+      if (!rootSnapshot.isBin || typeof root.getItems !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere did not expose a readable project-root folder");
+      }
+      const pending = [{ folder: root, id: rootSnapshot.id, depth: 0 }], items = [];
+      let itemLimitReached = false, depthLimitApplied = false, skippedWithoutId = 0;
+      while (pending.length && items.length < maxItems) {
+        const current = pending.shift();
+        if (current.depth >= maxDepth) { depthLimitApplied = true; continue; }
+        const children = Array.from(await current.folder.getItems() || []);
+        for (let index = 0; index < children.length; index += 1) {
+          if (items.length >= maxItems) { itemLimitReached = true; break; }
+          const child = children[index];
+          let snapshot;
+          try { snapshot = await projectTreeSnapshot(child, current.id, current.depth + 1); }
+          catch (_) { skippedWithoutId += 1; continue; }
+          items.push(snapshot);
+          if (snapshot.idUnavailable) skippedWithoutId += 1;
+          if (snapshot.isBin) {
+            if (snapshot.depth < maxDepth && typeof child.getItems === "function") pending.push({ folder: child, id: snapshot.id || current.id, depth: snapshot.depth });
+            else if (snapshot.depth >= maxDepth) depthLimitApplied = true;
+          }
+        }
+        if (items.length >= maxItems && pending.length) itemLimitReached = true;
+      }
+      return {
+        root: rootSnapshot, count: items.length, items, maxItems, maxDepth, skippedWithoutId,
+        truncated: itemLimitReached || depthLimitApplied, itemLimitReached, depthLimitApplied,
+        verificationBoundary: "bounded_project_tree_item_readback"
+      };
     }
 
     async function markerContext(args, includeMutationFields) {
@@ -313,6 +543,17 @@
       return result;
     }
 
+    async function markerRemovalSnapshot(marker) {
+      return {
+        guid: guidString(marker.guid), name: String(await marker.getName() || ""),
+        startSeconds: tickSeconds(await marker.getStart()), durationSeconds: tickSeconds(await marker.getDuration())
+      };
+    }
+
+    function markerGuids(collection) {
+      return boundedMarkers(collection).map((marker) => guidString(marker.guid));
+    }
+
     async function findMarker(collection, markerGuid, expectedName) {
       const wanted = boundedString(markerGuid, "markerGuid", 128);
       for (const marker of boundedMarkers(collection)) {
@@ -333,8 +574,7 @@
       const markerType = args.markerType == null ? String(ppro.Marker && ppro.Marker.MARKER_TYPE_COMMENT || "Comment") : boundedString(args.markerType, "markerType", 128);
       const start = tick(finiteNumber(args.startSeconds == null ? 0 : args.startSeconds, "startSeconds", 0, 86400), "startSeconds"), duration = tick(finiteNumber(args.durationSeconds == null ? 0 : args.durationSeconds, "durationSeconds", 0, 86400), "durationSeconds");
       const comments = args.comments == null ? "" : boundedStringAllowEmpty(args.comments, "comments", 4000);
-      const ownerId = context.ownerType === "sequence" ? guidString(context.owner && context.owner.guid) : await projectItemId(context.owner);
-      return withAppendLock(appendLockKey(context.project, "markers", context.ownerType + ":" + ownerId), async () => {
+      return withAppendLock(await markerLockKey(context), async () => {
         const before = await markerList(context.collection);
         assertAppendCapacity(before, MAX_MARKERS, "Marker creation");
         context.project.lockedAccess(() => {
@@ -345,37 +585,134 @@
       });
     }
 
+    async function addBeatGrid(args) {
+      assertObject(args); assertOnlyKeys(args, ["sequenceId", "beatTimesSeconds", "offsetSeconds", "namePrefix", "comments", "markerType", "operationId"]);
+      const context = await markerContext({ ownerType: "sequence", sequenceId: args.sequenceId }, true);
+      if (!Array.isArray(args.beatTimesSeconds) || !args.beatTimesSeconds.length || args.beatTimesSeconds.length > 512) {
+        throw commandError("UXP_INVALID_ARGUMENT", "beatTimesSeconds must contain between 1 and 512 entries");
+      }
+      const offset = finiteNumber(args.offsetSeconds == null ? 0 : args.offsetSeconds, "offsetSeconds", -86400, 86400);
+      const prefix = args.namePrefix == null ? "Beat" : boundedString(args.namePrefix, "namePrefix", 64);
+      const comments = args.comments == null ? "" : boundedStringAllowEmpty(args.comments, "comments", 1000);
+      const markerType = args.markerType == null ? String(ppro.Marker && ppro.Marker.MARKER_TYPE_COMMENT || "Comment") : boundedString(args.markerType, "markerType", 128);
+      const times = [], seen = new Set();
+      for (let index = 0; index < args.beatTimesSeconds.length; index++) {
+        const value = finiteNumber(args.beatTimesSeconds[index], "beatTimesSeconds[" + index + "]", 0, 86400);
+        const positioned = value + offset;
+        if (positioned < 0 || positioned > 86400) throw commandError("UXP_INVALID_ARGUMENT", "offset beat times must remain between 0 and 86400 seconds");
+        const key = positioned.toFixed(9);
+        if (seen.has(key)) throw commandError("UXP_INVALID_ARGUMENT", "offset beat times must be unique");
+        seen.add(key); times.push(positioned);
+      }
+      for (let index = 1; index < times.length; index++) {
+        if (times[index] <= times[index - 1]) throw commandError("UXP_INVALID_ARGUMENT", "beatTimesSeconds must be strictly increasing");
+      }
+      return withAppendLock(await markerLockKey(context), async () => {
+        const before = boundedMarkers(context.collection);
+        if (before.length + times.length > MAX_MARKERS) throw commandError("UXP_COLLECTION_LIMIT", "Beat marker creation would exceed the " + MAX_MARKERS + " marker limit");
+        const beforeGuids = new Set(before.map((marker) => guidString(marker.guid)));
+        context.project.lockedAccess(() => {
+          const actions = times.map((time, index) => context.collection.createAddMarkerAction(prefix + " " + (index + 1), markerType, tick(time, "beat time"), tick(0, "durationSeconds"), comments));
+          commitActions(context.project, "Add beat grid markers", actions);
+        });
+        let afterMarkers, added;
+        try {
+          afterMarkers = boundedMarkers(context.collection);
+          const addedMarkers = afterMarkers.filter((marker) => !beforeGuids.has(guidString(marker.guid)));
+          added = [];
+          for (const marker of addedMarkers) added.push(await markerSnapshot(marker));
+        } catch (_) {
+          return mutationResult(false, { added: null, markers: [], beforeCount: before.length, afterCount: null, offsetSeconds: offset }, "beat_marker_guid_and_time_readback", "Add beat grid markers");
+        }
+        const addedGuids = new Set(added.map((marker) => marker.guid));
+        const verified = added.length === times.length && addedGuids.size === added.length
+          && added.every((marker, index) => Boolean(marker.guid) && marker.name === prefix + " " + (index + 1)
+            && marker.startSeconds != null && numbersEqual(marker.startSeconds, times[index]));
+        return mutationResult(verified, { added: added.length, markers: added, beforeCount: before.length, afterCount: afterMarkers.length, offsetSeconds: offset }, "beat_marker_guid_and_time_readback", "Add beat grid markers");
+      });
+    }
+
     async function updateMarker(args) {
-      const context = await markerContext(args, true), marker = await findMarker(context.collection, args.markerGuid, args.expectedName);
+      const context = await markerContext(args, true);
       const requested = [args.name, args.comments, args.markerType, args.durationSeconds, args.startSeconds, args.colorIndex].filter((value) => value != null);
       if (!requested.length) throw commandError("UXP_INVALID_ARGUMENT", "Provide at least one marker field to update");
-      context.project.lockedAccess(() => {
-        const actions = [];
-        if (args.name != null) actions.push(marker.createSetNameAction(boundedString(args.name, "name", 255)));
-        if (args.comments != null) actions.push(marker.createSetCommentsAction(boundedStringAllowEmpty(args.comments, "comments", 4000)));
-        if (args.markerType != null) actions.push(marker.createSetTypeAction(boundedString(args.markerType, "markerType", 128)));
-        if (args.durationSeconds != null) actions.push(marker.createSetDurationAction(tick(finiteNumber(args.durationSeconds, "durationSeconds", 0, 86400), "durationSeconds")));
-        if (args.startSeconds != null) actions.push(context.collection.createMoveMarkerAction(marker, tick(finiteNumber(args.startSeconds, "startSeconds", 0, 86400), "startSeconds")));
-        if (args.colorIndex != null) actions.push(marker.createSetColorByIndexAction(boundedInt(args.colorIndex, "colorIndex", 0, 6)));
-        commitActions(context.project, "Update marker", actions);
+      return withAppendLock(await markerLockKey(context), async () => {
+        const marker = await findMarker(context.collection, args.markerGuid, args.expectedName);
+        context.project.lockedAccess(() => {
+          const actions = [];
+          if (args.name != null) actions.push(marker.createSetNameAction(boundedString(args.name, "name", 255)));
+          if (args.comments != null) actions.push(marker.createSetCommentsAction(boundedStringAllowEmpty(args.comments, "comments", 4000)));
+          if (args.markerType != null) actions.push(marker.createSetTypeAction(boundedString(args.markerType, "markerType", 128)));
+          if (args.durationSeconds != null) actions.push(marker.createSetDurationAction(tick(finiteNumber(args.durationSeconds, "durationSeconds", 0, 86400), "durationSeconds")));
+          if (args.startSeconds != null) actions.push(context.collection.createMoveMarkerAction(marker, tick(finiteNumber(args.startSeconds, "startSeconds", 0, 86400), "startSeconds")));
+          if (args.colorIndex != null) actions.push(marker.createSetColorByIndexAction(boundedInt(args.colorIndex, "colorIndex", 0, 6)));
+          commitActions(context.project, "Update marker", actions);
+        });
+        const updated = await findMarker(context.collection, args.markerGuid), snapshot = await markerSnapshot(updated);
+        const verified = (args.name == null || snapshot.name === args.name)
+          && (args.comments == null || snapshot.comments === args.comments)
+          && (args.markerType == null || snapshot.type === args.markerType)
+          && (args.durationSeconds == null || numbersEqual(snapshot.durationSeconds, args.durationSeconds))
+          && (args.startSeconds == null || numbersEqual(snapshot.startSeconds, args.startSeconds))
+          && (args.colorIndex == null || snapshot.colorIndex === args.colorIndex);
+        return mutationResult(verified, { updated: true, marker: snapshot }, "marker_field_readback", "Update marker");
       });
-      const updated = await findMarker(context.collection, args.markerGuid), snapshot = await markerSnapshot(updated);
-      const verified = (args.name == null || snapshot.name === args.name)
-        && (args.comments == null || snapshot.comments === args.comments)
-        && (args.markerType == null || snapshot.type === args.markerType)
-        && (args.durationSeconds == null || numbersEqual(snapshot.durationSeconds, args.durationSeconds))
-        && (args.startSeconds == null || numbersEqual(snapshot.startSeconds, args.startSeconds))
-        && (args.colorIndex == null || snapshot.colorIndex === args.colorIndex);
-      return mutationResult(verified, { updated: true, marker: snapshot }, "marker_field_readback", "Update marker");
     }
 
     async function removeMarker(args) {
-      const context = await markerContext(args, true), marker = await findMarker(context.collection, args.markerGuid, args.expectedName);
-      context.project.lockedAccess(() => {
-        commitActions(context.project, "Remove marker", [context.collection.createRemoveMarkerAction(marker)]);
+      const context = await markerContext(args, true);
+      return withAppendLock(await markerLockKey(context), async () => {
+        const marker = await findMarker(context.collection, args.markerGuid, args.expectedName);
+        context.project.lockedAccess(() => {
+          commitActions(context.project, "Remove marker", [context.collection.createRemoveMarkerAction(marker)]);
+        });
+        const remaining = await markerList(context.collection), verified = !remaining.some((value) => value.guid === args.markerGuid);
+        return mutationResult(verified, { removed: true, markerGuid: args.markerGuid, remainingCount: remaining.length }, "marker_guid_absence_readback", "Remove marker");
       });
-      const remaining = await markerList(context.collection), verified = !remaining.some((value) => value.guid === args.markerGuid);
-      return mutationResult(verified, { removed: true, markerGuid: args.markerGuid, remainingCount: remaining.length }, "marker_guid_absence_readback", "Remove marker");
+    }
+
+    async function removeManyMarkers(args) {
+      assertObject(args); assertOnlyKeys(args, ["ownerType", "sequenceId", "projectItemId", "markerSnapshots", "confirmDestructive", "operationId"]);
+      requireDestructiveConfirmation(args.confirmDestructive);
+      const requested = reviewedMarkerSnapshots(args.markerSnapshots);
+      const targetGuids = requested.map((value) => value.markerGuid);
+      const context = await markerContext({
+        ownerType: args.ownerType,
+        sequenceId: args.sequenceId,
+        projectItemId: args.projectItemId,
+        operationId: args.operationId,
+      }, true);
+      return withAppendLock(await markerLockKey(context), async () => {
+        const currentByGuid = new Map();
+        for (const marker of boundedMarkers(context.collection)) currentByGuid.set(guidString(marker.guid), marker);
+        const targets = [];
+        for (const expected of requested) {
+          const marker = currentByGuid.get(expected.markerGuid);
+          if (!marker) throw commandError("UXP_TARGET_NOT_FOUND", "markerSnapshots contains a markerGuid that was not found");
+          const snapshot = await markerRemovalSnapshot(marker);
+          assertExpected(snapshot.name, expected.expectedName, "UXP_STALE_MARKER", "Marker name");
+          assertExpectedNumber(snapshot.startSeconds, expected.expectedStartSeconds, "UXP_STALE_MARKER", "Marker startSeconds");
+          assertExpectedNumber(snapshot.durationSeconds, expected.expectedDurationSeconds, "UXP_STALE_MARKER", "Marker durationSeconds");
+          targets.push(marker);
+        }
+        context.project.lockedAccess(() => {
+          commitActions(context.project, "Remove reviewed markers", targets.map((marker) => context.collection.createRemoveMarkerAction(marker)));
+        });
+        try {
+          const remainingGuids = markerGuids(context.collection);
+          const remainingTargetGuids = remainingGuids.filter((guid) => targetGuids.includes(guid));
+          const verified = remainingTargetGuids.length === 0;
+          return mutationResult(verified, {
+            requested: targetGuids.length, removed: verified ? targetGuids.length : null, markerGuids: targetGuids,
+            remainingCount: remainingGuids.length, remainingTargetGuids,
+          }, "marker_guid_absence_readback", "Remove reviewed markers");
+        } catch (_) {
+          return mutationResult(false, {
+            requested: targetGuids.length, removed: null, markerGuids: targetGuids,
+            remainingCount: null, remainingTargetGuids: null,
+          }, "marker_guid_absence_readback", "Remove reviewed markers");
+        }
+      });
     }
 
     async function binChildren(folder) {
@@ -450,13 +787,17 @@
 
     async function colorProjectItem(args) {
       assertObject(args); assertOnlyKeys(args, ["projectItemId", "colorIndex", "operationId"]);
-      const project = await activeProject(true), item = await resolveProjectItem(project, args.projectItemId, true), colorIndex = boundedInt(args.colorIndex, "colorIndex", 0, 14), before = await projectItemSnapshot(item);
+      const project = await activeProject(true), item = await resolveProjectItem(project, args.projectItemId, true), colorIndex = boundedInt(args.colorIndex, "colorIndex", 0, 14), itemId = await projectItemId(item);
       if (typeof item.createSetColorLabelAction !== "function") throw commandError("UXP_TARGET_UNSUPPORTED", "Project item does not support color labels");
-      project.lockedAccess(() => {
-        commitActions(project, "Set project item color", [item.createSetColorLabelAction(colorIndex)]);
+      if (!itemId) throw commandError("UXP_TARGET_NOT_FOUND", "Project item ID is unavailable");
+      return colorLabelLocks.withProjectItemColorLabelLock(guidString(project.guid) + "\u0000" + itemId, async () => {
+        const before = await projectItemSnapshot(item);
+        project.lockedAccess(() => {
+          commitActions(project, "Set project item color", [item.createSetColorLabelAction(colorIndex)]);
+        });
+        const after = await projectItemSnapshot(item);
+        return mutationResult(after.colorLabelIndex === colorIndex, { updated: true, before, after }, "project_item_color_readback", "Set project item color");
       });
-      const after = await projectItemSnapshot(item);
-      return mutationResult(after.colorLabelIndex === colorIndex, { updated: true, before, after }, "project_item_color_readback", "Set project item color");
     }
 
     async function removeProjectItem(args) {
@@ -530,6 +871,65 @@
       return mutationResult(verified, { updated: true, sequence: await sequenceSnapshot(sequence), before, after, changedFields: Object.keys(updates) }, "sequence_settings_readback", "Update sequence settings");
     }
 
+    async function inspectSequenceDisplayFormats(args) {
+      assertObject(args); assertOnlyKeys(args, ["sequenceId"]);
+      const project = await activeProject(false), sequence = await resolveSequence(project, args.sequenceId);
+      const state = await sequenceDisplayFormatState(await sequence.getSettings());
+      return {
+        sequence: await sequenceSnapshot(sequence),
+        displayFormats: state.values,
+        supportedDisplayFormats: supportedDisplayFormats(),
+        verificationBoundary: "sequence_display_format_snapshot"
+      };
+    }
+
+    async function updateSequenceDisplayFormats(args) {
+      const input = validateSequenceDisplayFormatUpdate(args), project = await activeProject(true);
+      return withAppendLock(appendLockKey(project, "sequence-display-format", input.expectedSequenceGuid), async () => {
+        const sequence = await resolveSequence(project, input.sequenceId);
+        assertExpected(guidString(sequence.guid), input.expectedSequenceGuid, "UXP_STALE_SEQUENCE", "Sequence GUID");
+        const supported = supportedDisplayFormats(), settings = await sequence.getSettings(), beforeState = await sequenceDisplayFormatState(settings);
+        assertExpectedNumber(beforeState.values.audioDisplayFormat, input.expectedDisplayFormats.audioDisplayFormat, "UXP_STALE_SEQUENCE_DISPLAY_FORMAT", "Audio display format");
+        assertExpectedNumber(beforeState.values.videoDisplayFormat, input.expectedDisplayFormats.videoDisplayFormat, "UXP_STALE_SEQUENCE_DISPLAY_FORMAT", "Video display format");
+        assertRequestedDisplayFormatsSupported(input.updates, supported);
+        const changedFields = Object.keys(input.updates);
+        if (changedFields.every((key) => beforeState.values[key] === input.updates[key])) {
+          return sequenceDisplayFormatNoop({
+            updated: false,
+            unchanged: true,
+            sequence: await sequenceSnapshot(sequence),
+            before: beforeState.values,
+            after: beforeState.values,
+            supportedDisplayFormats: supported,
+            changedFields
+          }, "sequence_display_format_noop_readback");
+        }
+        if (input.updates.audioDisplayFormat !== undefined) {
+          if (typeof settings.setAudioDisplayFormat !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose audio display-format updates");
+          beforeState.audioDisplay.type = input.updates.audioDisplayFormat;
+          if (await settings.setAudioDisplayFormat(beforeState.audioDisplay) === false) throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the audio display format");
+        }
+        if (input.updates.videoDisplayFormat !== undefined) {
+          if (typeof settings.setVideoDisplayFormat !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose video display-format updates");
+          beforeState.videoDisplay.type = input.updates.videoDisplayFormat;
+          if (await settings.setVideoDisplayFormat(beforeState.videoDisplay) === false) throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the video display format");
+        }
+        project.lockedAccess(() => {
+          commitActions(project, "Update sequence display formats", [sequence.createSetSettingsAction(settings)]);
+        });
+        const afterState = await sequenceDisplayFormatState(await sequence.getSettings());
+        const verified = changedFields.every((key) => afterState.values[key] === input.updates[key]);
+        return sequenceDisplayFormatResult(verified, {
+          updated: true,
+          sequence: await sequenceSnapshot(sequence),
+          before: beforeState.values,
+          after: afterState.values,
+          supportedDisplayFormats: supported,
+          changedFields
+        }, "sequence_display_format_readback");
+      });
+    }
+
     async function importProjectMedia(args) {
       assertObject(args); assertOnlyKeys(args, ["mode", "paths", "projectPath", "sequenceIds", "aepPath", "compNames", "targetBinId", "suppressUI", "asNumberedStills", "confirmNonUndoable", "operationId"]);
       requireConfirmation(args.confirmNonUndoable, "Documented import APIs are direct host calls without an Action undo boundary");
@@ -539,7 +939,7 @@
       let accepted = false, requested = 0;
       if (mode === "files") {
         const paths = await boundedPathArray(args.paths, "paths", 100, "file"); requested = paths.length;
-        accepted = await project.importFiles(paths, optionalBoolean(args.suppressUI, true, "suppressUI"), targetBin, optionalBoolean(args.asNumberedStills, false, "asNumberedStills"));
+        accepted = await project.importFiles(paths, optionalBoolean(args.suppressUI, true, "suppressUI"), targetBin || null, optionalBoolean(args.asNumberedStills, false, "asNumberedStills"));
       } else if (mode === "sequences") {
         const projectPath = await allowedPath(args.projectPath, "projectPath", "file"), ids = args.sequenceIds == null ? undefined : boundedStringArray(args.sequenceIds, "sequenceIds", 64, 128).map((id) => guidFromString(id, "sequenceId"));
         requested = ids ? ids.length : 0; accepted = await project.importSequences(projectPath, ids);
@@ -615,6 +1015,472 @@
     async function inspectParameter(args) {
       const context = await parameterContext(args, false);
       return parameterSnapshot(context, args.timeSeconds);
+    }
+
+    async function pointParameterContext(args, mutation) {
+      const allowed = ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName"];
+      if (mutation) allowed.push("expectedSnapshot", "point", "confirmSetPoint", "operationId");
+      assertObject(args); assertOnlyKeys(args, allowed);
+      const context = await parameterContext({
+        mediaType: args.mediaType, trackIndex: args.trackIndex, clipIndex: args.clipIndex,
+        componentIndex: args.componentIndex, paramIndex: args.paramIndex,
+        expectedComponentId: args.expectedComponentId, expectedParamName: args.expectedParamName,
+      }, mutation);
+      if (typeof context.param.getStartValue !== "function" || typeof context.param.isTimeVarying !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot read a stable PointF parameter snapshot");
+      }
+      return context;
+    }
+
+    async function pointParameterSnapshot(context) {
+      const projectId = guidString(context.project && context.project.guid), sequenceId = guidString(context.sequence && context.sequence.guid);
+      if (!projectId || !sequenceId) throw commandError("UXP_INVALID_HOST_STATE", "Premiere did not provide stable project and sequence identities for the PointF parameter");
+      const point = pointValue(keyframeValue(await context.param.getStartValue()), "Premiere parameter start value");
+      return {
+        projectId, sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex,
+        componentIndex: context.componentIndex, componentId: context.componentId, paramIndex: context.paramIndex,
+        paramName: context.paramName, timeVarying: !!context.param.isTimeVarying(), point,
+      };
+    }
+
+    function pointSnapshotMatches(left, right) {
+      return left && right && left.projectId === right.projectId && left.sequenceId === right.sequenceId
+        && left.mediaType === right.mediaType && left.trackIndex === right.trackIndex && left.clipIndex === right.clipIndex
+        && left.componentIndex === right.componentIndex && left.componentId === right.componentId && left.paramIndex === right.paramIndex
+        && left.paramName === right.paramName && left.timeVarying === right.timeVarying
+        && pointsEqual(left.point, right.point);
+    }
+
+    function assertPointSnapshot(current, expected) {
+      if (!pointSnapshotMatches(current, expected)) {
+        throw commandError("UXP_STALE_POINT_PARAMETER", "The PointF parameter changed; inspect it again before updating it");
+      }
+    }
+
+    function pointParameterLockKey(context) {
+      return appendLockKey(context.project, "parameter-point", [
+        guidString(context.sequence && context.sequence.guid), context.mediaType, context.trackIndex, context.clipIndex,
+        context.componentIndex, context.paramIndex
+      ].join(":"));
+    }
+
+    async function withPointParameterLock(key, callback) {
+      const previous = pointParameterLocks.get(key) || Promise.resolve();
+      let release = function () {};
+      const current = new Promise((resolve) => { release = resolve; });
+      pointParameterLocks.set(key, current);
+      await previous;
+      try {
+        return await callback();
+      } finally {
+        release();
+        if (pointParameterLocks.get(key) === current) pointParameterLocks.delete(key);
+      }
+    }
+
+    async function inspectPointParameter(args) {
+      const firstContext = await pointParameterContext(args, false), first = await pointParameterSnapshot(firstContext);
+      const finalContext = await pointParameterContext(args, false), final = await pointParameterSnapshot(finalContext);
+      if (!pointSnapshotMatches(first, final)) {
+        throw commandError("UXP_STALE_POINT_PARAMETER", "The PointF parameter changed while it was being inspected; retry the inspection");
+      }
+      return final;
+    }
+
+    function pointDisplacementInput(args) {
+      assertObject(args);
+      assertOnlyKeys(args, ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName", "startSeconds", "endSeconds"]);
+      const startSeconds = finiteNumber(args.startSeconds, "startSeconds", 0, 86400);
+      const endSeconds = finiteNumber(args.endSeconds, "endSeconds", 0, 86400);
+      if (endSeconds <= startSeconds) {
+        throw commandError("UXP_INVALID_ARGUMENT", "endSeconds must be greater than startSeconds for PointF displacement inspection");
+      }
+      return {
+        mediaType: args.mediaType, trackIndex: args.trackIndex, clipIndex: args.clipIndex,
+        componentIndex: args.componentIndex, paramIndex: args.paramIndex,
+        expectedComponentId: args.expectedComponentId, expectedParamName: args.expectedParamName,
+        startSeconds, endSeconds,
+      };
+    }
+
+    async function pointDisplacementContext(input) {
+      const context = await parameterContext({
+        mediaType: input.mediaType, trackIndex: input.trackIndex, clipIndex: input.clipIndex,
+        componentIndex: input.componentIndex, paramIndex: input.paramIndex,
+        expectedComponentId: input.expectedComponentId, expectedParamName: input.expectedParamName,
+      }, false);
+      if (typeof context.param.getValueAtTime !== "function" || typeof context.param.isTimeVarying !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot read time-varying PointF parameter values");
+      }
+      return context;
+    }
+
+    async function pointDisplacementSnapshot(context, input) {
+      const projectId = guidString(context.project && context.project.guid), sequenceId = guidString(context.sequence && context.sequence.guid);
+      if (!projectId || !sequenceId) throw commandError("UXP_INVALID_HOST_STATE", "Premiere did not provide stable project and sequence identities for the PointF parameter");
+      const timeVarying = !!context.param.isTimeVarying();
+      if (!timeVarying) throw commandError("UXP_TARGET_UNSUPPORTED", "PointF displacement inspection requires a time-varying parameter");
+      const startValue = await context.param.getValueAtTime(tick(input.startSeconds, "startSeconds"));
+      const endValue = await context.param.getValueAtTime(tick(input.endSeconds, "endSeconds"));
+      if (!startValue || !endValue || typeof startValue.distanceTo !== "function" || typeof endValue.distanceTo !== "function") {
+        throw commandError("UXP_TARGET_UNSUPPORTED", "Premiere did not return native PointF values with distanceTo");
+      }
+      const startPoint = pointValue({ x: startValue.x, y: startValue.y }, "Premiere PointF start value");
+      const endPoint = pointValue({ x: endValue && endValue.x, y: endValue && endValue.y }, "Premiere PointF end value");
+      let distance;
+      try { distance = Number(startValue.distanceTo(endValue)); }
+      catch (_) { throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere rejected native PointF distance calculation"); }
+      if (!Number.isFinite(distance) || distance < 0) {
+        throw commandError("UXP_INVALID_HOST_STATE", "Premiere returned an invalid PointF distance");
+      }
+      return {
+        projectId, sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex,
+        componentIndex: context.componentIndex, componentId: context.componentId, paramIndex: context.paramIndex,
+        paramName: context.paramName, timeVarying, startSeconds: input.startSeconds, endSeconds: input.endSeconds,
+        startPoint, endPoint, straightLineDistance: distance,
+      };
+    }
+
+    function pointDisplacementSnapshotMatches(left, right) {
+      return left && right && left.projectId === right.projectId && left.sequenceId === right.sequenceId
+        && left.mediaType === right.mediaType && left.trackIndex === right.trackIndex && left.clipIndex === right.clipIndex
+        && left.componentIndex === right.componentIndex && left.componentId === right.componentId && left.paramIndex === right.paramIndex
+        && left.paramName === right.paramName && left.timeVarying === right.timeVarying
+        && numbersEqual(left.startSeconds, right.startSeconds) && numbersEqual(left.endSeconds, right.endSeconds)
+        && pointsEqual(left.startPoint, right.startPoint) && pointsEqual(left.endPoint, right.endPoint)
+        && numbersEqual(left.straightLineDistance, right.straightLineDistance);
+    }
+
+    async function inspectPointParameterDisplacement(args) {
+      const input = pointDisplacementInput(args);
+      const firstContext = await pointDisplacementContext(input), first = await pointDisplacementSnapshot(firstContext, input);
+      const finalContext = await pointDisplacementContext(input), final = await pointDisplacementSnapshot(finalContext, input);
+      if (!pointDisplacementSnapshotMatches(first, final)) {
+        throw commandError("UXP_STALE_POINT_PARAMETER", "The PointF parameter changed while its displacement was being inspected; retry the inspection");
+      }
+      return final;
+    }
+
+    function validatePointParameterSet(args) {
+      assertObject(args); assertOnlyKeys(args, ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName", "expectedSnapshot", "point", "confirmSetPoint", "operationId"]);
+      if (args.confirmSetPoint !== true) {
+        throw commandError("UXP_CONFIRMATION_REQUIRED", "Setting a PointF parameter requires confirmSetPoint=true after review");
+      }
+      if (typeof args.operationId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(args.operationId)) {
+        throw commandError("UXP_INVALID_ARGUMENT", "operationId is required and must be 1-128 safe characters");
+      }
+      return {
+        ...args,
+        expectedSnapshot: expectedPointParameterSnapshot(args.expectedSnapshot),
+        point: pointValue(args.point, "point"),
+      };
+    }
+
+    function createPoint(value) {
+      if (typeof ppro.PointF !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose the PointF constructor");
+      try { return new ppro.PointF(value.x, value.y); }
+      catch (_) { throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere rejected PointF construction"); }
+    }
+
+    async function setPointParameter(args) {
+      const input = validatePointParameterSet(args), point = createPoint(input.point);
+      const initialContext = await pointParameterContext(input, true);
+      return withPointParameterLock(pointParameterLockKey(initialContext), async () => {
+        const context = await pointParameterContext(input, true), before = await pointParameterSnapshot(context);
+        assertPointSnapshot(before, input.expectedSnapshot);
+        if (before.timeVarying) throw commandError("UXP_TARGET_UNSUPPORTED", "PointF updates support only non-time-varying parameters; keyframed PointF edits are not exposed");
+        context.project.lockedAccess(() => {
+          const action = context.param.createSetValueAction(context.param.createKeyframe(point), true);
+          commitActions(context.project, "Set PointF effect parameter", [action]);
+        });
+        const afterContext = await pointParameterContext(input, true), after = await pointParameterSnapshot(afterContext);
+        const verified = !after.timeVarying && pointsEqual(after.point, input.point);
+        return mutationResult(verified, { updated: true, before, after }, "point_parameter_readback", "Set PointF effect parameter");
+      });
+    }
+
+    async function colorParameterContext(args, mutation) {
+      const allowed = ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName"];
+      if (mutation) allowed.push("expectedSnapshot", "color", "confirmSetColor", "operationId");
+      assertObject(args); assertOnlyKeys(args, allowed);
+      const context = await parameterContext({
+        mediaType: args.mediaType, trackIndex: args.trackIndex, clipIndex: args.clipIndex,
+        componentIndex: args.componentIndex, paramIndex: args.paramIndex,
+        expectedComponentId: args.expectedComponentId, expectedParamName: args.expectedParamName,
+      }, mutation);
+      if (typeof context.param.getStartValue !== "function" || typeof context.param.isTimeVarying !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot read a stable Color parameter snapshot");
+      }
+      return context;
+    }
+
+    async function colorParameterSnapshot(context) {
+      const projectId = guidString(context.project && context.project.guid), sequenceId = guidString(context.sequence && context.sequence.guid);
+      if (!projectId || !sequenceId) throw commandError("UXP_INVALID_HOST_STATE", "Premiere did not provide stable project and sequence identities for the Color parameter");
+      const color = colorValue(keyframeValue(await context.param.getStartValue()), "Premiere parameter start value");
+      return {
+        projectId, sequenceId, mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex,
+        componentIndex: context.componentIndex, componentId: context.componentId, paramIndex: context.paramIndex,
+        paramName: context.paramName, timeVarying: !!context.param.isTimeVarying(), color,
+      };
+    }
+
+    function colorSnapshotMatches(left, right) {
+      return left && right && left.projectId === right.projectId && left.sequenceId === right.sequenceId
+        && left.mediaType === right.mediaType && left.trackIndex === right.trackIndex && left.clipIndex === right.clipIndex
+        && left.componentIndex === right.componentIndex && left.componentId === right.componentId && left.paramIndex === right.paramIndex
+        && left.paramName === right.paramName && left.timeVarying === right.timeVarying
+        && colorsEqual(left.color, right.color);
+    }
+
+    function assertColorSnapshot(current, expected) {
+      if (!colorSnapshotMatches(current, expected)) {
+        throw commandError("UXP_STALE_COLOR_PARAMETER", "The Color parameter changed; inspect it again before updating it");
+      }
+    }
+
+    function colorParameterLockKey(context) {
+      return appendLockKey(context.project, "parameter-color", [
+        guidString(context.sequence && context.sequence.guid), context.mediaType, context.trackIndex, context.clipIndex,
+        context.componentIndex, context.paramIndex
+      ].join(":"));
+    }
+
+    async function withColorParameterLock(key, callback) {
+      const previous = colorParameterLocks.get(key) || Promise.resolve();
+      let release = function () {};
+      const current = new Promise((resolve) => { release = resolve; });
+      colorParameterLocks.set(key, current);
+      await previous;
+      try {
+        return await callback();
+      } finally {
+        release();
+        if (colorParameterLocks.get(key) === current) colorParameterLocks.delete(key);
+      }
+    }
+
+    async function inspectColorParameter(args) {
+      // Unwrap args if they're nested (e.g., { args: {...} } instead of {...})
+      const input = args && typeof args === "object" && !Array.isArray(args) && args.args ? args.args : args;
+      const firstContext = await colorParameterContext(input, false), first = await colorParameterSnapshot(firstContext);
+      const finalContext = await colorParameterContext(input, false), final = await colorParameterSnapshot(finalContext);
+      if (!colorSnapshotMatches(first, final)) {
+        throw commandError("UXP_STALE_COLOR_PARAMETER", "The Color parameter changed while it was being inspected; retry the inspection");
+      }
+      return final;
+    }
+
+    function validateColorParameterSet(args) {
+      assertObject(args); assertOnlyKeys(args, ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName", "expectedSnapshot", "color", "confirmSetColor", "operationId"]);
+      if (args.confirmSetColor !== true) {
+        throw commandError("UXP_CONFIRMATION_REQUIRED", "Setting a Color parameter requires confirmSetColor=true after review");
+      }
+      if (typeof args.operationId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(args.operationId)) {
+        throw commandError("UXP_INVALID_ARGUMENT", "operationId is required and must be 1-128 safe characters");
+      }
+      return {
+        ...args,
+        expectedSnapshot: expectedColorParameterSnapshot(args.expectedSnapshot),
+        color: colorValue(args.color, "color"),
+      };
+    }
+
+    function createColor(value) {
+      if (typeof ppro.Color !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose the Color constructor");
+      try { return new ppro.Color(value.red, value.green, value.blue, value.alpha); }
+      catch (_) { throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere rejected Color construction"); }
+    }
+
+    async function setColorParameter(args) {
+      const input = validateColorParameterSet(args), color = createColor(input.color);
+      const initialContext = await colorParameterContext(input, true);
+      return withColorParameterLock(colorParameterLockKey(initialContext), async () => {
+        const context = await colorParameterContext(input, true), before = await colorParameterSnapshot(context);
+        assertColorSnapshot(before, input.expectedSnapshot);
+        if (before.timeVarying) throw commandError("UXP_TARGET_UNSUPPORTED", "Color updates support only non-time-varying parameters; keyframed Color edits are not exposed");
+        context.project.lockedAccess(() => {
+          const action = context.param.createSetValueAction(context.param.createKeyframe(color), true);
+          commitActions(context.project, "Set Color effect parameter", [action]);
+        });
+        const afterContext = await colorParameterContext(input, true), after = await colorParameterSnapshot(afterContext);
+        const verified = !after.timeVarying && colorsEqual(after.color, input.color);
+        return mutationResult(verified, { updated: true, before, after }, "color_parameter_readback", "Set Color effect parameter");
+      });
+    }
+
+    async function inspectParameterKeyframe(args) {
+      assertObject(args);
+      assertOnlyKeys(args, ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName", "timeSeconds", "endSeconds", "direction"]);
+      const direction = enumValue(args.direction, "direction", ["at", "next", "previous", "nearest"]);
+      const timeSeconds = finiteNumber(args.timeSeconds, "timeSeconds", 0, 86400);
+      const hasEndSeconds = Object.prototype.hasOwnProperty.call(args, "endSeconds");
+      if (direction !== "nearest" && hasEndSeconds) {
+        throw commandError("UXP_INVALID_ARGUMENT", "endSeconds is only supported when direction is nearest");
+      }
+      const endSeconds = direction === "nearest" ? finiteNumber(args.endSeconds, "endSeconds", 0, 86400) : undefined;
+      if (endSeconds != null && endSeconds < timeSeconds) {
+        throw commandError("UXP_INVALID_ARGUMENT", "endSeconds must be greater than or equal to timeSeconds for nearest keyframe lookup");
+      }
+      const context = await parameterContext({
+        mediaType: args.mediaType, trackIndex: args.trackIndex, clipIndex: args.clipIndex,
+        componentIndex: args.componentIndex, paramIndex: args.paramIndex,
+        expectedComponentId: args.expectedComponentId, expectedParamName: args.expectedParamName,
+        timeSeconds,
+      }, false);
+      if (typeof context.param.areKeyframesSupported !== "function" || !await context.param.areKeyframesSupported()) {
+        throw commandError("UXP_TARGET_UNSUPPORTED", "This parameter does not support keyframes");
+      }
+      const method = {
+        at: "getKeyframePtr", next: "findNextKeyframe", previous: "findPreviousKeyframe", nearest: "findNearestKeyframe"
+      }[direction];
+      if (typeof context.param[method] !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot locate parameter keyframes in the requested direction");
+      }
+      let keyframe;
+      try {
+        const inTime = tick(timeSeconds, "timeSeconds");
+        keyframe = direction === "nearest"
+          ? context.param[method](inTime, tick(endSeconds, "endSeconds"))
+          : context.param[method](inTime);
+      } catch (_) {
+        throw commandError("UXP_KEYFRAME_LOOKUP_FAILED", "Premiere could not locate the requested parameter keyframe");
+      }
+      const base = {
+        projectId: guidString(context.project && context.project.guid), sequenceId: guidString(context.sequence && context.sequence.guid),
+        mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex,
+        componentIndex: context.componentIndex, componentId: context.componentId, paramIndex: context.paramIndex,
+        paramName: context.paramName, direction, referenceSeconds: timeSeconds,
+        ...(direction === "nearest" ? { rangeEndSeconds: endSeconds } : {}),
+      };
+      if (!keyframe) return { ...base, found: false, keyframe: null };
+      const positionSeconds = tickSeconds(keyframe.position);
+      if (positionSeconds == null) throw commandError("UXP_INVALID_HOST_STATE", "Premiere returned a keyframe without a readable position");
+      if (typeof keyframe.getTemporalInterpolationMode !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot read the located keyframe interpolation mode");
+      }
+      let temporalInterpolationMode;
+      try { temporalInterpolationMode = await keyframe.getTemporalInterpolationMode(); } catch (_) {
+        throw commandError("UXP_KEYFRAME_LOOKUP_FAILED", "Premiere did not return the located keyframe interpolation mode");
+      }
+      if (!Number.isFinite(Number(temporalInterpolationMode))) {
+        throw commandError("UXP_INVALID_HOST_STATE", "Premiere returned an invalid keyframe interpolation mode");
+      }
+      return { ...base, found: true, keyframe: { positionSeconds, temporalInterpolationMode: Number(temporalInterpolationMode) } };
+    }
+
+    async function parameterTimeVaryingContext(args, mutation) {
+      const allowed = ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedComponentId", "expectedParamName"];
+      if (mutation) allowed.push("expectedSequenceId", "expectedTimeVarying", "expectedKeyframeTimesSeconds", "timeVarying", "confirmDisableTimeVarying", "operationId");
+      assertObject(args); assertOnlyKeys(args, allowed);
+      const mediaType = enumValue(args.mediaType, "mediaType", ["video", "audio"]), trackIndex = nonNegativeInt(args.trackIndex, "trackIndex"), clipIndex = nonNegativeInt(args.clipIndex, "clipIndex"), componentIndex = nonNegativeInt(args.componentIndex, "componentIndex"), paramIndex = nonNegativeInt(args.paramIndex, "paramIndex");
+      const context = await activeContext(mutation), sequenceId = guidString(context.sequence && context.sequence.guid);
+      if (mutation && sequenceId !== args.expectedSequenceId) {
+        throw commandError("UXP_STALE_SEQUENCE", "The active sequence changed; inspect the parameter animation mode again before updating it");
+      }
+      const item = await trackItemAt(context.sequence, mediaType, trackIndex, clipIndex), chain = await item.getComponentChain();
+      const count = chain.getComponentCount();
+      if (componentIndex >= count) throw commandError("UXP_TARGET_NOT_FOUND", "componentIndex is out of range");
+      const component = chain.getComponentAtIndex(componentIndex), componentId = await componentIdentifier(component);
+      assertExpected(componentId, args.expectedComponentId, "UXP_STALE_EFFECT_CHAIN", "Component identity");
+      if (paramIndex >= component.getParamCount()) throw commandError("UXP_TARGET_NOT_FOUND", "paramIndex is out of range");
+      const param = component.getParam(paramIndex), paramName = String(param.displayName || "");
+      assertExpected(paramName, args.expectedParamName, "UXP_STALE_PARAMETER", "Parameter name");
+      return { ...context, item, component, componentId, param, paramName, mediaType, trackIndex, clipIndex, componentIndex, paramIndex, sequenceId };
+    }
+
+    async function parameterTimeVaryingSnapshot(context, requireCompleteKeyframes) {
+      const snapshot = await parameterSnapshot(context);
+      if (requireCompleteKeyframes && snapshot.keyframesLimited) {
+        throw commandError("UXP_PROJECT_TOO_LARGE", "Parameter animation-mode verification exceeds " + MAX_KEYFRAMES + " keyframes");
+      }
+      if (requireCompleteKeyframes && snapshot.keyframeTimesSeconds.some((seconds) => !Number.isFinite(seconds))) {
+        throw commandError("UXP_INVALID_HOST_STATE", "Premiere returned an unreadable parameter keyframe time");
+      }
+      return { projectId: guidString(context.project && context.project.guid), sequenceId: context.sequenceId || guidString(context.sequence && context.sequence.guid), ...snapshot };
+    }
+
+    function validateParameterTimeVaryingSet(args) {
+      assertObject(args);
+      assertOnlyKeys(args, ["mediaType", "trackIndex", "clipIndex", "componentIndex", "paramIndex", "expectedSequenceId", "expectedComponentId", "expectedParamName", "expectedTimeVarying", "expectedKeyframeTimesSeconds", "timeVarying", "confirmDisableTimeVarying", "operationId"]);
+      const expectedSequenceId = boundedString(args.expectedSequenceId, "expectedSequenceId", 128);
+      if (typeof args.expectedTimeVarying !== "boolean") throw commandError("UXP_INVALID_ARGUMENT", "expectedTimeVarying must be boolean");
+      if (typeof args.timeVarying !== "boolean") throw commandError("UXP_INVALID_ARGUMENT", "timeVarying must be boolean");
+      if (!Array.isArray(args.expectedKeyframeTimesSeconds) || args.expectedKeyframeTimesSeconds.length > MAX_KEYFRAMES) {
+        throw commandError("UXP_INVALID_ARGUMENT", "expectedKeyframeTimesSeconds must contain at most " + MAX_KEYFRAMES + " entries");
+      }
+      let previous = -1;
+      const expectedKeyframeTimesSeconds = args.expectedKeyframeTimesSeconds.map((value, index) => {
+        const seconds = finiteNumber(value, "expectedKeyframeTimesSeconds[" + index + "]", 0, 86400);
+        if (seconds <= previous) throw commandError("UXP_INVALID_ARGUMENT", "expectedKeyframeTimesSeconds must be strictly increasing");
+        previous = seconds;
+        return seconds;
+      });
+      if (!args.timeVarying) requireConfirmation(args.confirmDisableTimeVarying, "Disabling a time-varying parameter can remove its editable animation state");
+      return { ...args, expectedSequenceId, expectedKeyframeTimesSeconds };
+    }
+
+    function assertExpectedParameterTimeVarying(snapshot, expectedTimeVarying, expectedKeyframeTimesSeconds) {
+      if (snapshot.timeVarying !== expectedTimeVarying || !sameNumberArrays(snapshot.keyframeTimesSeconds, expectedKeyframeTimesSeconds)) {
+        throw commandError("UXP_STALE_PARAMETER", "The parameter animation mode or keyframe timeline changed; inspect it again before updating it");
+      }
+    }
+
+    function nativeParameterTimeVaryingState(param) {
+      if (!param || typeof param.isTimeVarying !== "function" || typeof param.getKeyframeListAsTickTimes !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot read complete parameter animation state");
+      }
+      const rawTimes = Array.from(param.getKeyframeListAsTickTimes() || []);
+      if (rawTimes.length > MAX_KEYFRAMES) throw commandError("UXP_PROJECT_TOO_LARGE", "Parameter animation-mode verification exceeds " + MAX_KEYFRAMES + " keyframes");
+      const keyframeTimesSeconds = rawTimes.map(tickSeconds);
+      if (keyframeTimesSeconds.some((seconds) => !Number.isFinite(seconds))) throw commandError("UXP_INVALID_HOST_STATE", "Premiere returned an unreadable parameter keyframe time");
+      return { timeVarying: !!param.isTimeVarying(), keyframeTimesSeconds };
+    }
+
+    function parameterTimeVaryingLockKey(context) {
+      return appendLockKey(context.project, "parameter-time-varying", context.sequenceId + ":" + context.mediaType + ":" + context.trackIndex + ":" + context.clipIndex + ":" + context.componentIndex + ":" + context.paramIndex);
+    }
+
+    async function withParameterTimeVaryingLock(key, callback) {
+      const previous = parameterTimeVaryingLocks.get(key) || Promise.resolve();
+      let release = function () {};
+      const current = new Promise((resolve) => { release = resolve; });
+      parameterTimeVaryingLocks.set(key, current);
+      await previous;
+      try {
+        return await callback();
+      } finally {
+        release();
+        if (parameterTimeVaryingLocks.get(key) === current) parameterTimeVaryingLocks.delete(key);
+      }
+    }
+
+    async function inspectParameterTimeVarying(args) {
+      const context = await parameterTimeVaryingContext(args, false);
+      return parameterTimeVaryingSnapshot(context, false);
+    }
+
+    async function setParameterTimeVarying(args) {
+      const input = validateParameterTimeVaryingSet(args), initialContext = await parameterTimeVaryingContext(input, true);
+      return withParameterTimeVaryingLock(parameterTimeVaryingLockKey(initialContext), async () => {
+        const context = await parameterTimeVaryingContext(input, true), before = await parameterTimeVaryingSnapshot(context, true);
+        if (!before.keyframesSupported) throw commandError("UXP_TARGET_UNSUPPORTED", "This parameter does not support keyframes");
+        assertExpectedParameterTimeVarying(before, input.expectedTimeVarying, input.expectedKeyframeTimesSeconds);
+        if (before.timeVarying === input.timeVarying) {
+          return verifiedNoopResult({ updated: false, unchanged: true, before, after: before }, "parameter_time_varying_noop_readback");
+        }
+        context.project.lockedAccess(() => {
+          const locked = nativeParameterTimeVaryingState(context.param);
+          assertExpectedParameterTimeVarying(locked, input.expectedTimeVarying, input.expectedKeyframeTimesSeconds);
+          const action = context.param.createSetTimeVaryingAction(input.timeVarying);
+          if (!action) throw commandError("UXP_ACTION_REJECTED", "Premiere rejected the parameter animation-mode action");
+          commitActions(context.project, "Set effect parameter animation mode", [action]);
+        });
+        const afterContext = await parameterTimeVaryingContext(input, true), after = await parameterTimeVaryingSnapshot(afterContext, true);
+        return mutationResult(after.timeVarying === input.timeVarying, {
+          updated: true, requestedTimeVarying: input.timeVarying, before, after
+        }, "parameter_time_varying_readback", "Set effect parameter animation mode");
+      });
     }
 
     async function setParameterValue(args) {
@@ -1113,12 +1979,79 @@
     }
 
     async function trackItemSnapshot(context) {
-      return {
+      const snapshot = {
         mediaType: context.mediaType, trackIndex: context.trackIndex, clipIndex: context.clipIndex,
         name: await maybeCall(context.item, "getName"), startSeconds: tickSeconds(await context.item.getStartTime()), endSeconds: tickSeconds(await context.item.getEndTime()),
         inSeconds: tickSeconds(await context.item.getInPoint()), outSeconds: tickSeconds(await context.item.getOutPoint()), durationSeconds: tickSeconds(await context.item.getDuration()),
         speed: await maybeCall(context.item, "getSpeed"), reversed: await maybeCall(context.item, "isSpeedReversed"), adjustmentLayer: await maybeCall(context.item, "isAdjustmentLayer"), disabled: await maybeCall(context.item, "isDisabled")
       };
+      if (context.includeSourceProjectItems) {
+        const source = await trackItemSourceProjectItemSnapshot(context.item, context.includeSourceProjectItemClassification, context.includeSourceProjectItemContentType, context.includeSourceNestedSequenceIdentity);
+        snapshot.sourceProjectItemId = source.id;
+        if (context.includeSourceProjectItemClassification) snapshot.sourceProjectItemClassification = source.classification;
+        if (context.includeSourceProjectItemContentType) snapshot.sourceProjectItemContentType = source.contentType;
+        if (context.includeSourceNestedSequenceIdentity) snapshot.sourceNestedSequenceId = source.nestedSequenceId;
+      }
+      return snapshot;
+    }
+
+    async function trackItemSourceProjectItemSnapshot(item, includeClassification, includeContentType, includeNestedSequenceIdentity) {
+      try {
+        if (!item || typeof item.getProjectItem !== "function") return { id: null, classification: null, contentType: null, nestedSequenceId: null };
+        const sourceItem = await item.getProjectItem();
+        let id = null;
+        try { id = await projectItemId(sourceItem) || null; } catch (_) {}
+        const details = (includeClassification || includeContentType)
+          ? await sourceProjectItemDetails(sourceItem, includeClassification, includeContentType, includeNestedSequenceIdentity)
+          : { classification: null, contentType: null, nestedSequenceId: null };
+        return { id, classification: details.classification, contentType: details.contentType, nestedSequenceId: details.nestedSequenceId };
+      } catch (_) {
+        return { id: null, classification: null, contentType: null, nestedSequenceId: null };
+      }
+    }
+
+    async function sourceProjectItemDetails(item, includeClassification, includeContentType, includeNestedSequenceIdentity) {
+      if (!ppro.ClipProjectItem || typeof ppro.ClipProjectItem.cast !== "function") return { classification: null, contentType: null, nestedSequenceId: null };
+      let clip;
+      try { clip = ppro.ClipProjectItem.cast(item); } catch (_) { return { classification: null, contentType: null, nestedSequenceId: null }; }
+      if (!clip) return { classification: null, contentType: null, nestedSequenceId: null };
+      const classification = includeClassification ? {
+        isSequence: await sourceProjectItemBoolean(clip, "isSequence"),
+        isMergedClip: await sourceProjectItemBoolean(clip, "isMergedClip"),
+        isMulticamClip: await sourceProjectItemBoolean(clip, "isMulticamClip"),
+        isOffline: await sourceProjectItemBoolean(clip, "isOffline")
+      } : null;
+      return {
+        classification,
+        contentType: includeContentType ? await sourceProjectItemContentType(clip) : null,
+        nestedSequenceId: includeNestedSequenceIdentity ? await sourceProjectItemNestedSequenceId(clip, classification) : null
+      };
+    }
+
+    async function sourceProjectItemContentType(clip) {
+      if (!clip || typeof clip.getContentType !== "function") return null;
+      const contentTypes = ppro.Constants && ppro.Constants.ContentType;
+      if (!contentTypes) return null;
+      try {
+        const value = await clip.getContentType();
+        if (value === contentTypes.ANY) return "any";
+        if (value === contentTypes.SEQUENCE) return "sequence";
+        if (value === contentTypes.MEDIA) return "media";
+      } catch (_) {}
+      return null;
+    }
+
+    async function sourceProjectItemNestedSequenceId(clip, classification) {
+      if (!classification || classification.isSequence !== true || !clip || typeof clip.getSequence !== "function") return null;
+      try {
+        const sequence = await clip.getSequence(), id = guidString(sequence && sequence.guid);
+        return id && id !== "[object Object]" && id.length <= 128 ? id : null;
+      } catch (_) { return null; }
+    }
+
+    async function sourceProjectItemBoolean(item, method) {
+      const value = await maybeCall(item, method);
+      return typeof value === "boolean" ? value : null;
     }
 
     async function inspectTrackItem(args) {
@@ -1146,6 +2079,37 @@
       });
       const after = await trackItemSnapshot(context), verified = trackItemUpdateMatches(before, after, args);
       return mutationResult(verified, { updated: true, before, after, changedFields: requested.length }, "track_item_readback", "Update timeline item");
+    }
+
+    async function makeSplitEdit(args) {
+      assertObject(args); assertOnlyKeys(args, ["kind", "audioTrackIndex", "audioClipIndex", "videoTrackIndex", "videoClipIndex", "extensionSeconds", "operationId"]);
+      const kind = enumValue(args.kind, "kind", ["j_cut", "l_cut"]), extension = finiteNumber(args.extensionSeconds, "extensionSeconds", 0.001, 60);
+      const context = await activeContext(true);
+      const audioContext = { ...context, item: await trackItemAt(context.sequence, "audio", nonNegativeInt(args.audioTrackIndex, "audioTrackIndex"), nonNegativeInt(args.audioClipIndex, "audioClipIndex")), mediaType: "audio", trackIndex: args.audioTrackIndex, clipIndex: args.audioClipIndex };
+      const videoContext = { ...context, item: await trackItemAt(context.sequence, "video", nonNegativeInt(args.videoTrackIndex, "videoTrackIndex"), nonNegativeInt(args.videoClipIndex, "videoClipIndex")), mediaType: "video", trackIndex: args.videoTrackIndex, clipIndex: args.videoClipIndex };
+      const before = { audio: await trackItemSnapshot(audioContext), video: await trackItemSnapshot(videoContext) };
+      if (!numbersEqual(before.audio.speed, 1) || before.audio.reversed) throw commandError("UXP_TARGET_UNSUPPORTED", "Split edits require forward 1x audio so source sync can be preserved");
+      const edge = kind === "j_cut" ? "startSeconds" : "endSeconds";
+      if (!numbersEqual(before.audio[edge], before.video[edge])) throw commandError("UXP_STALE_TRACK_ITEM", "Audio and video " + (kind === "j_cut" ? "start" : "end") + " edges are not aligned");
+      const timelineValue = Number(before.audio[edge]) + (kind === "j_cut" ? -extension : extension);
+      const sourceField = kind === "j_cut" ? "inSeconds" : "outSeconds", sourceValue = Number(before.audio[sourceField]) + (kind === "j_cut" ? -extension : extension);
+      if (timelineValue < 0 || sourceValue < 0) throw commandError("UXP_TARGET_UNSUPPORTED", "The requested J-cut exceeds the available leading timeline or source handle");
+      context.project.lockedAccess(() => {
+        const actions = kind === "j_cut"
+          ? [audioContext.item.createSetStartAction(tick(timelineValue)), audioContext.item.createSetInPointAction(tick(sourceValue))]
+          : [audioContext.item.createSetEndAction(tick(timelineValue)), audioContext.item.createSetOutPointAction(tick(sourceValue))];
+        commitActions(context.project, kind === "j_cut" ? "Create J-cut" : "Create L-cut", actions);
+      });
+      const afterItem = await trackItemAt(context.sequence, "audio", nonNegativeInt(args.audioTrackIndex, "audioTrackIndex"), nonNegativeInt(args.audioClipIndex, "audioClipIndex"));
+      const after = await trackItemSnapshot({ ...audioContext, item: afterItem });
+      const timelineMatched = numbersEqual(after[edge], timelineValue);
+      const sourceMatched = numbersEqual(after[sourceField], sourceValue);
+      // The user-visible result is the audio timeline edge. Source-out readback
+      // can lag or stay stale after a successful SetEnd; do not false-negative
+      // a completed L/J-cut when that edge moved to the requested time.
+      return mutationResult(timelineMatched, {
+        splitEdit: kind, extensionSeconds: extension, before, after, timelineMatched, sourceReadbackMatched: sourceMatched
+      }, "split_edit_audio_edge_and_source_readback", kind === "j_cut" ? "Create J-cut" : "Create L-cut");
     }
 
     async function editorContext(requireTransactions) {
@@ -1217,9 +2181,168 @@
       requireConfirmation(args.confirmNonUndoable, "Creating a sequence from media is a direct Project call without an Action boundary");
       const project = await activeProject(false), ids = boundedStringArray(args.projectItemIds, "projectItemIds", 64, 512), clips = [];
       for (const id of ids) clips.push(asClip(await findProjectItem(project, id), "projectItemId"));
-      const target = args.targetBinId ? await resolveFolder(project, args.targetBinId, "targetBinId") : undefined, sequence = await project.createSequenceFromMedia(boundedString(args.name, "name", 255), clips, target);
-      if (!sequence) throw commandError("UXP_HOST_REJECTED", "Premiere did not create a sequence");
-      return directMutationResult(false, { created: true, sequence: await sequenceSnapshot(sequence) }, "create_sequence_host_return");
+      const target = args.targetBinId ? await resolveFolder(project, args.targetBinId, "targetBinId") : undefined, name = boundedString(args.name, "name", 255);
+      return withAppendLock(appendLockKey(project, "sequences", "all"), async () => {
+        const before = await listSequences(project);
+        assertAppendCapacity(before, MAX_SEQUENCES, "Sequence creation");
+        const reconciledSequence = async () => {
+          try {
+            const after = await listSequences(project);
+            return { readable: true, sequence: after.find((item) => !before.some((old) => old.id === item.id)) || null };
+          } catch (_) { return { readable: false, sequence: null }; }
+        };
+          const partialReceipt = async (boundary, sequence) => directMutationResult(false, {
+            created: !!sequence, partial: true, sequence: await safeSequenceSnapshot(sequence)
+          }, boundary);
+          let sequence;
+          try { sequence = await project.createSequenceFromMedia(name, clips, target); }
+          catch (error) {
+            const reconciliation = await reconciledSequence();
+            if (reconciliation.sequence) return partialReceipt("create_sequence_host_reconciliation", reconciliation.sequence);
+            if (!reconciliation.readable) return partialReceipt("create_sequence_reconciliation_readback_failed", null);
+            throw commandError("UXP_HOST_REJECTED", "Premiere rejected sequence creation: " + error.message);
+          }
+          if (!sequence) {
+            const reconciliation = await reconciledSequence();
+            if (reconciliation.sequence) return partialReceipt("create_sequence_host_return", reconciliation.sequence);
+            if (!reconciliation.readable) return partialReceipt("create_sequence_reconciliation_readback_failed", null);
+            throw commandError("UXP_HOST_REJECTED", "Premiere did not create a sequence");
+          }
+        const snapshot = await safeSequenceSnapshot(sequence);
+        if (!snapshot || !snapshot.id) return partialReceipt("create_sequence_identity_readback", sequence);
+        return directMutationResult(false, { created: true, partial: false, sequence: snapshot }, "create_sequence_host_return");
+      });
+    }
+
+    async function createEmptySequence(args) {
+      assertObject(args); assertOnlyKeys(args, ["name", "confirmNonUndoable", "operationId"]);
+      requireConfirmation(args.confirmNonUndoable, "Creating an empty sequence is a direct Project call without an Action boundary");
+      if (typeof args.operationId !== "string" || !args.operationId) {
+        throw commandError("UXP_INVALID_ARGUMENT", "operationId is required for non-undoable empty sequence creation");
+      }
+      const name = boundedString(args.name, "name", 255), project = await activeProject(false);
+      if (typeof project.createSequence !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "This Premiere build does not expose documented empty sequence creation");
+      return withAppendLock(appendLockKey(project, "sequences", "all"), async () => {
+        const before = await listSequences(project);
+        assertAppendCapacity(before, MAX_SEQUENCES, "Empty sequence creation");
+        if (before.some((item) => !item.id)) throw commandError("UXP_SEQUENCE_ID_UNAVAILABLE", "Sequence creation requires stable IDs for every preflight sequence");
+        const beforeIds = new Set(before.map((item) => item.id));
+        const reconcile = async () => {
+          try {
+            const after = await listSequences(project);
+            if (after.some((item) => !item.id)) return { readable: false, added: [], matchingName: [] };
+            const added = after.filter((item) => !beforeIds.has(item.id));
+            return { readable: true, added, matchingName: added.filter((item) => item.name === name) };
+          } catch (_) { return { readable: false, added: [], matchingName: [] }; }
+        };
+        const receipt = (verified, values, boundary) => directSequenceCreationResult(verified, values, boundary);
+        let created;
+        try { created = await project.createSequence(name); }
+        catch (error) {
+          const reconciliation = await reconcile();
+          if (!reconciliation.readable) return receipt(false, { created: false, partial: true, sequence: null }, "create_empty_sequence_reconciliation_readback_failed");
+          if (reconciliation.matchingName.length === 1) return receipt(false, { created: true, partial: true, sequence: reconciliation.matchingName[0] }, "create_empty_sequence_host_reconciliation");
+          throw commandError("UXP_HOST_REJECTED", "Premiere rejected empty sequence creation: " + error.message);
+        }
+        const returned = await safeSequenceSnapshot(created), reconciliation = await reconcile();
+        if (!reconciliation.readable) return receipt(false, { created: !!returned, partial: true, sequence: returned }, "create_empty_sequence_readback_failed");
+        const returnedMatch = returned && returned.id
+          ? reconciliation.added.find((item) => item.id === returned.id) || null
+          : null;
+        if (returnedMatch && returnedMatch.name === name) {
+          return receipt(true, { created: true, partial: false, sequence: returnedMatch }, "create_empty_sequence_identity_readback");
+        }
+        if (!returned?.id && reconciliation.matchingName.length === 1 && reconciliation.added.length === 1) {
+          return receipt(true, { created: true, partial: false, sequence: reconciliation.matchingName[0] }, "create_empty_sequence_identity_readback");
+        }
+        return receipt(false, {
+          created: !!(returned || reconciliation.matchingName.length), partial: true,
+          sequence: returned || reconciliation.matchingName[0] || null
+        }, "create_empty_sequence_identity_readback");
+      });
+    }
+
+    async function deriveSilenceSequence(args) {
+      assertObject(args); assertOnlyKeys(args, ["sourceProjectItemId", "name", "keepRanges", "targetBinId", "confirmNonUndoable", "operationId"]);
+      requireConfirmation(args.confirmNonUndoable, "Derived silence removal creates subclips and a new sequence; the original source is not changed");
+      if (!Array.isArray(args.keepRanges) || !args.keepRanges.length || args.keepRanges.length > 64) throw commandError("UXP_INVALID_ARGUMENT", "keepRanges must contain 1-64 ranges");
+      const ranges = args.keepRanges.map((range, index) => {
+        assertObject(range); assertOnlyKeys(range, ["startSeconds", "endSeconds", "startFrame", "endFrame"]);
+        const startSeconds = finiteNumber(range.startSeconds, "keepRanges[" + index + "].startSeconds", 0, 86400);
+        const endSeconds = finiteNumber(range.endSeconds, "keepRanges[" + index + "].endSeconds", 0, 86400);
+        if (endSeconds <= startSeconds) throw commandError("UXP_INVALID_ARGUMENT", "keepRanges must have positive duration");
+        if (index && startSeconds < args.keepRanges[index - 1].endSeconds) throw commandError("UXP_INVALID_ARGUMENT", "keepRanges must be ordered and non-overlapping");
+        const startFrame = boundedInt(range.startFrame, "startFrame", 0, 100000000), endFrame = boundedInt(range.endFrame, "endFrame", 1, 100000000);
+        if (endFrame <= startFrame) throw commandError("UXP_INVALID_ARGUMENT", "keepRanges frame bounds must have positive duration");
+        return { startSeconds, endSeconds, startFrame, endFrame };
+      });
+      const project = await activeProject(true), sourceItem = await findProjectItem(project, args.sourceProjectItemId), source = asClip(sourceItem, "sourceProjectItemId");
+      if (typeof source.createSubClipAction !== "function") throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere cannot create documented subclips for silence removal");
+      const parent = await parentBinOf(project, sourceItem, "source parent");
+      const target = args.targetBinId ? await resolveFolder(project, args.targetBinId, "targetBinId") : undefined;
+      const name = boundedString(args.name, "name", 255), prefix = name + " Keep";
+      return withAppendLock(appendLockKey(project, "bin", await projectItemId(parent)), async () => {
+        const lockedBefore = Array.from(await parent.getItems() || []), beforeIds = new Set();
+        if (lockedBefore.length + ranges.length > MAX_BIN_CHILDREN) throw commandError("UXP_PROJECT_TOO_LARGE", "Silence-removal subclips would exceed the " + MAX_BIN_CHILDREN + " item bin limit");
+        for (const item of lockedBefore) beforeIds.add(await projectItemId(item));
+        let subclipCommitError = false, mutationAttempted = false;
+        try {
+          project.lockedAccess(() => {
+            const actions = ranges.map((range, index) => source.createSubClipAction(prefix + " " + (index + 1), tick(range.startSeconds, "startSeconds"), tick(range.endSeconds, "endSeconds"), true, { takeVideo: true, takeAudio: true }));
+            mutationAttempted = true;
+            commitActions(project, "Create silence-removal subclips", actions);
+          });
+        } catch (error) { if (!mutationAttempted) throw error; subclipCommitError = true; }
+        let createdItems;
+        try {
+          const after = Array.from(await parent.getItems() || []), added = [];
+          for (const item of after) if (!beforeIds.has(await projectItemId(item))) added.push(item);
+          createdItems = ranges.map((_, index) => added.find((item) => String(item.name || "") === prefix + " " + (index + 1))).filter(Boolean);
+        } catch (_) {
+          return directMutationResult(false, { partial: true, createdSubclips: [], sequence: null, originalChanged: false }, "derived_subclip_readback_failed");
+        }
+        const partialReceipt = async (boundary, sequence, insertedProjectItemIds) => directMutationResult(false, {
+          partial: true,
+          createdSubclips: await safeProjectItemSnapshots(createdItems),
+          sequence: await safeSequenceSnapshot(sequence),
+          insertedProjectItemIds: insertedProjectItemIds || [],
+          originalChanged: false
+        }, boundary);
+        if (subclipCommitError || createdItems.length !== ranges.length) return partialReceipt(subclipCommitError ? "derived_subclip_partial_transaction_receipt" : "derived_subclip_count_readback", null);
+        return withAppendLock(appendLockKey(project, "sequences", "all"), async () => {
+          let beforeSequences;
+          try { beforeSequences = await listSequences(project); }
+          catch (_) { return partialReceipt("derived_sequence_preflight_readback_failed", null); }
+          if (beforeSequences.length >= MAX_SEQUENCES) return partialReceipt("derived_sequence_capacity_preflight", null);
+          const reconciledSequence = async () => {
+            try {
+              const afterSequences = await listSequences(project);
+              return afterSequences.find((item) => !beforeSequences.some((old) => old.id === item.id)) || null;
+            } catch (_) { return null; }
+          };
+          let sequence;
+          try { sequence = await project.createSequenceFromMedia(name, [createdItems[0]], target); } catch (_) { return partialReceipt("derived_sequence_host_reconciliation", await reconciledSequence()); }
+          if (!sequence) return partialReceipt("derived_sequence_host_return", await reconciledSequence());
+          const inserted = await safeProjectItemIds([createdItems[0]]);
+          try {
+            const editor = ppro.SequenceEditor.getEditor(sequence);
+            if (!editor || typeof editor.createInsertProjectItemAction !== "function") throw new Error("editor unavailable");
+            let offset = ranges[0].endSeconds - ranges[0].startSeconds;
+            for (let index = 1; index < createdItems.length; index++) {
+              project.lockedAccess(() => commitActions(project, "Insert silence-removal segment", [editor.createInsertProjectItemAction(createdItems[index], tick(offset, "timeline offset"), 0, 0, false)]));
+              inserted.push(...await safeProjectItemIds([createdItems[index]])); offset += ranges[index].endSeconds - ranges[index].startSeconds;
+            }
+          } catch (_) {
+            return partialReceipt("derived_sequence_partial_insert_receipt", sequence, inserted);
+          }
+          const createdSubclips = await safeProjectItemSnapshots(createdItems), sequenceSnapshot = await safeSequenceSnapshot(sequence);
+          if (createdSubclips.length !== createdItems.length || createdSubclips.some((item) => !item.id)
+            || !sequenceSnapshot || !sequenceSnapshot.id || inserted.length !== createdItems.length || inserted.some((id) => !id)) {
+            return partialReceipt("derived_sequence_final_identity_readback", sequence, inserted);
+          }
+          return directMutationResult(false, { created: true, partial: false, createdSubclips: createdSubclips, sequence: sequenceSnapshot, insertedProjectItemIds: inserted, originalChanged: false }, "derived_sequence_structure_unverified");
+        });
+      });
     }
 
     async function cloneSequence(args) {
@@ -1239,9 +2362,37 @@
     async function createSubsequence(args) {
       assertObject(args); assertOnlyKeys(args, ["sequenceId", "ignoreTrackTargeting", "confirmNonUndoable", "operationId"]);
       requireConfirmation(args.confirmNonUndoable, "Creating a subsequence is a direct Sequence call without an Action boundary");
-      const project = await activeProject(false), sequence = await resolveSequence(project, args.sequenceId), created = await sequence.createSubsequence(optionalBoolean(args.ignoreTrackTargeting, false, "ignoreTrackTargeting"));
-      if (!created) throw commandError("UXP_HOST_REJECTED", "Premiere did not create a subsequence");
-      return directMutationResult(false, { created: true, sequence: await sequenceSnapshot(created) }, "create_subsequence_host_return");
+      const project = await activeProject(false), sequence = await resolveSequence(project, args.sequenceId), ignoreTrackTargeting = optionalBoolean(args.ignoreTrackTargeting, false, "ignoreTrackTargeting");
+      return withAppendLock(appendLockKey(project, "sequences", "all"), async () => {
+        const before = await listSequences(project);
+        assertAppendCapacity(before, MAX_SEQUENCES, "Subsequence creation");
+        const reconciledSequence = async () => {
+          try {
+            const after = await listSequences(project);
+            return { readable: true, sequence: after.find((item) => !before.some((old) => old.id === item.id)) || null };
+          } catch (_) { return { readable: false, sequence: null }; }
+        };
+          const partialReceipt = async (boundary, created) => directMutationResult(false, {
+            created: !!created, partial: true, sequence: await safeSequenceSnapshot(created)
+          }, boundary);
+          let created;
+          try { created = await sequence.createSubsequence(ignoreTrackTargeting); }
+          catch (error) {
+            const reconciliation = await reconciledSequence();
+            if (reconciliation.sequence) return partialReceipt("create_subsequence_host_reconciliation", reconciliation.sequence);
+            if (!reconciliation.readable) return partialReceipt("create_subsequence_reconciliation_readback_failed", null);
+            throw commandError("UXP_HOST_REJECTED", "Premiere rejected subsequence creation: " + error.message);
+          }
+          if (!created) {
+            const reconciliation = await reconciledSequence();
+            if (reconciliation.sequence) return partialReceipt("create_subsequence_host_return", reconciliation.sequence);
+            if (!reconciliation.readable) return partialReceipt("create_subsequence_reconciliation_readback_failed", null);
+            throw commandError("UXP_HOST_REJECTED", "Premiere did not create a subsequence");
+          }
+        const snapshot = await safeSequenceSnapshot(created);
+        if (!snapshot || !snapshot.id) return partialReceipt("create_subsequence_identity_readback", created);
+        return directMutationResult(false, { created: true, partial: false, sequence: snapshot }, "create_subsequence_host_return");
+      });
     }
 
     async function activateSequence(args) { return sequenceDirectAction(args, "activate", "setActiveSequence"); }
@@ -1374,6 +2525,16 @@
         operation: operationSemantics({ mutatesProject: true, verificationStatus: verified ? "verified" : "not_verified", verificationBoundary: boundary, verificationEvidence: [{ type: boundary, verified }], undoSupported: true, undoLabel, transactionActionGroup: true, cancellationSupported: true }) };
     }
 
+    function sequenceDisplayFormatResult(verified, values, boundary) {
+      return { ...values, outcome: verified ? "verified" : "committed_unverified", verified, verificationBoundary: boundary,
+        operation: operationSemantics({ mutatesProject: true, verificationStatus: verified ? "verified" : "not_verified", verificationBoundary: boundary, verificationEvidence: [{ type: boundary, verified }], undoSupported: true, undoLabel: "Update sequence display formats", transactionActionGroup: true, cancellationSupported: false }) };
+    }
+
+    function sequenceDisplayFormatNoop(values, boundary) {
+      return { ...values, outcome: "verified", verified: true, verificationBoundary: boundary,
+        operation: operationSemantics({ mutatesProject: false, verificationStatus: "verified", verificationBoundary: boundary, verificationEvidence: [{ type: boundary, verified: true }], cancellationSupported: false }) };
+    }
+
     function verifiedNoopResult(values, boundary) {
       return { ...values, outcome: "verified", verified: true, verificationBoundary: boundary,
         operation: operationSemantics({ mutatesProject: false, verificationStatus: "verified", verificationBoundary: boundary, verificationEvidence: [{ type: boundary, verified: true }], cancellationSupported: true }) };
@@ -1382,6 +2543,11 @@
     function directMutationResult(verified, values, boundary) {
       return { ...values, outcome: verified ? "verified" : "committed_unverified", verified, verificationBoundary: boundary,
         operation: operationSemantics({ mutatesProject: true, verificationStatus: verified ? "verified" : "not_verified", verificationBoundary: boundary, verificationEvidence: [{ type: boundary, verified }], undoSupported: false, cancellationSupported: true }) };
+    }
+
+    function directSequenceCreationResult(verified, values, boundary) {
+      return { ...values, outcome: verified ? "verified" : "committed_unverified", verified, verificationBoundary: boundary,
+        operation: operationSemantics({ mutatesProject: true, verificationStatus: verified ? "verified" : "not_verified", verificationBoundary: boundary, verificationEvidence: [{ type: boundary, verified }], undoSupported: false, cancellationSupported: false }) };
     }
 
     function externalWriteResult(values) {
@@ -1415,6 +2581,11 @@
       return guidString(project && project.guid) + ":" + collectionType + ":" + targetId;
     }
 
+    async function markerLockKey(context) {
+      const ownerId = context.ownerType === "sequence" ? guidString(context.owner && context.owner.guid) : await projectItemId(context.owner);
+      return appendLockKey(context.project, "markers", context.ownerType + ":" + ownerId);
+    }
+
     async function withAppendLock(key, callback) {
       const previous = appendLocks.get(key) || Promise.resolve();
       let release = function () {};
@@ -1426,6 +2597,107 @@
       } finally {
         release();
         if (appendLocks.get(key) === current) appendLocks.delete(key);
+      }
+    }
+
+    async function withColorLabelLock(key, callback) {
+      const previous = colorLabelFallbackTails.get(key) || Promise.resolve();
+      let release = function () {};
+      const current = new Promise((resolve) => { release = resolve; });
+      colorLabelFallbackTails.set(key, current);
+      await previous;
+      try {
+        return await callback();
+      } finally {
+        release();
+        if (colorLabelFallbackTails.get(key) === current) colorLabelFallbackTails.delete(key);
+      }
+    }
+
+    function displayFormatCode(value, label) {
+      const code = value && value.type;
+      if (!Number.isSafeInteger(code) || code < 0 || code > MAX_DISPLAY_FORMAT_CODE) {
+        throw commandError("UXP_INVALID_HOST_STATE", label + " did not return a bounded display-format code");
+      }
+      return code;
+    }
+
+    async function sequenceDisplayFormatState(settings) {
+      if (!settings || typeof settings.getAudioDisplayFormat !== "function" || typeof settings.getVideoDisplayFormat !== "function") {
+        throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose sequence audio/video display formats");
+      }
+      const audioDisplay = await settings.getAudioDisplayFormat(), videoDisplay = await settings.getVideoDisplayFormat();
+      return {
+        audioDisplay,
+        videoDisplay,
+        values: {
+          audioDisplayFormat: displayFormatCode(audioDisplay, "Audio display format"),
+          videoDisplayFormat: displayFormatCode(videoDisplay, "Video display format")
+        }
+      };
+    }
+
+    function supportedDisplayFormats() {
+      const settings = ppro.SequenceSettings;
+      if (!settings || (typeof settings !== "object" && typeof settings !== "function")) throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose SequenceSettings display-format constants");
+      const collect = function (keys, label) {
+        const values = [];
+        for (const key of keys) {
+          const code = settings[key];
+          if (!Number.isSafeInteger(code) || code < 0 || code > MAX_DISPLAY_FORMAT_CODE) continue;
+          values.push({ constant: key, code });
+        }
+        if (!values.length) throw commandError("UXP_COMMAND_UNAVAILABLE", "Premiere does not expose " + label + " display-format constants");
+        return values.sort((left, right) => left.constant.localeCompare(right.constant));
+      };
+      return {
+        audio: collect(["AUDIO_DISPLAY_FORMAT_SAMPLE_RATE", "AUDIO_DISPLAY_FORMAT_MILISECONDS"], "audio"),
+        video: collect(["VIDEO_DISPLAY_FORMAT_23976", "VIDEO_DISPLAY_FORMAT_25", "VIDEO_DISPLAY_FORMAT_2997", "VIDEO_DISPLAY_FORMAT_2997_NON_DROP", "VIDEO_DISPLAY_FORMAT_16mm", "VIDEO_DISPLAY_FORMAT_35mm", "VIDEO_DISPLAY_FORMAT_FRAMES"], "video")
+      };
+    }
+
+    function validateDisplayFormatCode(value, label) {
+      return boundedInt(value, label, 0, MAX_DISPLAY_FORMAT_CODE);
+    }
+
+    function validateExpectedDisplayFormats(value) {
+      assertObject(value); assertOnlyKeys(value, ["audioDisplayFormat", "videoDisplayFormat"]);
+      if (!Object.prototype.hasOwnProperty.call(value, "audioDisplayFormat") || !Object.prototype.hasOwnProperty.call(value, "videoDisplayFormat")) {
+        throw commandError("UXP_INVALID_ARGUMENT", "expectedDisplayFormats must include audioDisplayFormat and videoDisplayFormat");
+      }
+      return {
+        audioDisplayFormat: validateDisplayFormatCode(value.audioDisplayFormat, "expectedDisplayFormats.audioDisplayFormat"),
+        videoDisplayFormat: validateDisplayFormatCode(value.videoDisplayFormat, "expectedDisplayFormats.videoDisplayFormat")
+      };
+    }
+
+    function validateDisplayFormatUpdates(value) {
+      assertObject(value); assertOnlyKeys(value, ["audioDisplayFormat", "videoDisplayFormat"]);
+      const updates = {};
+      if (Object.prototype.hasOwnProperty.call(value, "audioDisplayFormat")) updates.audioDisplayFormat = validateDisplayFormatCode(value.audioDisplayFormat, "updates.audioDisplayFormat");
+      if (Object.prototype.hasOwnProperty.call(value, "videoDisplayFormat")) updates.videoDisplayFormat = validateDisplayFormatCode(value.videoDisplayFormat, "updates.videoDisplayFormat");
+      if (!Object.keys(updates).length) throw commandError("UXP_INVALID_ARGUMENT", "updates must include audioDisplayFormat or videoDisplayFormat");
+      return updates;
+    }
+
+    function validateSequenceDisplayFormatUpdate(args) {
+      assertObject(args); assertOnlyKeys(args, ["sequenceId", "expectedSequenceGuid", "expectedDisplayFormats", "updates", "operationId"]);
+      const expectedSequenceGuid = boundedString(args.expectedSequenceGuid, "expectedSequenceGuid", 128);
+      return {
+        sequenceId: args.sequenceId == null ? expectedSequenceGuid : boundedString(args.sequenceId, "sequenceId", 128),
+        expectedSequenceGuid,
+        expectedDisplayFormats: validateExpectedDisplayFormats(args.expectedDisplayFormats),
+        updates: validateDisplayFormatUpdates(args.updates)
+      };
+    }
+
+    function assertRequestedDisplayFormatsSupported(updates, supported) {
+      const audioCodes = new Set(supported.audio.map((value) => value.code)), videoCodes = new Set(supported.video.map((value) => value.code));
+      if (updates.audioDisplayFormat !== undefined && !audioCodes.has(updates.audioDisplayFormat)) {
+        throw commandError("UXP_INVALID_ARGUMENT", "updates.audioDisplayFormat is not advertised by this Premiere host");
+      }
+      if (updates.videoDisplayFormat !== undefined && !videoCodes.has(updates.videoDisplayFormat)) {
+        throw commandError("UXP_INVALID_ARGUMENT", "updates.videoDisplayFormat is not advertised by this Premiere host");
       }
     }
 
@@ -1456,6 +2728,58 @@
     function settingMatches(after, key, value) { if (key === "videoWidth") return after.videoFrame && numbersEqual(after.videoFrame.width, value); if (key === "videoHeight") return after.videoFrame && numbersEqual(after.videoFrame.height, value); return valuesEqual(after[key], value); }
     function keyframeValue(value) { return value && value.value && Object.prototype.hasOwnProperty.call(value.value, "value") ? value.value.value : value && value.value !== undefined ? value.value : null; }
     function scalarValue(value) { if (typeof value !== "number" && typeof value !== "string" && typeof value !== "boolean") throw commandError("UXP_INVALID_ARGUMENT", "value must be a number, string, or boolean"); if (typeof value === "number" && !Number.isFinite(value)) throw commandError("UXP_INVALID_ARGUMENT", "value must be finite"); if (typeof value === "string" && value.length > 4000) throw commandError("UXP_INVALID_ARGUMENT", "value string exceeds 4000 characters"); return value; }
+    function pointValue(value, label) {
+      assertObject(value); assertOnlyKeys(value, ["x", "y"]);
+      return {
+        x: finiteNumber(value.x, (label || "point") + ".x", -1000000, 1000000),
+        y: finiteNumber(value.y, (label || "point") + ".y", -1000000, 1000000),
+      };
+    }
+    function colorValue(value, label) {
+      assertObject(value); assertOnlyKeys(value, ["red", "green", "blue", "alpha"]);
+      return {
+        red: finiteNumber(value.red, (label || "color") + ".red", -1000000, 1000000),
+        green: finiteNumber(value.green, (label || "color") + ".green", -1000000, 1000000),
+        blue: finiteNumber(value.blue, (label || "color") + ".blue", -1000000, 1000000),
+        alpha: finiteNumber(value.alpha, (label || "color") + ".alpha", -1000000, 1000000),
+      };
+    }
+    function expectedPointParameterSnapshot(value) {
+      assertObject(value);
+      assertOnlyKeys(value, ["projectId", "sequenceId", "mediaType", "trackIndex", "clipIndex", "componentIndex", "componentId", "paramIndex", "paramName", "timeVarying", "point"]);
+      if (typeof value.timeVarying !== "boolean") throw commandError("UXP_INVALID_ARGUMENT", "expectedSnapshot.timeVarying must be boolean");
+      return {
+        projectId: boundedString(value.projectId, "expectedSnapshot.projectId", 128),
+        sequenceId: boundedString(value.sequenceId, "expectedSnapshot.sequenceId", 128),
+        mediaType: enumValue(value.mediaType, "expectedSnapshot.mediaType", ["video", "audio"]),
+        trackIndex: nonNegativeInt(value.trackIndex, "expectedSnapshot.trackIndex"),
+        clipIndex: nonNegativeInt(value.clipIndex, "expectedSnapshot.clipIndex"),
+        componentIndex: nonNegativeInt(value.componentIndex, "expectedSnapshot.componentIndex"),
+        componentId: boundedString(value.componentId, "expectedSnapshot.componentId", 256),
+        paramIndex: nonNegativeInt(value.paramIndex, "expectedSnapshot.paramIndex"),
+        paramName: boundedStringAllowEmpty(value.paramName, "expectedSnapshot.paramName", 255),
+        timeVarying: value.timeVarying,
+        point: pointValue(value.point, "expectedSnapshot.point"),
+      };
+    }
+    function expectedColorParameterSnapshot(value) {
+      assertObject(value);
+      assertOnlyKeys(value, ["projectId", "sequenceId", "mediaType", "trackIndex", "clipIndex", "componentIndex", "componentId", "paramIndex", "paramName", "timeVarying", "color"]);
+      if (typeof value.timeVarying !== "boolean") throw commandError("UXP_INVALID_ARGUMENT", "expectedSnapshot.timeVarying must be boolean");
+      return {
+        projectId: boundedString(value.projectId, "expectedSnapshot.projectId", 128),
+        sequenceId: boundedString(value.sequenceId, "expectedSnapshot.sequenceId", 128),
+        mediaType: enumValue(value.mediaType, "expectedSnapshot.mediaType", ["video", "audio"]),
+        trackIndex: nonNegativeInt(value.trackIndex, "expectedSnapshot.trackIndex"),
+        clipIndex: nonNegativeInt(value.clipIndex, "expectedSnapshot.clipIndex"),
+        componentIndex: nonNegativeInt(value.componentIndex, "expectedSnapshot.componentIndex"),
+        componentId: boundedString(value.componentId, "expectedSnapshot.componentId", 256),
+        paramIndex: nonNegativeInt(value.paramIndex, "expectedSnapshot.paramIndex"),
+        paramName: boundedStringAllowEmpty(value.paramName, "expectedSnapshot.paramName", 255),
+        timeVarying: value.timeVarying,
+        color: colorValue(value.color, "expectedSnapshot.color"),
+      };
+    }
 
     // 2D properties such as Motion > Position require Adobe's native PointF
     // (ComponentParam.createKeyframe accepts number | string | boolean |
@@ -1537,20 +2861,43 @@
 
     function canInspectProject() { return !!(ppro.Project && typeof ppro.Project.getActiveProject === "function"); }
     function canUseProjectViews() { return canInspectProject() && !!(ppro.ProjectUtils && typeof ppro.ProjectUtils.getSelection === "function" && typeof ppro.ProjectUtils.getProjectViewIds === "function"); }
+    function canUseProjectTree() { return canUseBins(); }
     function canUseMarkers() { return canInspectProject() && !!(ppro.Markers && typeof ppro.Markers.getMarkers === "function"); }
     function canUseBins() { return canInspectProject() && !!(ppro.FolderItem && typeof ppro.FolderItem.cast === "function"); }
     function canUseSequenceSettings() { return canInspectProject(); }
+    function canUseSequenceDisplayFormats() {
+      try { return canUseSequenceSettings() && !!supportedDisplayFormats(); }
+      catch (_) { return false; }
+    }
     async function canImportProjectMedia() {
       if (!canInspectProject()) return false;
       const project = await ppro.Project.getActiveProject();
       return !!project && ["importFiles", "importSequences", "importAEComps", "importAllAEComps"].every((method) => typeof project[method] === "function");
     }
     function canUseParameters() { return canInspectProject() && !!(ppro.Constants && ppro.Constants.TrackItemType); }
+    function canUsePointParameters() { return canUseParameters() && typeof ppro.PointF === "function"; }
+    function canUseColorParameters() { return canUseParameters() && typeof ppro.Color === "function"; }
     function canUseTrackItems() { return canUseParameters(); }
+    function canInspectTimelineStructure() { return canUseTrackItems(); }
     function canUseSequenceEditor() { return canInspectProject() && !!(ppro.SequenceEditor && typeof ppro.SequenceEditor.getEditor === "function"); }
     function canUseMogrtPath() { return canUseSequenceEditor(); }
     function canUseMogrtLibrary() { return canUseSequenceEditor(); }
     function canUseSequences() { return canInspectProject(); }
+    async function canCreateEmptySequence() {
+      if (!canInspectProject()) return false;
+      try {
+        const project = await ppro.Project.getActiveProject();
+        return !!project && typeof project.createSequence === "function";
+      } catch (_) { return false; }
+    }
+    async function canDeriveSilenceSequence() {
+      if (!canUseSequences() || !canUseSequenceEditor() || !ppro.ClipProjectItem || typeof ppro.ClipProjectItem.cast !== "function"
+        || !ppro.FolderItem || typeof ppro.FolderItem.cast !== "function" || !ppro.TickTime || typeof ppro.TickTime.createWithSeconds !== "function") return false;
+      const project = await ppro.Project.getActiveProject();
+      if (!project) return true;
+      return typeof project.lockedAccess === "function" && typeof project.executeTransaction === "function"
+        && typeof project.getRootItem === "function" && typeof project.createSequenceFromMedia === "function";
+    }
     async function canCloseSequence() {
       if (!canInspectProject()) return false;
       const project = await ppro.Project.getActiveProject();
@@ -1574,13 +2921,35 @@
   function optionalBoolean(value, fallback, name) { return value == null ? fallback : requiredBoolean(value, name); }
   function enumValue(value, name, allowed) { if (!allowed.includes(value)) throw commandError("UXP_INVALID_ARGUMENT", name + " must be one of " + allowed.join(", ")); return value; }
   function requireConfirmation(value, message) { if (value !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", message + "; pass confirmNonUndoable=true after review"); }
+  function requireDestructiveConfirmation(value) { if (value !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", "Removing reviewed marker snapshots is destructive; pass confirmDestructive=true after review"); }
+  function reviewedMarkerSnapshots(value) {
+    if (!Array.isArray(value) || !value.length || value.length > 128) throw commandError("UXP_INVALID_ARGUMENT", "markerSnapshots must contain 1-128 reviewed marker snapshots");
+    const seen = new Set(), snapshots = [];
+    for (let index = 0; index < value.length; index += 1) {
+      const snapshot = value[index];
+      assertObject(snapshot); assertOnlyKeys(snapshot, ["markerGuid", "expectedName", "expectedStartSeconds", "expectedDurationSeconds"]);
+      const markerGuid = boundedString(snapshot.markerGuid, "markerSnapshots[" + index + "].markerGuid", 128);
+      if (seen.has(markerGuid)) throw commandError("UXP_INVALID_ARGUMENT", "markerSnapshots must not contain duplicate markerGuid values");
+      seen.add(markerGuid);
+      snapshots.push({
+        markerGuid,
+        expectedName: boundedStringAllowEmpty(snapshot.expectedName, "markerSnapshots[" + index + "].expectedName", 255),
+        expectedStartSeconds: finiteNumber(snapshot.expectedStartSeconds, "markerSnapshots[" + index + "].expectedStartSeconds", 0, 86400),
+        expectedDurationSeconds: finiteNumber(snapshot.expectedDurationSeconds, "markerSnapshots[" + index + "].expectedDurationSeconds", 0, 86400),
+      });
+    }
+    return snapshots;
+  }
   function assertExpected(actual, expected, code, label) { if (expected != null && actual !== expected) throw commandError(code, label + " no longer matches the expected value"); }
   function assertExpectedNumber(actual, expected, code, label) { if (expected != null && !numbersEqual(actual, expected)) throw commandError(code, label + " no longer matches the expected value"); }
   function requireExternalWrite(value) { if (value !== true) throw commandError("UXP_CONFIRMATION_REQUIRED", "Encoding writes external files and may overwrite an existing output; pass confirmExternalWrite=true after review"); }
+  function sameNumberArrays(left, right) { return Array.isArray(left) && Array.isArray(right) && left.length === right.length && left.every((value, index) => numbersEqual(value, right[index])); }
   function numbersEqual(left, right) {
     if (left == null || right == null) return false;
     return Number.isFinite(Number(left)) && Number.isFinite(Number(right)) && Math.abs(Number(left) - Number(right)) < 0.000001;
   }
+  function pointsEqual(left, right) { return !!left && !!right && numbersEqual(left.x, right.x) && numbersEqual(left.y, right.y); }
+  function colorsEqual(left, right) { return !!left && !!right && numbersEqual(left.red, right.red) && numbersEqual(left.green, right.green) && numbersEqual(left.blue, right.blue) && numbersEqual(left.alpha, right.alpha); }
   function valuesEqual(left, right) {
     // Point-aware: live 2D readbacks arrive as [x, y] arrays or {x, y}
     // objects (never PointF instances); compare coordinates numerically.

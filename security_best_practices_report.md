@@ -1,96 +1,174 @@
-# Security Audit Report
+# Repository security and performance review
 
-Audit date: 2026-07-29  
-Audited revision: `7a075870217ab495b001a38473cc652247edded4` (`main`, matching `origin/main`)  
-Scope: MCP server, CEP/UXP/chat plugins, landing application, dependencies, container/deployment configuration, and GitHub Actions.
+Date: 2026-09-15
+
+Reviewed commit: `121991a50c7229d7c84dce0fb2ebce3df8b73662` (1.15.2).
 
 ## Executive summary
 
-The remote MCP server has a sound basic authentication posture: it fails closed when `MCP_AUTH_TOKEN` is absent, compares bearer tokens in constant time, limits UXP WebSocket payloads, binds the UXP bridge to loopback, validates MCP tool arguments with schemas, and gates raw scripting behind an explicit capability. Production dependency audits for both the MCP package and landing app found zero known vulnerabilities, the tracked-file scan found no high-confidence committed secrets, and GitHub currently reports zero open code-scanning alerts.
+No confirmed leaked credentials were found in the scans performed. This is not a guarantee that every secret format or historical artifact is clean. The strongest confirmed runtime finding is an unauthenticated loopback request that crashes the UXP bridge process. CEP connectors also trust existing command directories without verifying ownership or permissions. Public HTML serving and local media operations contain synchronous work that can stall the shared MCP process.
 
-The most important issue is outside the guarded MCP tool path: the bundled AI chat panel enables automatic execution by default and directly executes code blocks returned by a remote language model. A prompt-injected model response can therefore edit a project or access the host capabilities available to ExtendScript without a per-script user decision. Release workflows also use mutable GitHub Action tags while holding release-write or npm trusted-publishing authority, creating a supply-chain path if a referenced action tag is compromised.
+The dependency audit reports three distinct affected packages across the two lockfiles: Hono, js-yaml, and sharp. Their advisory severity and actual application exposure differ; details follow.
 
-No critical findings were identified. This was a read-only audit; no fixes were applied.
+The original audit produced a report only. The PR remediation section below records subsequent fixes and validation; the numbered findings preserve the original evidence. No deployment or credential rotation is included in the remediation PR.
 
-## High severity
+## Scope and evidence
 
-### SEC-001 — AI-generated ExtendScript executes by default without per-script approval
+- Repository-wide tracked-text secret scan: 773 files; recognizable GitHub, AWS access ID, npm, Slack, Stripe/OpenAI token prefixes and private-key headers; no matches.
+- Local reachable Git history: 5,352 distinct text blobs scanned with those provider/key patterns; no matches. Remote-only refs, unreachable objects, compressed/binary contents, releases, CI logs, and deployed secrets were not scanned.
+- Additional current-tree literal token/password/secret/API-key assignment scan: candidates inspected were test fixtures and documentation placeholders. No environment, PEM, PFX, or npmrc files were found by the workspace filename search outside dependency and Git directories.
+- Risk-focused manual review of HTTP/OAuth, capability enforcement, CEP/AE/UXP bridges, filesystem/media operations, context storage, telemetry, landing code, installer extraction, Docker and GitHub workflows. This is not a claim of line-by-line verification of every tool or every Adobe host action. Framework skill guidance covered TypeScript/React/Next.js; C#/CEP portions received manual review.
+- `npm run build`: passed.
+- Targeted Vitest run: **213 tests passed across 11 files**, covering HTTP admission/security, OAuth, capabilities, file/AE bridges, media watch, and recovery.
+- Both `npm audit --json` calls completed after setting process-local `NODE_OPTIONS=--use-system-ca`; TLS verification remained enabled.
+- Safe reproductions used a separate local Node process, mocked Adobe/filesystem APIs, and a loopback-only FFprobe fixture. No production traffic or real Adobe editing was exercised.
+- Local landing dependencies are stale: `npm ls` reports installed Next 16.2.12 while the manifest/lockfile require 16.3.3. Dependency findings below use lockfiles; no fresh landing build/browser performance measurement was claimed.
+- An unrelated untracked `landing/scripts/record-live-demo.mjs` appeared during the audit and was left untouched; it is outside the tracked snapshot above.
 
-- **Location:** `chat-plugin/main.js:10-22`, `chat-plugin/main.js:272-287`, `chat-plugin/main.js:397-419`, `chat-plugin/main.js:434-447`
-- **Evidence:** `state.autoExec` defaults to `true`; every fenced `extendscript`, `jsx`, or `javascript` block in the provider response is queued and passed to `cs.evalScript`. This path does not call the MCP server's capability guard or its script validator.
-- **Impact:** Content supplied by a user, project metadata, or another untrusted source can prompt-inject the remote model into returning hostile ExtendScript. The panel then runs it inside Premiere without showing the script or asking the user. Depending on CEP/ExtendScript host capabilities, this can corrupt projects, overwrite edits, export data, or access local resources.
-- **Fix:** Default `autoExec` to `false`; require an explicit confirmation for each generated script and show the exact script plus a concise capability/risk summary. Keep an optional session-scoped auto-run mode only behind a prominent unsafe-mode acknowledgement. Apply an allowlist/capability policy to chat-generated scripts; do not treat regex blocking as a sandbox.
-- **Mitigation:** Run on copies of projects, restrict CEP/Node privileges where possible, and ensure project-derived context is explicitly treated as untrusted in the system prompt.
-- **False-positive notes:** This behavior is intentional product functionality, but intent does not remove the prompt-injection boundary. The risk is lower only if the chat plugin is not shipped or users always disable auto-execution before supplying any untrusted context.
+## High priority
 
-### SEC-002 — Mutable action tags hold release and package-publishing authority
+### 1. CEP connectors execute commands from unverified existing directories
 
-- **Location:** `.github/workflows/cep-release.yml:7-18`, `.github/workflows/claude-desktop-bundle.yml:8-32`, `.github/workflows/npm-publish.yml:19-68`, `.github/workflows/cross-platform.yml:7-24`
-- **Evidence:** Workflows use mutable references such as `actions/checkout@v7`, `actions/setup-node@v7`, `actions/upload-artifact@v6`, and `actions/download-artifact@v7`. Release jobs grant `contents: write`; the npm workflow grants `id-token: write`.
-- **Impact:** If an action release tag is moved or its upstream distribution is compromised, attacker-controlled workflow code could alter signed/released artifacts, publish a malicious npm package, or use the workflow token to modify releases.
-- **Fix:** Pin every third-party action to a reviewed full commit SHA and use Dependabot or Renovate to propose controlled SHA updates. Keep the human-readable version in a comment.
-- **Mitigation:** Protect workflow files with CODEOWNERS/reviews, use GitHub environments with required reviewers for publishing, and reduce permissions at job level so build jobs do not inherit release authority.
-- **False-positive notes:** GitHub-owned actions reduce likelihood but not impact. Immutable SHA pinning remains the appropriate control for artifact and package publication.
+**Severity:** High when another user can prepare/write the configured bridge directory; conditional local trust-boundary issue.
 
-## Medium severity
+**Evidence:** `cep-plugin/main.js:177-185` only creates the directory when absent and suppresses creation errors. `after-effects-cep-plugin/main.js:101-110` uses recursive mkdir without validating an existing directory. AE reads matching command files at lines 75-89 and passes their contents to `cs.evalScript`. The server-side ownership check in `src/bridge/file-bridge.ts:219-240` does not protect a connector started independently before the server.
 
-### SEC-003 — Internet-facing MCP endpoint lacks application-level abuse limits
+**Impact:** An attacker who controls a shared/pre-created bridge directory can supply ExtendScript for execution under the Adobe user's account, outside MCP authentication and capability checks.
 
-- **Location:** `src/http-server.ts:119-185`, `fly.toml:9-21`
-- **Evidence:** Every authorized `/mcp` request constructs a new MCP server and transport. The application sets no request body limit, connection/header/request timeout, concurrency limit, or rate limit. Unauthorized attempts are also not throttled. Fly enforces HTTPS but no repository-visible edge rate policy is configured.
-- **Impact:** A network client can consume memory, sockets, CPU, and telemetry volume with slow or concurrent requests. With a valid token, it can also queue expensive Premiere operations. When `ALLOW_UNAUTHENTICATED=1` is set, the same abuse is available without credentials.
-- **Fix:** Enforce a small MCP request-size limit before transport handling, configure `headersTimeout`, `requestTimeout`, `keepAliveTimeout`, and maximum concurrent in-flight operations, and add per-token/IP rate limiting at the trusted edge. Reject methods other than the exact supported MCP methods.
-- **Mitigation:** Keep `ALLOW_UNAUTHENTICATED` disabled, rotate a strong token, set Fly proxy/firewall limits, and alert on sustained unauthorized or high-concurrency traffic.
-- **False-positive notes:** Fly may provide undocumented/account-level controls; verify them in the live configuration. Transport-library parsing may impose an internal body limit, but no explicit application guarantee is visible here.
+**Validation:** A VM fixture ran the unchanged AE panel against a mocked existing directory containing an inert marker command. Starting the panel and invoking its poll caused `evalScript` to receive that marker. This proves the missing validation path; it does not prove a cross-user exploit against the default private Windows temp folder or a live Mac installation.
 
-### SEC-004 — Landing static-file containment check is not canonical or separator-aware
+**Fix:** Before heartbeat writes or polling, reject symlinks and non-directories, verify ownership and restrict permissions on POSIX, and require a private ACL on Windows custom/shared paths. Fail closed on validation errors. Apply the same policy to both CEP panels and server, including pre-existing paths.
 
-- **Location:** `src/http-server.ts:54-71`
-- **Evidence:** The requested path is joined directly from the raw URL path and authorized with `filePath.startsWith(LANDING_DIR)`. The code does not decode and normalize the URL first, and string-prefix containment allows sibling names that merely begin with the same characters.
-- **Impact:** If an attacker can cause a file to exist in a prefix-matching sibling directory, or if platform path behavior changes, the server could expose a file outside `landing-dist`. Current exploitability appears low because the static export is baked into the container and no remote upload path was found.
-- **Fix:** Parse with `new URL`, decode safely, resolve against the root, and require `candidate === root` or `candidate.startsWith(root + path.sep)`. Reject malformed encodings, NULs, and traversal segments; serve only regular files.
-- **Mitigation:** Keep the runtime filesystem immutable and do not mount attacker-writable directories adjacent to `landing-dist`.
-- **False-positive notes:** The current container layout and absence of writes adjacent to the landing directory substantially limit practical exploitation.
+## Medium priority
 
-## Low severity
+### 2. Malformed unauthenticated UXP upgrade crashes the process
 
-### SEC-005 — HTTP responses lack explicit security headers
+**Severity:** Medium; local denial of service.
 
-- **Location:** `src/http-server.ts:54-71`, `src/http-server.ts:120-184`, `landing/next.config.ts:1-10`
-- **Evidence:** Static and API responses set content type but no CSP, `X-Content-Type-Options`, clickjacking protection, or referrer policy. No equivalent header policy is visible in the repository.
-- **Impact:** This weakens defense in depth for the public landing page and makes any future HTML/script injection more damaging. It also permits content-type sniffing and framing unless the edge adds controls.
-- **Fix:** Add a centralized response-header baseline appropriate to the static site, including at minimum `X-Content-Type-Options: nosniff`, a restrictive CSP, `frame-ancestors`, and a deliberate referrer policy. Verify compatibility before enabling HSTS.
-- **Mitigation:** Configure and verify equivalent headers at Fly's trusted edge.
-- **False-positive notes:** Edge-added headers were not live-tested in this source audit.
+**Evidence:** `src/bridge/uxp-websocket-bridge.ts:114-115` constructs a URL inside the upgrade event handler without a try/catch, before token validation.
 
-### SEC-006 — Development dependency advisories can affect CI availability
+**Validation:** Started the freshly built bridge in a separate child process on an ephemeral loopback port. Sent a WebSocket upgrade with a malformed absolute request target (`http://[invalid`). The child exited with code **1**, reporting `ERR_INVALID_URL`, without a token.
 
-- **Location:** `landing/package.json`, `landing/package-lock.json`
-- **Evidence:** Full `npm audit` reports nine high-severity advisory paths through ESLint, minimatch, and brace-expansion, including `GHSA-mh99-v99m-4gvg` (unbounded brace expansion). `npm audit --omit=dev` reports zero findings.
-- **Impact:** Malicious or unexpectedly complex glob input during lint/build tooling could exhaust CI memory. These packages are not part of the deployed production dependency set, so this is not a production runtime vulnerability.
-- **Fix:** Update the landing lint toolchain to versions resolving the advisory, testing configuration compatibility; avoid `npm audit fix --force` without reviewing the proposed major/downgrade changes.
-- **Mitigation:** Keep CI permissions read-only for validation jobs and avoid processing attacker-controlled arbitrary glob patterns.
-- **False-positive notes:** Raw audit severity overstates deployed exposure because all observed paths are development-only.
+**Impact:** A local process able to connect to the bridge can terminate the editor-control MCP process. The listener is loopback-only, so this is not an internet-exposed endpoint in the reviewed configuration.
 
-## Positive controls verified
+**Fix:** Catch malformed URLs, return 400 and destroy the socket. Add a regression asserting the process remains available for a subsequent valid connection.
 
-- HTTP MCP refuses to start without authentication unless the operator explicitly sets `ALLOW_UNAUTHENTICATED=1`.
-- Bearer and UXP tokens use constant-time comparison.
-- UXP WebSocket binds to `127.0.0.1`, requires a token of at least 16 characters, limits frames to 1 MiB, and enforces a handshake timeout.
-- MCP tool registration applies centralized capability checks; unsafe script tools require the non-default `unsafe-script` capability.
-- Generated command scripts are capped at 500 KiB; standard commands reject `eval`, `new Function`, and `System.callSystem`.
-- API keys in the chat panel are retained in memory rather than web storage.
-- Production dependency audits returned zero known vulnerabilities for both packages.
-- No high-confidence secrets were found in tracked files.
-- GitHub's code-scanning API returned zero open alerts at audit time.
+### 3. Public HTML requests perform synchronous reads and gzip on the MCP event loop
 
-## Verification performed
+**Severity:** Medium; public availability/performance risk.
 
-- `git status --short --branch` and current revision inspection
-- `npm audit --omit=dev --json` in the root and `landing/`
-- full `npm audit --json` dependency review
-- high-signal source scans for secrets, subprocesses, filesystem sinks, script execution, DOM sinks, storage, authentication, and network listeners
-- manual review of HTTP/MCP transport, CEP file bridge, UXP WebSocket bridge, capability enforcement, chat execution, update handling, Docker/Fly configuration, and GitHub Actions
-- GitHub code-scanning open-alert query
-- `npm run build` passed
-- `npm test` passed: 22 test files, 432 tests
+**Evidence:** `src/http-server.ts:213-218` reads complete HTML files synchronously, injects a nonce, and runs `gzipSync` per request. Line 220 suppresses the HEAD response body only after that work. Landing requests return at line 350 before MCP admission limits at line 374. `fly.toml:23-26` specifies one shared CPU and 256 MB.
+
+**Impact:** Repeated public GET or HEAD requests consume the same event loop needed for MCP operations and health checks. Existing MCP concurrency/rate controls do not limit this route.
+
+**Fix:** Cache trusted source HTML, compress asynchronously with bounded concurrency, avoid body construction for HEAD, and add a public-route resource budget or serve the landing through a separate static service. Preserve nonce correctness when caching.
+
+**Validation limit:** Confirmed control flow and synchronous APIs; no production load test or measured outage threshold.
+
+### 4. Media scan limit counts matching files, not total traversal work
+
+**Severity:** Medium; authenticated/local availability risk.
+
+**Evidence:** `src/tools/media-watch.ts:43-62` calls synchronous readdir/realpath for every entry. Directory queue growth and nonmatching entries are unlimited; `MAX_SCAN_FILES` is checked only after adding matching media to the output map.
+
+**Validation:** Transpiled the unchanged module with a mocked directory containing **6,001 nonmatching files**. All 6,001 entries were visited and the watcher started successfully with zero baseline files despite the advertised 5,000-file cap.
+
+**Impact:** A legitimate large folder or recursive tree can block all MCP requests; a wide tree also grows the queue. The caller needs the filesystem capability.
+
+**Fix:** Bound total visited entries, directories, depth, queue length, and elapsed time. Use asynchronous traversal with cancellation and report truncation explicitly. Replace repeated `queue.shift()` with an index or deque.
+
+### 5. Backup creation synchronously copies and hashes an unbounded file
+
+**Severity:** Medium; authenticated/local availability risk.
+
+**Evidence:** `src/tools/recovery.ts:49-50` hashes `readFileSync(path)`; lines 63-74 synchronously copy the project and read/hash both source and backup. There is no byte cap.
+
+**Impact:** Large `.prproj` inputs block the event loop and require whole-file buffers, potentially exceeding a small server's memory budget. Filename extension and regular-file checks do not bound resource use.
+
+**Fix:** Stream both hashes, use asynchronous copy, limit concurrent backups, and enforce an operator-configured size/storage budget. Preserve collision-safe creation and source-change verification.
+
+**Validation limit:** Static control-flow finding; no large-file stress fixture was created.
+
+### 6. Lockfiles contain packages with current security advisories
+
+**Priority:** Medium in this repository; upstream advisories include High. No working dependency exploit was established against the deployed MCP route.
+
+| Package | Locked version/location | Audit severity | Exposure and remediation |
+| --- | --- | --- | --- |
+| Hono | 4.13.0, `package-lock.json:1908` | Moderate, three advisories | Runtime dependency through MCP Node adapter. Update to at least 4.13.5. No application use of the reported `toSSG` or dot-notation form parsing was found; the MCP route parses bounded JSON. Query parsing advisory reachability remains unproven. |
+| js-yaml | 4.3.1, `package-lock.json:2036`, `landing/package-lock.json:8449` | High | Development tooling dependency. Update to at least 4.3.2. Focus is untrusted YAML processed by tooling, not a public YAML endpoint. |
+| sharp | 0.35.3, `landing/package-lock.json:10783` | High | Landing image/build dependency; update to at least 0.35.4. Production Docker copies static output rather than the Next runtime. No public image-upload/optimization endpoint was found. |
+
+Audit totals: root **1 high + 1 moderate affected packages**; landing **2 high affected packages**. Counts overlap on js-yaml and are not four unique vulnerabilities.
+
+Sources: [Hono dot-notation advisory](https://github.com/advisories/GHSA-g6gw-c38x-mqfc), [Hono static-generation advisory](https://github.com/advisories/GHSA-gqvv-2mrq-wpjv), [Hono query-parser advisory](https://github.com/advisories/GHSA-crvj-82cr-hjcx), [js-yaml advisory](https://github.com/advisories/GHSA-2883-xcg3-v3hh), [sharp advisory](https://github.com/advisories/GHSA-rgj7-g3m4-5g8c).
+
+Regenerate both lockfiles with patched versions, install cleanly, repeat audits, and run the build/tests. `npm audit fix --force` is unnecessary as an initial response.
+
+## Lower priority hardening
+
+### 7. Docker runner uses the default root user
+
+**Severity:** Low; increases impact of a separate compromise.
+
+**Evidence:** `Dockerfile:36-57` has no USER directive after the production base image. Filesystem and FFmpeg work inherit container root privileges.
+
+**Fix:** Use a dedicated non-root user, grant access only to required bridge/context directories, and validate shared-volume permissions. This does not establish host-root access or a container escape.
+
+### 8. Secret exclusion patterns are incomplete
+
+**Severity:** Low; preventative packaging/build hygiene, no leak confirmed.
+
+**Evidence:** `.gitignore:29-31` ignores `.env` and `.env.local` but not other root `.env.*` variants. `.dockerignore:1-16` has no secret-file exclusions. `Dockerfile:31` copies the entire landing directory into the builder.
+
+**Impact:** Future local environment or credential files could enter Git or a remote Docker build context. A builder copy is not proof that a file reaches the final image or public browser bundle.
+
+**Fix:** Exclude `.env*` except deliberate placeholder examples, private key/certificate files and local credential configuration from Git and Docker contexts. Add a redacted secret scanner to CI and scan release archives independently.
+
+## Controls that held up in this review
+
+- HTTP authentication fails closed by default; production disallows the unauthenticated override.
+- Shared tokens use constant-time comparison; OAuth validates issuer, audience, signature algorithm, expiration, subject allowlist and scopes.
+- HTTP body, concurrency and rate limits exist; bridge commands have a bounded serialized queue and response-size limit.
+- Unsafe scripting requires an explicit capability; action-specific checks exist for consolidated tools.
+- UXP binds loopback and authenticates upgrades; the malformed-URL exception is the separate gap above.
+- Installer ZIP extraction checks containment; GitHub action references are pinned to commits.
+- Landing JSON-LD sinks inspected use repository-owned static data; no confirmed user-input XSS was found.
+- The FFprobe local-playlist fixture made **zero outbound requests**: the installed FFmpeg protocol restrictions blocked the loopback segment URL. Missing explicit protocol flags in some media tools alone was not reported as confirmed SSRF.
+
+## Recommended order
+
+1. Fix the UXP crash and CEP directory validation.
+2. Update the three affected dependencies and reconcile the stale local landing installation.
+3. Bound public HTML processing, directory traversal and backup resource use.
+4. Harden container privileges and secret/build exclusions.
+5. Re-run targeted regression tests, clean builds and audits; separately validate real Adobe hosts and production configuration.
+# Remediation follow-up — September 15, 2026
+
+The competitive release catches malformed UXP upgrade URLs, returns HTTP 400,
+and includes a real-socket regression proving an authenticated host can still
+connect afterward. This addresses the malformed-URL process crash below. The
+remaining findings retain their original audit scope and are not marked fixed.
+
+## PR remediation
+
+The follow-up branch starts from `6980cc884307258ef16686f33c3564f59a9b2140`, which already contains the malformed UXP upgrade fix and its real-socket regression. The remaining findings are addressed as follows:
+
+| Finding | Remediation |
+| --- | --- |
+| 1 — CEP directory trust | Server and both panels validate directory ownership, symlinks, permissions and ancestor replacement rights before command publication, cleanup, heartbeat or polling. Existing group/other-writable POSIX directories are rejected. Windows ACL checks reject untrusted write grants, including inherited ones; inspection uses an encoded command and passes the path as data. |
+| 2 — malformed UXP upgrade | Retained the upstream 400 response and regression proving a subsequent authenticated connection still succeeds. |
+| 3 — public HTML work | Bounded asynchronous source reads, bounded source cache, asynchronous gzip and a separate HTML concurrency cap. Per-response nonces remain fresh; HEAD skips rendering and compression. |
+| 4 — media traversal | Asynchronous traversal with entry, file, directory, depth, queue and cooperative elapsed-time budgets; incomplete scans are explicitly reported and stopping cancels active traversal. |
+| 5 — backups | Streamed copy/checksums, a default 2 GiB configurable budget, one active backup per process, exclusive destination creation, source verification and failure cleanup. |
+| 6 — dependency advisories | Locked Hono 4.13.8, js-yaml 4.3.2 and sharp 0.35.4. Added dependency audit gates to CI. |
+| 7 — container privileges | Production runs as `node` (UID 1000), with a private writable context directory. |
+| 8 — secret exclusions | Git ignores local environment variants and credential/key files; Docker additionally excludes all such files and nested worktrees. |
+
+Compatibility notes: cached HTML is immutable for the process lifetime, so replacing an export requires a restart. Unsafe existing bridge directories require an operator-selected private directory; the fix does not trust or execute commands already staged in a writable directory. Media scan elapsed limits are checked between asynchronous OS operations, not a deadline that can interrupt a stalled filesystem call. Backup and media-watch library methods are now asynchronous; MCP handler results retain their existing JSON shape with additional scan-completeness fields.
+
+Validation details are recorded in the PR. Local tests do not establish licensed Premiere/After Effects execution or deployed production behavior.
+
+Windows ACL validation intentionally performs a fresh bounded synchronous PowerShell check before publishing each command (five-second timeout, 64 KiB output cap). This adds latency; no stale trust cache is introduced.
+
+After incorporating `origin/main` at `3d27049`, `npm run check` passed all 3,370 tests. The full coverage run passed the existing thresholds: 94.59% statements, 90.31% branches, 96.25% functions and 96.74% lines. Both dependency audits reported zero vulnerabilities. The package installed and ran in isolation, and the rebuilt Docker image passed checks for UID 1000, private bridge permissions, health/landing/HEAD responses and unauthenticated MCP rejection. Real Windows directory checks passed under a private user-profile path; an unsafe shared temp ancestor is intentionally rejected.

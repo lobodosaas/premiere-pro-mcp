@@ -1,5 +1,7 @@
 "use client"
 
+import { connectorSetup, localMcpConfig } from "@/lib/client-setup"
+
 import { useState } from "react"
 import {
   ArrowUpRight,
@@ -18,6 +20,7 @@ import {
 } from "lucide-react"
 
 import { product, safeFirstPrompt } from "@/lib/product"
+import { SetupGuides } from "@/components/sections/setup-guides"
 import { trackOnboardingEvent } from "@/lib/onboarding-events"
 
 type AssistantRoute = {
@@ -131,14 +134,15 @@ export function ConnectSection() {
       <div className="mx-auto max-w-6xl">
         <div className="max-w-3xl">
           <h2 id="setup-heading" className="text-balance text-3xl font-bold tracking-tight text-white md:text-5xl">
-            Start with your <span className="text-purple-400">AI assistant.</span>
+            Connect the <span className="text-violet-300">assistant you already use.</span>
           </h2>
           <p className="mt-5 text-lg leading-8 text-zinc-400">
-            Choose the assistant you already use. We&apos;ll keep the first check simple: connect it to Premiere, confirm the connection, and make no changes.
+            Pick your client. The first step only checks that it can reach Premiere; it makes no edits.
           </p>
         </div>
 
-        <div className="mt-12 grid gap-3 sm:grid-cols-2 lg:grid-cols-4" role="list" aria-label="AI assistant setup routes">
+        <SetupGuides />
+        <div className="mt-12 grid gap-3 sm:grid-cols-2 lg:grid-cols-4" role="group" aria-label="AI assistant setup routes">
           {assistantRoutes.map((route) => {
             const selected = activeId === route.id
             return (
@@ -153,7 +157,7 @@ export function ConnectSection() {
               >
                 <span className="flex items-center justify-between gap-3">
                   {route.status === "recommended" ? <Sparkles className="h-5 w-5 text-purple-300" aria-hidden="true" /> : <Laptop className="h-5 w-5 text-zinc-400" aria-hidden="true" />}
-                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-500">{route.availability}</span>
+                  <span className="text-xs font-semibold uppercase tracking-[0.14em] text-zinc-400">{route.availability}</span>
                 </span>
                 <span className="mt-7 text-lg font-semibold text-white">{route.name}</span>
                 <span className="mt-3 text-sm leading-6 text-zinc-400">{route.shortDescription}</span>
@@ -182,7 +186,7 @@ export function ConnectSection() {
 
         <div className="mt-14 grid gap-12 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div>
-            <h3 className="text-xl font-semibold text-white">You&apos;ll be ready in four clear steps.</h3>
+            <h3 className="text-xl font-semibold text-white">Set up in four steps.</h3>
             <ol className="mt-8 grid gap-7 sm:grid-cols-2">
               <li className="border-t border-purple-400/35 pt-5">
                 <span className="font-mono text-sm text-purple-300">01</span>
@@ -228,7 +232,7 @@ export function ConnectSection() {
 
           <aside className="space-y-5" aria-label="Setup help and privacy">
             <div className="rounded-xl border border-zinc-800 bg-[#08080a] p-5">
-              <p className="flex items-center gap-2 text-sm font-semibold text-zinc-100"><MonitorCog className="h-4 w-4 text-purple-300" aria-hidden="true" /> Compatibility, without guesswork</p>
+              <p className="flex items-center gap-2 text-sm font-semibold text-zinc-100"><MonitorCog className="h-4 w-4 text-violet-200" aria-hidden="true" /> Compatibility details</p>
               <p className="mt-3 text-sm leading-6 text-zinc-400">The signed CEP connector is the default compatibility route for Premiere Pro {product.premiereCompatibility} on Windows and macOS.</p>
               <p className="mt-3 text-sm leading-6 text-zinc-400">The modern UXP bridge is capability-gated for compatible Premiere {product.uxpMinimumVersion}+ workflows. It is not a Creative Cloud Marketplace install and does not replace CEP in the default path.</p>
               <a href="/docs/#compatibility-heading" className="mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-purple-200 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300 focus-visible:ring-offset-2 focus-visible:ring-offset-[#08080a]">
@@ -239,7 +243,7 @@ export function ConnectSection() {
             <div className="rounded-xl border border-zinc-800 bg-[#08080a] p-5">
               <p className="flex items-center gap-2 text-sm font-semibold text-zinc-100"><LockKeyhole className="h-4 w-4 text-purple-300" aria-hidden="true" /> What the first check shares</p>
               <p className="mt-3 text-sm leading-6 text-zinc-400">The prompt runs a connection check; it makes no edits and does not ask for footage to be uploaded.</p>
-              <p className="mt-3 text-sm leading-6 text-zinc-500">Your assistant&apos;s own privacy settings still apply. If site analytics is enabled, setup clicks record only a route and action—not prompts, media, project names, or file paths.</p>
+              <p className="mt-3 text-sm leading-6 text-zinc-400">Your assistant&apos;s own privacy settings still apply. If site analytics is enabled, setup clicks record only a route and action—not prompts, media, project names, or file paths.</p>
             </div>
 
             <details
@@ -279,18 +283,36 @@ export function ConnectSection() {
         >
           <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-5 text-sm font-semibold text-zinc-300 marker:content-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300">
             <span>Advanced setup for npm, manual configuration, and other MCP clients</span>
-            <ChevronDown className="h-4 w-4 text-zinc-500 transition-transform group-open:rotate-180" aria-hidden="true" />
+            <ChevronDown className="h-4 w-4 text-zinc-400 transition-transform group-open:rotate-180" aria-hidden="true" />
           </summary>
           <div className="mt-5 grid gap-6 rounded-xl border border-zinc-800 bg-[#08080a] p-5 lg:grid-cols-2 lg:p-7">
+            <div className="lg:col-span-2">
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/[0.06] p-4">
+                <p className="text-sm font-semibold text-amber-100">Install the correct package</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-300">
+                  Use the exact npm package name for this project:
+                </p>
+                <pre className="mt-3 overflow-x-auto rounded-lg border border-zinc-800 bg-black p-3 text-xs leading-6 text-emerald-300"><code>npm i -g premiere-pro-mcp@{product.version}</code></pre>
+                <p className="mt-3 text-sm leading-6 text-zinc-300">
+                  <strong className="text-zinc-100">Name check:</strong> this project&apos;s package is <code className="rounded bg-zinc-900 px-1.5 py-0.5 text-purple-200">premiere-pro-mcp</code>, not <code className="rounded bg-zinc-900 px-1.5 py-0.5 text-zinc-400">adobe-premiere-pro-mcp</code>. Both can expose a <code className="rounded bg-zinc-900 px-1.5 py-0.5 text-zinc-300">premiere-pro-mcp</code> command, so confirm the package name before you configure a client.
+                </p>
+                <p className="mt-3 text-sm font-semibold text-amber-100">Verify you have the right install</p>
+                <pre className="mt-2 overflow-x-auto rounded-lg border border-zinc-800 bg-black p-3 text-xs leading-6 text-zinc-300"><code>npm list -g premiere-pro-mcp{"\n"}premiere-pro-mcp --version</code></pre>
+                <p className="mt-3 text-sm leading-6 text-zinc-300">
+                  Expect version <strong className="text-white">{product.version}</strong>. Homepage should be <a href="https://premiere-pro-mcp.com/" className="text-purple-200 hover:text-white">premiere-pro-mcp.com</a>; source is <a href="https://github.com/leancoderkavy/premiere-pro-mcp" className="text-purple-200 hover:text-white">github.com/leancoderkavy/premiere-pro-mcp</a>.
+                </p>
+              </div>
+            </div>
             <div>
               <h3 className="text-base font-semibold text-white">Install from npm</h3>
               <p className="mt-2 text-sm leading-6 text-zinc-400">Use this route if your assistant does not support a native bundle. It requires Node.js {product.nodeVersion}+.</p>
-              <pre className="mt-4 overflow-x-auto rounded-lg border border-zinc-800 bg-black p-4 text-xs leading-6 text-emerald-300"><code>npm install -g premiere-pro-mcp{`\n`}premiere-pro-mcp --install-cep</code></pre>
+              <pre className="mt-4 overflow-x-auto rounded-lg border border-zinc-800 bg-black p-4 text-xs leading-6 text-emerald-300"><code>{connectorSetup}</code></pre>
             </div>
             <div>
               <h3 className="text-base font-semibold text-white">Manual server configuration</h3>
               <p className="mt-2 text-sm leading-6 text-zinc-400">Only use this when your client asks for a command. Keep Premiere, the connector, and the client on the same computer.</p>
-              <pre className="mt-4 overflow-x-auto rounded-lg border border-zinc-800 bg-black p-4 text-xs leading-6 text-zinc-300"><code>{`{\n  "mcpServers": {\n    "premiere-pro": {\n      "command": "premiere-pro-mcp"\n    }\n  }\n}`}</code></pre>
+              <pre className="mt-4 overflow-x-auto rounded-lg border border-zinc-800 bg-black p-4 text-xs leading-6 text-zinc-300"><code>{localMcpConfig}</code></pre>
+              <p className="mt-3 text-sm leading-6 text-zinc-400">Merge the entry into existing settings. It selects this project&apos;s versioned npm package instead of relying on the shared global command name.</p>
             </div>
             <div className="lg:col-span-2">
               <a href={product.links.readme} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-purple-200 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300 focus-visible:ring-offset-2 focus-visible:ring-offset-[#08080a]">

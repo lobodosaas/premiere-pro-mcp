@@ -62,24 +62,56 @@ const INSPECT_TOOL_NAMES = new Set([
   "preview_transcript_edit_uxp",
   "plan_transcript_rough_cut_uxp",
   "create_context_edit_plan",
+  "create_editorial_context_pack",
   "create_editorial_plan",
   "preview_editorial_plan",
   "preview_project_intake",
   "preview_motion_graphics_demo",
   "preview_product_spot",
   "preview_brand_spot",
+  "inspect_sequence_timing_uxp",
+  "inspect_sequence_timing_by_guid_uxp",
+  "inspect_frame_alignment_uxp",
+  "calculate_tick_time_uxp",
   "validate_project_for_export",
   "read_sequence_captions",
   "plan_silence_review_markers",
+  "analyze_dialogue_edit_candidates",
+  "preview_derived_dialogue_sequence_uxp",
+  "plan_platform_delivery_matrix",
+  "validate_platform_publish_package",
+  "plan_filler_word_removal",
+  "plan_pause_tightening",
+  "plan_word_mute_ranges",
+  "detect_repeated_takes",
+  "check_caption_safe_zone",
+  "rank_short_form_candidates",
+  "plan_chapter_markers",
+  "plan_emphasis_zoom_keyframes",
+  "plan_beat_montage",
+  "plan_cross_app_workflow",
+  "plan_speaker_checkerboard",
+  "plan_active_speaker_reframe",
+  "plan_reaction_captions",
+  "plan_short_subscribe_cta",
+  "plan_short_export_folder",
+  "diff_sequence_snapshots",
+  "audit_timeline_health",
+  "plan_client_notes_checklist",
+  "plan_multicam_angle_switches",
 ]);
 // detect_silence reads a media file from disk and shells out to ffmpeg. It
 // changes nothing in Premiere, so classifying it as "edit" would overstate what
 // it does; filesystem is the authority it actually needs.
 const FILESYSTEM_TOOL_NAMES = new Set([
+  "preview_mogrt_recipe",
+  "verify_mogrt_artifact",
   "apply_lut",
   "set_scratch_disk_path",
   "verify_delivery_file",
+  "verify_delivery_conformance",
   "detect_silence",
+  "detect_beats",
   "create_project_backup",
   "analyze_loudness",
   "analyze_video_qc",
@@ -88,6 +120,9 @@ const FILESYSTEM_TOOL_NAMES = new Set([
   "inspect_media_streams",
   "generate_media_contact_sheet",
   "detect_audio_transients",
+  "detect_motion_peaks",
+  "read_video_scopes",
+  "plan_shot_match",
   "analyze_video_interlacing",
   "detect_active_picture_bounds",
   "inspect_cmx3600_edl",
@@ -95,7 +130,36 @@ const FILESYSTEM_TOOL_NAMES = new Set([
   "compare_cmx3600_edls",
   "inspect_fcpxml_interchange",
   "verify_fcpxml_media_references",
+  "search_workflow_recipes",
+  "preview_workflow_recipe",
+  "manage_media_watch",
+  "preview_watched_media_import",
+  "build_caption_artifact",
 ]);
+
+// These tools have deliberately mixed authority requirements that cannot be
+// inferred safely from their names. Keep them explicit: a preview reads an
+// approved folder, authoring mutates a saved AE project and exports a file.
+const TOOL_CAPABILITY_REQUIREMENTS: Readonly<Record<string, readonly Capability[]>> = {
+  preview_after_effects_render_handoff: ["inspect", "filesystem"],
+  apply_after_effects_render_handoff: ["inspect", "edit", "filesystem"],
+  verify_after_effects_connection: ["inspect"],
+  preview_mogrt_recipe: ["inspect", "filesystem"],
+  create_mogrt_recipe: ["edit", "export", "filesystem"],
+  verify_mogrt_artifact: ["inspect", "filesystem"],
+  validate_mogrt_brand_kit: ["inspect", "filesystem"],
+  preview_mogrt_batch: ["inspect", "filesystem"],
+  create_mogrt_batch: ["edit", "export", "filesystem"],
+  inspect_after_effects_template_source: ["inspect"],
+  preview_mogrt_library_publish: ["inspect", "filesystem"],
+  publish_mogrt_to_library: ["filesystem"],
+  inspect_mogrt_library: ["inspect", "filesystem"],
+  inspect_after_effects_render_templates: ["inspect"],
+  preview_after_effects_render: ["inspect", "filesystem"],
+  enqueue_after_effects_render: ["edit", "export", "filesystem"],
+  preview_mogrt_premiere_handoff: ["inspect", "filesystem"],
+  apply_mogrt_premiere_handoff: ["edit", "filesystem"],
+};
 
 const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, readonly Capability[]>>>> = {
   manage_project_context: {
@@ -131,7 +195,21 @@ const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, reado
   },
   manage_metadata_uxp: {
     get: ["inspect"],
+    inspect_fields: ["inspect"],
     update: ["edit"],
+    update_field: ["edit"],
+  },
+  inspect_project_panel_metadata_uxp: {
+    panel: ["inspect"],
+    item_columns: ["inspect"],
+  },
+  manage_project_panel_metadata_uxp: {
+    inspect: ["inspect"],
+    update: ["edit"],
+  },
+  create_project_metadata_field_uxp: {
+    inspect: ["inspect"],
+    create: ["edit"],
   },
   manage_color_conformance_uxp: {
     preflight: ["inspect"],
@@ -159,6 +237,7 @@ const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, reado
     add: ["edit"],
     update: ["edit"],
     remove: ["edit"],
+    remove_many: ["edit"],
   },
   organize_project_items_uxp: {
     inspect_bin: ["inspect"],
@@ -173,6 +252,26 @@ const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, reado
     get: ["inspect"],
     update: ["edit"],
   },
+  manage_sequence_display_format_uxp: {
+    inspect: ["inspect"],
+    update: ["edit"],
+  },
+  manage_sequence_range_uxp: {
+    inspect: ["inspect"],
+    update: ["edit"],
+  },
+  manage_sequence_playhead_uxp: {
+    inspect: ["inspect"],
+    set: ["edit"],
+  },
+  manage_app_preferences_uxp: {
+    inspect: ["inspect"],
+    set: ["edit"],
+  },
+  manage_timeline_source_label_uxp: {
+    inspect: ["inspect"],
+    update: ["edit"],
+  },
   import_project_media_uxp: {
     files: ["edit", "filesystem"],
     sequences: ["edit", "filesystem"],
@@ -181,11 +280,19 @@ const ACTION_CAPABILITIES: Readonly<Record<string, Readonly<Record<string, reado
   },
   automate_effect_parameters_uxp: {
     inspect: ["inspect"],
+    inspect_point_value: ["inspect"],
+    inspect_point_displacement: ["inspect"],
+    inspect_color_value: ["inspect"],
+    inspect_keyframe: ["inspect"],
+    inspect_time_varying: ["inspect"],
+    set_point_value: ["edit"],
+    set_color_value: ["edit"],
     set_value: ["edit"],
     add_keyframe: ["edit"],
     remove_keyframe: ["edit"],
     remove_keyframe_range: ["edit"],
     set_interpolation: ["edit"],
+    set_time_varying: ["edit"],
   },
   animate_caption_clip_uxp: {
     preview: ["inspect"],
@@ -236,7 +343,7 @@ export function capabilityForTool(toolName: string): Capability {
 /** Resolve authority at the action level for consolidated multi-action tools. */
 export function capabilitiesForToolInvocation(toolName: string, args: unknown): readonly Capability[] {
   const actionMap = ACTION_CAPABILITIES[toolName];
-  if (!actionMap) return [capabilityForTool(toolName)];
+  if (!actionMap) return TOOL_CAPABILITY_REQUIREMENTS[toolName] ?? [capabilityForTool(toolName)];
   const input = args && typeof args === "object" && !Array.isArray(args)
     ? args as Record<string, unknown>
     : undefined;
@@ -270,6 +377,10 @@ export function isToolPermitted(
   config: CapabilityConfig,
 ): boolean {
   if (ALWAYS_LISTED_TOOL_NAMES.has(toolName)) return true;
+  const exactRequirements = TOOL_CAPABILITY_REQUIREMENTS[toolName];
+  if (exactRequirements) {
+    return exactRequirements.every((capability) => config.capabilities.has(capability));
+  }
   const actionMap = ACTION_CAPABILITIES[toolName];
   if (actionMap) {
     return Object.values(actionMap).some((required) => required.every((capability) => config.capabilities.has(capability)));

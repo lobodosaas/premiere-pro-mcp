@@ -14,29 +14,42 @@
  *
  * Environment variables:
  *   PORT               HTTP port to listen on (default: 3000)
+ *   MCP_HTTP_HOST      Listen address (default: 0.0.0.0; use 127.0.0.1 for local tests)
  *   PREMIERE_TEMP_DIR  Shared temp directory for the file bridge
  *   PREMIERE_TIMEOUT_MS Command timeout in ms (default: 30000)
  *   MCP_AUTH_TOKEN     Bearer token required on every /mcp request. REQUIRED — the
  *                      server refuses to start without it, because this transport
- *                      binds 0.0.0.0 and can drive Premiere.
+ *                      binds 0.0.0.0 by default and can drive Premiere.
  *   MCP_OAUTH_*        Alternatively configure an OAuth issuer, JWKS URI,
  *                      audience, public URL, and required scopes for per-user auth.
- *   MCP_MAX_REQUEST_BYTES, MCP_*_TIMEOUT_MS, MCP_RATE_LIMIT_* and
- *   MCP_MAX_CONCURRENT_REQUESTS bound public HTTP resource use. See README.
+ *   MCP_MAX_REQUEST_BYTES, MCP_*_TIMEOUT_MS, MCP_RATE_LIMIT_*,
+ *   MCP_MAX_CONCURRENT_REQUESTS, and MCP_MAX_CONCURRENT_STREAMS bound public
+ *   HTTP resource use. See README.
  */
 
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { createGzip } from "node:zlib";
 import { fileURLToPath } from "node:url";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { createServer } from "./server.js";
 import { cleanupTempDir, getTempDir } from "./bridge/file-bridge.js";
 import { getTelemetry } from "./telemetry.js";
+import { createHomepageExperiment, injectFirstPaintExposure, type HomepageVariant } from "./homepage-experiment.js";
+import { shouldGzipLanding } from "./landing-compression.js";
+import {
+  LandingDocumentRenderer,
+  assertLandingDocumentSize,
+  readBoundedUtf8,
+  readLandingDocumentSettings,
+} from "./landing-documents.js";
 import { applyHttpSecurityHeaders } from "./http-security.js";
 import { OAuthResourceServer } from "./oauth-resource-server.js";
+import { ProjectContextRepository } from "./context/project-context-store.js";
+import { MediaWatchRegistry } from "./tools/media-watch.js";
 import {
   HttpAdmissionController,
   MCP_HTTP_METHODS,
@@ -60,6 +73,7 @@ const MIME: Record<string, string> = {
   ".css":  "text/css; charset=utf-8",
   ".json": "application/json",
   ".png":  "image/png",
+  ".webp": "image/webp",
   ".mp4":  "video/mp4",
   ".svg":  "image/svg+xml",
   ".ico":  "image/x-icon",
@@ -80,7 +94,7 @@ function injectScriptNonce(document: string, nonce: string): string {
   return document.replace(/<script(?=\s|>)/gi, `<script nonce="${nonce}"`);
 }
 
-function serveLanding(req: http.IncomingMessage, res: http.ServerResponse, scriptNonce: string): boolean {
+async function serveLanding(req: http.IncomingMessage, res: http.ServerResponse, scriptNonce: string, homepageVariant?: HomepageVariant): Promise<boolean> {
   if (req.method !== "GET" && req.method !== "HEAD") return false;
   if (!fs.existsSync(LANDING_DIR)) return false;
 
@@ -153,31 +167,119 @@ function serveLanding(req: http.IncomingMessage, res: http.ServerResponse, scrip
   }
   if (!fileStats.isFile()) return false;
 
+  // Consolidate only real exported pages, after containment and file checks.
+  // Keep assets, missing routes, MCP, health and OAuth discovery untouched.
+  if (path.basename(filePath) === "index.html") {
+    const pageDirectory = path.relative(LANDING_DIR, path.dirname(filePath));
+    const canonicalPath = pageDirectory
+      ? `/${pageDirectory.split(path.sep).map(encodeURIComponent).join("/")}/`
+      : "/";
+    const rawPath = req.url!.split("?")[0];
+    const queryIndex = req.url!.indexOf("?");
+    const query = queryIndex >= 0 ? req.url!.slice(queryIndex) : "";
+    const hostname = req.headers.host?.toLowerCase();
+    const publicAlias = hostname === "www.premiere-pro-mcp.com" || hostname === "premiere-pro-mcp.fly.dev";
+    if (publicAlias || rawPath !== canonicalPath) {
+      // Never derive a redirect origin from Host or forwarded headers. Local and
+      // self-hosted installs retain their origin; known public aliases use HTTPS.
+      const origin = publicAlias ? "https://premiere-pro-mcp.com" : "";
+      res.writeHead(308, {
+        "Location": `${origin}${canonicalPath}${query}`,
+        "Cache-Control": "public, max-age=3600",
+      });
+      res.end();
+      return true;
+    }
+  }
+
+  // Both variants are complete static documents. Select before sending HTML so
+  // the control cannot flash, shift layout, or hydrate over the treatment.
+  if (urlPath === "/" && homepageVariant === "test") {
+    const treatmentPath = path.join(LANDING_DIR, "design-preview", "index.html");
+    if (!fs.existsSync(treatmentPath)) return false;
+    filePath = treatmentPath;
+    try {
+      fileStats = fs.statSync(filePath);
+    } catch {
+      return false;
+    }
+  }
+  const preview = new URL(req.url ?? "/", "http://localhost").searchParams.has("design") || urlPath.startsWith("/design-preview/");
+  if (preview) res.setHeader("X-Robots-Tag", "noindex, follow");
+  res.setHeader("Vary", urlPath === "/" ? "Cookie, DNT, Sec-GPC, Accept-Encoding" : "Accept-Encoding");
   const ext = path.extname(filePath);
   const contentType = MIME[ext] ?? "application/octet-stream";
-  const headers = {
+  const compress = shouldGzipLanding(req.headers["accept-encoding"], contentType);
+  const headers: Record<string, string> = {
     "Content-Type": contentType,
-    "Cache-Control": cacheControlForLandingAsset(urlPath, contentType),
+    "Cache-Control": urlPath === "/" || preview ? "private, no-store" : cacheControlForLandingAsset(urlPath, contentType),
   };
+
+  if (contentType.startsWith("text/html")) {
+    try {
+      assertLandingDocumentSize(
+        Number.isFinite(fileStats.size) ? fileStats.size : undefined,
+        landingDocumentSettings.maxDocumentBytes,
+      );
+    } catch (error) {
+      console.error("[premiere-pro-mcp] Landing document read failed:", error);
+      res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
+      res.end(req.method === "HEAD" ? undefined : "Internal server error");
+      return true;
+    }
+  }
+
+  // HEAD validates the same trusted path and returns the same representation
+  // headers, but never reads, injects, or compresses the response body.
+  if (req.method === "HEAD") {
+    if (compress) headers["Content-Encoding"] = "gzip";
+    res.writeHead(200, headers);
+    res.end();
+    return true;
+  }
 
   // A static export cannot generate per-request nonces itself. Add the nonce
   // at the trusted server boundary so Next bootstrap and JSON-LD scripts remain
   // executable without retaining script-src 'unsafe-inline'.
   if (contentType.startsWith("text/html")) {
     try {
-      const document = injectScriptNonce(fs.readFileSync(filePath, "utf8"), scriptNonce);
+      const rendered = await landingDocuments.render(
+        filePath,
+        Number.isFinite(fileStats.size) ? fileStats.size : undefined,
+        (source) => injectFirstPaintExposure(
+          injectScriptNonce(source, scriptNonce),
+          scriptNonce,
+          urlPath === "/" ? homepageVariant : undefined,
+          preview,
+        ),
+        compress,
+      );
+      if (!rendered.accepted) {
+        res.writeHead(503, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          "Retry-After": "1",
+        });
+        res.end("Service busy");
+        return true;
+      }
+      if (res.destroyed || res.writableEnded) return true;
+      if (compress) headers["Content-Encoding"] = "gzip";
       res.writeHead(200, headers);
-      res.end(req.method === "HEAD" ? undefined : document);
+      res.end(rendered.body);
       return true;
     } catch (error) {
       console.error("[premiere-pro-mcp] Landing document read failed:", error);
+      if (res.destroyed || res.writableEnded) return true;
       res.writeHead(500, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       res.end("Internal server error");
       return true;
     }
   }
 
+  if (compress) headers["Content-Encoding"] = "gzip";
   const stream = fs.createReadStream(filePath);
+  res.once("close", () => stream.destroy());
   stream.once("error", (error) => {
     console.error("[premiere-pro-mcp] Landing asset read failed:", error);
     if (!res.headersSent) {
@@ -188,17 +290,24 @@ function serveLanding(req: http.IncomingMessage, res: http.ServerResponse, scrip
     res.destroy();
   });
   res.writeHead(200, headers);
-  if (req.method === "HEAD") res.end();
-  else stream.pipe(res);
+  if (compress) {
+    const gzip = createGzip({ level: 6 });
+    res.once("close", () => gzip.destroy());
+    gzip.once("error", () => res.destroy());
+    stream.pipe(gzip).pipe(res);
+  } else stream.pipe(res);
   return true;
 }
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
+const HTTP_HOST = process.env.MCP_HTTP_HOST || "0.0.0.0";
 let httpAuth: ReturnType<typeof readHttpAuthConfiguration>;
 let admissionSettings: ReturnType<typeof readHttpAdmissionSettings>;
+let landingDocumentSettings: ReturnType<typeof readLandingDocumentSettings>;
 try {
   httpAuth = readHttpAuthConfiguration(process.env);
   admissionSettings = readHttpAdmissionSettings(process.env);
+  landingDocumentSettings = readLandingDocumentSettings(process.env);
 } catch (error) {
   console.error("[premiere-pro-mcp] Refusing to start:", error instanceof Error ? error.message : error);
   process.exit(1);
@@ -215,9 +324,18 @@ process.env.PREMIERE_MCP_TRANSPORT = "http";
 const telemetry = getTelemetry();
 const admission = new HttpAdmissionController(admissionSettings);
 const preAuthAdmission = new HttpAdmissionController(admissionSettings);
+const landingDocuments = new LandingDocumentRenderer(
+  landingDocumentSettings,
+  readBoundedUtf8,
+);
 const oauthResourceServer = httpAuth.oauth ? new OAuthResourceServer(httpAuth.oauth) : undefined;
+// Streamable HTTP creates an McpServer for every request. Sharing the repository
+// keeps memory-backed context durable across those request-scoped servers and
+// avoids repeatedly opening the same JSON or SQLite store.
+const projectContextRepository = new ProjectContextRepository();
+const mediaWatchRegistry = new MediaWatchRegistry();
 const mcpHandler = createMcpHandler(
-  () => createServer(bridgeOptions, { telemetry }),
+  () => createServer(bridgeOptions, { telemetry, contextRepository: projectContextRepository, mediaWatchRegistry }),
   {
     onerror: (error) => console.error("[premiere-pro-mcp] MCP handler error:", error),
   },
@@ -231,6 +349,8 @@ console.error(`[premiere-pro-mcp] Starting HTTP server on port ${PORT}...`);
 console.error(`[premiere-pro-mcp] Temp directory: ${tempDir}`);
 cleanupTempDir(bridgeOptions);
 
+const homepageExperiment = createHomepageExperiment();
+
 // Each request gets its own transport+server instance (stateless per-request model)
 const httpServer = http.createServer(async (req, res) => {
   const scriptNonce = randomBytes(18).toString("base64");
@@ -240,6 +360,11 @@ const httpServer = http.createServer(async (req, res) => {
   if (!pathname) {
     res.writeHead(400, { "Content-Type": "application/json", "Cache-Control": "no-store" });
     res.end(JSON.stringify({ error: "Malformed request URL" }));
+    return;
+  }
+
+  if (pathname === "/api/landing-events") {
+    await homepageExperiment.handleEvent(req, res);
     return;
   }
 
@@ -266,7 +391,13 @@ const httpServer = http.createServer(async (req, res) => {
 
   // Only handle /mcp endpoint; everything else goes to the landing page
   if (pathname !== "/mcp") {
-    if (serveLanding(req, res, scriptNonce)) return;
+    let variant: HomepageVariant | undefined;
+    if (pathname === "/" && req.method === "GET") {
+      const preview = new URL(req.url ?? "/", "http://localhost").searchParams;
+      if (preview.has("design")) variant = preview.get("design") === "test" ? "test" : "control";
+      else if (fs.existsSync(path.join(LANDING_DIR, "design-preview", "index.html"))) variant = await homepageExperiment.assign(req, res);
+    }
+    if (await serveLanding(req, res, scriptNonce, variant)) return;
     res.writeHead(404);
     res.end("Not found");
     return;
@@ -340,7 +471,10 @@ const httpServer = http.createServer(async (req, res) => {
   const authenticatedIdentity = oauthAuthentication?.authenticated
     ? `oauth:${oauthAuthentication.principal.rateLimitKey}`
     : "credential:shared-operator";
-  const admissionDecision = admission.acquire(authenticatedIdentity);
+  const admissionDecision = admission.acquire(
+    authenticatedIdentity,
+    req.method === "GET" ? "stream" : "operation",
+  );
   if (!admissionDecision.accepted) {
     telemetry.capture("mcp_request_rejected", {
       outcome: admissionDecision.reason,
@@ -419,9 +553,9 @@ httpServer.requestTimeout = admissionSettings.requestTimeoutMs;
 httpServer.keepAliveTimeout = admissionSettings.keepAliveTimeoutMs;
 httpServer.maxRequestsPerSocket = admissionSettings.maxRequestsPerSocket;
 
-httpServer.listen(PORT, "0.0.0.0", () => {
-  console.error(`[premiere-pro-mcp] HTTP server listening on 0.0.0.0:${PORT}`);
-  console.error(`[premiere-pro-mcp] MCP endpoint: http://0.0.0.0:${PORT}/mcp`);
+httpServer.listen(PORT, HTTP_HOST, () => {
+  console.error(`[premiere-pro-mcp] HTTP server listening on ${HTTP_HOST}:${PORT}`);
+  console.error(`[premiere-pro-mcp] MCP endpoint: http://${HTTP_HOST}:${PORT}/mcp`);
   if (oauthResourceServer) {
     console.error(`[premiere-pro-mcp] Auth: OAuth bearer tokens required`);
   } else if (httpAuth.authToken) {
@@ -435,7 +569,9 @@ async function shutdown(signal: string) {
   console.error(`[premiere-pro-mcp] ${signal} received, shutting down...`);
   httpServer.close();
   await mcpHandler.close();
+  await projectContextRepository.close();
   await telemetry.shutdown();
+  await homepageExperiment.shutdown();
   process.exit(0);
 }
 

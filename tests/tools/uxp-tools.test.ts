@@ -50,6 +50,7 @@ describe("UXP MCP tools", () => {
     await tools.create_sequence_with_preset_uxp.handler({
       name: "Delivery",
       preset_path: "/presets/hd.sqpreset",
+      confirm_non_undoable: true,
       operation_id: "sequence-1",
     });
     await tools.export_interchange_uxp.handler({
@@ -58,35 +59,361 @@ describe("UXP MCP tools", () => {
       operation_id: "export-1",
     });
     expect(request).toHaveBeenNthCalledWith(1, "sequence.createPreset", {
-      name: "Delivery", presetPath: "/presets/hd.sqpreset", operationId: "sequence-1",
+      name: "Delivery",
+      presetPath: "/presets/hd.sqpreset",
+      confirmNonUndoable: true,
+      operationId: "sequence-1",
     });
     expect(request).toHaveBeenNthCalledWith(2, "interchange.export", {
       format: "otio", outputFilePath: "/exports/edit.otio", operationId: "export-1",
     });
   });
 
-  it("maps selection lift and native transition arguments to documented UXP commands", async () => {
+  it("maps guarded preset sequence creation only after confirmation and with a replay key", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tool = getUxpTools(bridge).create_sequence_with_preset_uxp;
+    await expect(tool.handler({
+      name: "Delivery",
+      preset_path: "/presets/hd.sqpreset",
+      confirm_non_undoable: false,
+      operation_id: "sequence-1",
+    })).resolves.toEqual({ success: false, error: "create_sequence_with_preset_uxp requires confirm_non_undoable: true" });
+    await expect(tool.handler({
+      name: "Delivery",
+      preset_path: "/presets/hd.sqpreset",
+      confirm_non_undoable: true,
+      operation_id: "",
+    })).resolves.toEqual({ success: false, error: "create_sequence_with_preset_uxp requires operation_id for safe replay" });
+    expect(request).not.toHaveBeenCalled();
+    await expect(tool.handler({
+      name: "Delivery",
+      preset_path: "/presets/hd.sqpreset",
+      confirm_non_undoable: true,
+      operation_id: "sequence-1",
+    })).resolves.toEqual({ success: true, data: { backend: "uxp", result: { outcome: "verified" } } });
+    expect(request).toHaveBeenCalledWith("sequence.createPreset", {
+      name: "Delivery",
+      presetPath: "/presets/hd.sqpreset",
+      confirmNonUndoable: true,
+      operationId: "sequence-1",
+    });
+    expect(tool.parameters).toMatchObject({
+      additionalProperties: false,
+      required: ["name", "preset_path", "confirm_non_undoable", "operation_id"],
+    });
+  });
+
+  it("maps guarded empty sequence creation only after confirmation and with a replay key", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tool = getUxpTools(bridge).create_empty_sequence_uxp;
+    await expect(tool.handler({
+      name: "Empty Assembly", confirm_non_undoable: false, operation_id: "empty-1",
+    })).resolves.toEqual({ success: false, error: "create_empty_sequence_uxp requires confirm_non_undoable: true" });
+    await expect(tool.handler({
+      name: "Empty Assembly", confirm_non_undoable: true, operation_id: "",
+    })).resolves.toEqual({ success: false, error: "create_empty_sequence_uxp requires operation_id for safe replay" });
+    expect(request).not.toHaveBeenCalled();
+    await expect(tool.handler({
+      name: "Empty Assembly", confirm_non_undoable: true, operation_id: "empty-1",
+    })).resolves.toEqual({ success: true, data: { backend: "uxp", result: { outcome: "verified" } } });
+    expect(request).toHaveBeenCalledWith("sequences.createEmpty", {
+      name: "Empty Assembly", confirmNonUndoable: true, operationId: "empty-1",
+    });
+    expect(tool.parameters).toMatchObject({
+      additionalProperties: false,
+      required: ["name", "confirm_non_undoable", "operation_id"],
+    });
+  });
+
+  it("maps native caption-track inspection to its documented UXP command", async () => {
+    const request = vi.fn().mockResolvedValue({ trackCount: 0, tracks: [] });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    await expect(getUxpTools(bridge).inspect_caption_tracks_uxp.handler()).resolves.toEqual({
+      success: true,
+      data: { backend: "uxp", result: { trackCount: 0, tracks: [] } },
+    });
+    expect(request).toHaveBeenCalledWith("captions.inspect", {});
+  });
+
+  it("maps guarded native Project-panel insertion-bin inspection to its documented UXP command", async () => {
+    const request = vi.fn().mockResolvedValue({ projectGuid: "project-1" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tool = getUxpTools(bridge).inspect_project_insertion_bin_uxp;
+    await expect(tool.handler()).resolves.toEqual({
+      success: true,
+      data: { backend: "uxp", result: { projectGuid: "project-1" } },
+    });
+    expect(request).toHaveBeenCalledWith("project.insertionBin.inspect", {});
+    expect(tool.parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    });
+  });
+
+  it("maps opt-in installed MOGRT-directory disclosure to its documented UXP command", async () => {
+    const request = vi.fn().mockResolvedValue({ pathDisclosure: "requested" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tool = getUxpTools(bridge).inspect_installed_mogrt_directory_uxp;
+    await expect(tool.handler()).resolves.toEqual({
+      success: true,
+      data: { backend: "uxp", result: { pathDisclosure: "requested" } },
+    });
+    await tool.handler({ include_path: true });
+    expect(request).toHaveBeenNthCalledWith(1, "graphics.mogrtPath.inspect", {});
+    expect(request).toHaveBeenNthCalledWith(2, "graphics.mogrtPath.inspect", { includePath: true });
+    expect(tool.parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: { include_path: { type: "boolean" } },
+    });
+  });
+
+  it("maps guarded sequence-range inspection and updates to documented UXP commands", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    await tools.manage_sequence_range_uxp.handler({ action: "inspect" });
+    await tools.manage_sequence_range_uxp.handler({
+      action: "update",
+      expected_sequence_guid: "sequence-1",
+      expected_range: { in_seconds: 1, out_seconds: 10, zero_point_seconds: 3600, end_seconds: 120 },
+      updates: { in_seconds: 2, zero_point_seconds: 7200 },
+      operation_id: "range-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(1, "sequence.range.inspect", {});
+    expect(request).toHaveBeenNthCalledWith(2, "sequence.range.update", {
+      expectedSequenceGuid: "sequence-1",
+      expectedRange: { inSeconds: 1, outSeconds: 10, zeroPointSeconds: 3600, endSeconds: 120 },
+      updates: { inSeconds: 2, zeroPointSeconds: 7200 },
+      operationId: "range-1",
+    });
+    expect(tools.manage_sequence_range_uxp.parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["action"],
+      properties: {
+        action: { type: "string", enum: ["inspect", "update"] },
+        expected_sequence_guid: { type: "string" },
+        expected_range: {
+          type: "object",
+          additionalProperties: false,
+          required: ["in_seconds", "out_seconds", "zero_point_seconds", "end_seconds"],
+        },
+        updates: { type: "object", additionalProperties: false },
+        operation_id: { type: "string" },
+      },
+    });
+  });
+
+  it("maps guarded sequence-playhead inspection and settings to documented UXP commands", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    await tools.manage_sequence_playhead_uxp.handler({ action: "inspect" });
+    await tools.manage_sequence_playhead_uxp.handler({
+      action: "set",
+      expected_sequence_guid: "sequence-1",
+      expected_position_seconds: 3,
+      position_seconds: 8,
+      operation_id: "playhead-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(1, "sequence.playhead.inspect", {});
+    expect(request).toHaveBeenNthCalledWith(2, "sequence.playhead.set", {
+      expectedSequenceGuid: "sequence-1",
+      expectedPositionSeconds: 3,
+      positionSeconds: 8,
+      operationId: "playhead-1",
+    });
+    expect(tools.manage_sequence_playhead_uxp.parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["action"],
+      properties: {
+        action: { type: "string", enum: ["inspect", "set"] },
+        expected_sequence_guid: { type: "string" },
+        expected_position_seconds: { type: "number", minimum: 0, maximum: 86400 },
+        position_seconds: { type: "number", minimum: 0, maximum: 86400 },
+        operation_id: { type: "string" },
+      },
+    });
+  });
+
+  it("maps bounded guarded app-preference inspection and direct writes to documented UXP commands", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    await tools.manage_app_preferences_uxp.handler({ action: "inspect" });
+    await tools.manage_app_preferences_uxp.handler({
+      action: "set",
+      preference: "auto_peak_generation",
+      expected_value: "0",
+      value: "1",
+      persistence: "persistent",
+      confirm_preference_change: true,
+      operation_id: "app-preference-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(1, "preferences.inspect", {});
+    expect(request).toHaveBeenNthCalledWith(2, "preferences.set", {
+      preference: "auto_peak_generation",
+      expectedValue: "0",
+      value: "1",
+      persistence: "persistent",
+      confirmPreferenceChange: true,
+      operationId: "app-preference-1",
+    });
+    expect(tools.manage_app_preferences_uxp.parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      required: ["action"],
+      properties: {
+        action: { type: "string", enum: ["inspect", "set"] },
+        preference: { enum: ["auto_peak_generation", "import_workspace", "show_quickstart_dialog"] },
+        expected_value: { type: "string", maxLength: 1024 },
+        value: { type: "string", maxLength: 1024 },
+        persistence: { enum: ["persistent", "non_persistent"] },
+        confirm_preference_change: { type: "boolean" },
+        operation_id: { type: "string", minLength: 1, maxLength: 128 },
+      },
+    });
+  });
+
+  it("rejects incomplete or unconfirmed app-preference writes before bridge access", async () => {
+    const request = vi.fn();
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tool = getUxpTools(bridge).manage_app_preferences_uxp;
+    await expect(tool.handler({ action: "set", preference: "import_workspace" }))
+      .resolves.toMatchObject({ success: false, error: expect.stringContaining("requires preference") });
+    await expect(tool.handler({
+      action: "set", preference: "import_workspace", expected_value: "1", value: "0", persistence: "persistent", operation_id: "app-preference-unconfirmed",
+    })).resolves.toMatchObject({ success: false, error: expect.stringContaining("confirm_preference_change") });
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("maps bounded native sequence-timing inspection to its documented UXP command", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    await tools.inspect_sequence_timing_uxp.handler({});
+    expect(request).toHaveBeenCalledWith("sequence.timing.inspect", {});
+    expect(tools.inspect_sequence_timing_uxp.parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {},
+    });
+  });
+
+  it("maps native frame alignment with a closed action-specific argument contract", async () => {
+    const request = vi.fn().mockResolvedValue({ verificationBoundary: "native_ticktime_value_readback" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    await tools.inspect_frame_alignment_uxp.handler({ action: "align", frame_rate: 30000 / 1001, seconds: 1.03 });
+    await tools.inspect_frame_alignment_uxp.handler({ action: "frame", frame_rate: 24, frame_count: 42 });
+    expect(request).toHaveBeenNthCalledWith(1, "time.frameAlignment.inspect", { action: "align", frameRate: 30000 / 1001, seconds: 1.03 });
+    expect(request).toHaveBeenNthCalledWith(2, "time.frameAlignment.inspect", { action: "frame", frameRate: 24, frameCount: 42 });
+    expect(tools.inspect_frame_alignment_uxp.parameters).toMatchObject({
+      type: "object", additionalProperties: false, required: ["action", "frame_rate"],
+      properties: {
+        action: { enum: ["align", "frame"] },
+        frame_rate: { minimum: 1, maximum: 240 },
+        seconds: { minimum: 0, maximum: 86400 },
+        frame_count: { minimum: 0, maximum: 20736000 },
+      },
+    });
+  });
+
+  it("maps non-active native sequence timing inspection to its guarded GUID command", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    await tools.inspect_sequence_timing_by_guid_uxp.handler({ sequence_guid: "sequence-2" });
+    expect(request).toHaveBeenCalledWith("sequence.timingByGuid.inspect", { sequenceGuid: "sequence-2" });
+    expect(tools.inspect_sequence_timing_by_guid_uxp.parameters).toMatchObject({
+      type: "object", additionalProperties: false, required: ["sequence_guid"],
+      properties: { sequence_guid: { minLength: 1, maxLength: 512 } },
+    });
+  });
+
+  it("maps bounded native timeline-structure inspection and documents scoped track counts", async () => {
+    const request = vi.fn().mockResolvedValue({ outcome: "verified" });
+    const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
+    const tools = getUxpTools(bridge);
+    await tools.inspect_sequence_structure_uxp.handler({
+      sequence_id: "sequence-1", expected_sequence_id: "sequence-1", media_type: "video",
+      track_indices: [1, 0], include_empty_tracks: true, include_source_project_items: true,
+      include_source_project_item_classification: true, include_source_project_item_content_type: true,
+      include_source_nested_sequence_identity: true, max_items: 8,
+    });
+    expect(request).toHaveBeenCalledWith("timeline.structure.inspect", {
+      sequenceId: "sequence-1", expectedSequenceId: "sequence-1", mediaType: "video",
+      trackIndices: [1, 0], includeEmptyTracks: true, includeSourceProjectItems: true,
+      includeSourceProjectItemClassification: true, includeSourceProjectItemContentType: true,
+      includeSourceNestedSequenceIdentity: true, maxItems: 8,
+    });
+    expect(tools.inspect_sequence_structure_uxp.description).toContain(
+      "track_counts contains only the requested media types",
+    );
+    expect(tools.inspect_sequence_structure_uxp.parameters).toMatchObject({
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+        expected_sequence_id: { type: "string", minLength: 1, maxLength: 128 },
+        media_type: { type: "string", enum: ["all", "video", "audio"] },
+        track_indices: { type: "array", minItems: 1, maxItems: 64, uniqueItems: true },
+        include_empty_tracks: { type: "boolean" },
+        include_source_project_items: { type: "boolean" },
+        include_source_project_item_classification: { type: "boolean" },
+        include_source_project_item_content_type: { type: "boolean" },
+        include_source_nested_sequence_identity: { type: "boolean" },
+        max_items: { type: "integer", minimum: 1, maximum: 512 },
+      },
+    });
+  });
+
+  it("maps guarded native transition inspection and mutation arguments to documented UXP commands", async () => {
     const request = vi.fn().mockResolvedValue({ outcome: "committed_unverified" });
     const bridge = { request, getState: vi.fn() } as unknown as UxpWebSocketBridge;
     const tools = getUxpTools(bridge);
+    const expectedTarget = {
+      sequence_guid: "sequence-1", video_track_index: 2, clip_index: 3, project_item_id: "project-item-1",
+      start_seconds: 10, end_seconds: 20, position: "end" as const, transition_present: false,
+    };
     await tools.lift_selection_uxp.handler({ expected_sequence_guid: "sequence-1", operation_id: "lift-1" });
     await tools.list_video_transitions_uxp.handler();
+    await tools.inspect_video_transition_uxp.handler({ video_track_index: 2, clip_index: 3, position: "end" });
     await tools.add_video_transition_uxp.handler({
       video_track_index: 2, clip_index: 3, match_name: "CrossDissolve", position: "end",
-      duration_seconds: 0.5, force_single_sided: true, transition_alignment: 1, operation_id: "transition-add-1",
+      duration_seconds: 0.5, force_single_sided: true, transition_alignment: 1, expected_target: expectedTarget, operation_id: "transition-add-1",
     });
     await tools.remove_video_transition_uxp.handler({
-      video_track_index: 2, clip_index: 3, position: "end", operation_id: "transition-remove-1",
+      video_track_index: 2, clip_index: 3, position: "end", expected_target: { ...expectedTarget, transition_present: true }, operation_id: "transition-remove-1",
     });
     expect(request).toHaveBeenNthCalledWith(1, "timeline.selection.lift", { expectedSequenceGuid: "sequence-1", operationId: "lift-1" });
     expect(request).toHaveBeenNthCalledWith(2, "transition.video.list", {});
-    expect(request).toHaveBeenNthCalledWith(3, "transition.video.add", {
+    expect(request).toHaveBeenNthCalledWith(3, "transition.video.inspect", {
+      videoTrackIndex: 2, clipIndex: 3, position: "end",
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "transition.video.add", {
       videoTrackIndex: 2, clipIndex: 3, matchName: "CrossDissolve", position: "end", durationSeconds: 0.5,
-      forceSingleSided: true, transitionAlignment: 1, operationId: "transition-add-1",
+      forceSingleSided: true, transitionAlignment: 1,
+      expectedTarget: {
+        sequenceGuid: "sequence-1", videoTrackIndex: 2, clipIndex: 3, projectItemId: "project-item-1",
+        startSeconds: 10, endSeconds: 20, position: "end", transitionPresent: false,
+      },
+      operationId: "transition-add-1",
     });
-    expect(request).toHaveBeenNthCalledWith(4, "transition.video.remove", {
+    expect(request).toHaveBeenNthCalledWith(5, "transition.video.remove", {
       videoTrackIndex: 2, clipIndex: 3, position: "end", operationId: "transition-remove-1",
+      expectedTarget: {
+        sequenceGuid: "sequence-1", videoTrackIndex: 2, clipIndex: 3, projectItemId: "project-item-1",
+        startSeconds: 10, endSeconds: 20, position: "end", transitionPresent: true,
+      },
     });
+    expect(tools.add_video_transition_uxp.parameters).toMatchObject({ required: expect.arrayContaining(["expected_target"]) });
+    expect(tools.remove_video_transition_uxp.parameters).toMatchObject({ required: expect.arrayContaining(["expected_target"]) });
   });
 
   it("returns transport errors through the normal tool envelope", async () => {
@@ -117,8 +444,20 @@ describe("UXP MCP tools", () => {
           "get_uxp_capabilities",
           "get_uxp_state",
           "inspect_project_uxp",
+          "inspect_project_insertion_bin_uxp",
+          "inspect_installed_mogrt_directory_uxp",
+          "inspect_sequence_timing_uxp",
+          "inspect_frame_alignment_uxp",
+          "calculate_tick_time_uxp",
+          "inspect_sequence_timing_by_guid_uxp",
+          "inspect_caption_tracks_uxp",
+          "manage_sequence_display_format_uxp",
+          "manage_sequence_range_uxp",
+          "manage_sequence_playhead_uxp",
+          "manage_app_preferences_uxp",
           "save_project_uxp",
           "create_sequence_with_preset_uxp",
+          "create_empty_sequence_uxp",
           "export_interchange_uxp",
           "get_transcript_languages_uxp",
           "get_clip_transcript_uxp",
@@ -126,6 +465,7 @@ describe("UXP MCP tools", () => {
           "preview_transcript_edit_uxp",
           "plan_transcript_rough_cut_uxp",
           "detect_object_masks_uxp",
+          "audit_object_masks_uxp",
           "configure_encoder_uxp",
           "rename_track_uxp",
           "create_subclip_uxp",
@@ -136,16 +476,38 @@ describe("UXP MCP tools", () => {
           "export_frame_uxp",
           "lift_selection_uxp",
           "list_video_transitions_uxp",
+          "inspect_video_transition_uxp",
           "add_video_transition_uxp",
           "remove_video_transition_uxp",
+          "inspect_project_panel_metadata_uxp",
+          "slide_track_item_uxp",
+          "duplicate_track_item_uxp",
+          "ripple_delete_track_item_uxp",
+          "manage_timeline_source_label_uxp",
           "apply_editorial_organization_plan",
         ]),
       );
       // The default profile excludes two unsafe-script tools. The native
-      // transcript workflow and documented Premiere 26.3 tools add nineteen,
-      // and the two stable workflow expansions, confirmed organization application, and four bounded native migration adapters add twenty-six consolidated UXP tools;
-      // connection verification adds one default-profile core tool.
-      expect(tools.tools).toHaveLength(374);
+      // transcript workflow and documented Premiere 26.3 tools add nineteen. The
+      // two stable workflow expansions, confirmed organization application, four
+      // bounded native migration adapters, beat-grid marker application, and
+      // guarded sequence-playhead control, native sequence-timing inspection, and
+      // guarded sequence-display-format updates and guarded Project-panel
+      // insertion-bin inspection, guarded empty-sequence creation, marker web-link
+      // inspection, Project-panel metadata inspection and guarded replacement,
+      // guarded app-preference control, source-media interpretation overrides,
+      // direct track-item identity inspection, targeted sequence timing, guarded
+      // three-item slides, append-only timeline duplication, guarded Project metadata
+      // schema-field creation, guarded contiguous ripple deletes, and guarded
+      // source-label updates, opt-in installed-MOGRT directory inspection, and
+      // bounded Object Mask audits, native TickTime arithmetic, and guarded
+      // explicit-sequence preview-frame updates plus unique serializable identity
+      // inspection add fifty consolidated UXP tools;
+      // connection verification and delivery conformance add two default-profile core tools.
+      // Guarded Speech-to-Text start (transcribe_clip_uxp, is_language_pack_available_uxp)
+      // and caption style guidance (get_caption_style_guidance) add three more tools.
+      // The fork adds the saved caption-entrance pattern (animate_caption_clip_uxp).
+      expect(tools.tools).toHaveLength(475);
     } finally {
       await client.close();
       await server.close();

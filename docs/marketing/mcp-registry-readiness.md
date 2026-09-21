@@ -1,29 +1,53 @@
-# MCP Registry readiness
+# MCP Registry and directory distribution
 
-**Status:** prepared for review; not submitted to any registry.
+The official registry entry uses `io.github.leancoderkavy/premiere-pro`, the
+`premiere-pro-mcp` npm package, and local `stdio` transport. The reviewed version
+is in [server.json](../../registry/server.json). Follow the
+[publication workflow](../../registry/README.md); only its final exact-record
+verification establishes publication.
 
-The official MCP Registry is a separate public listing. A repository change, an npm package, or a GitHub release does not create a listing. Submission requires a user-authorized registry login and publication action.
+## Reusable listing facts
 
-Before a future submission:
+- Name: MCP for Adobe Premiere Pro
+- Website: https://premiere-pro-mcp.com/
+- Source: https://github.com/leancoderkavy/premiere-pro-mcp
+- Package: https://www.npmjs.com/package/premiere-pro-mcp
+- License: MIT
+- Description: Local-first MCP server for supported Adobe Premiere Pro workflows.
+  Connect a compatible AI client on the same computer, start with a read-only
+  connection check, and approve changes separately. Independent of Adobe.
+- Installation: https://premiere-pro-mcp.com/docs/
+- Claude walkthrough: https://premiere-pro-mcp.com/blog/claude-desktop-premiere-pro-mcp-setup/
+- Codex walkthrough: https://premiere-pro-mcp.com/blog/codex-premiere-pro-mcp-setup/
+- Evaluation recipes: https://premiere-pro-mcp.com/workflows/
+- Versioned package facts: https://premiere-pro-mcp.com/facts/
 
-1. Release a new npm package version containing the required `mcpName` metadata and the matching README marker. The published npm version—not merely this repository checkout—must contain those values.
-2. Generate and inspect the registry manifest from the exact released package.
-3. Confirm the listing describes the published local stdio/server route accurately; do not present the local Premiere bridge as a hosted service.
-4. Validate the manifest and package version before authenticating.
-5. Obtain action-time approval, authenticate, and publish once.
-6. Query the registry for the exact listing name and retain the returned URL as public evidence.
+List this as a local server. The hosted operator endpoint is not a public relay
+to visitors' Premiere installations. The chosen AI client's privacy behavior
+and costs are separate. Tool availability depends on the installed release,
+connector, and host capabilities. The evaluation kit contains synthetic media,
+not a recorded or host-verified edit.
 
-Use only these evidence-bounded facts in a future directory entry:
+## Outreach draft (not sent)
 
-- Free, MIT-licensed, local-first MCP server for supported Premiere Pro workflows.
-- A compatible AI client calls structured tools through a local Premiere connection.
-- Begin with `verify_premiere_connection`; support remains capability- and host-dependent.
-- The chosen AI client's privacy behavior is separate from the server's local-first recommendation.
+For relevant MCP directory maintainers or Premiere workflow educators:
 
-Do not submit until the package version, transport, authentication expectations, privacy disclosures, and source URL are all verified for that directory.
+> I maintain MCP for Adobe Premiere Pro, an independent MIT-licensed local MCP
+> server. We now have client-specific setup guides and three bounded evaluation
+> recipes, starting with a read-only connection and sequence check. If this fits
+> your audience, would you consider evaluating it or linking to the setup guide?
+> The repository documents supported workflows and limitations; the starter
+> media is synthetic and does not establish a successful Premiere edit.
 
-Official references:
+Personalize the reason it fits the recipient's existing work, link to one useful
+guide, and record actual submission or publication URLs. Do not report a draft,
+a registry submission, or a directory crawl as independent editorial coverage.
 
-- <https://modelcontextprotocol.io/registry/quickstart>
-- <https://registry.modelcontextprotocol.io/docs>
-- <https://modelcontextprotocol.io/registry/faq>
+## Measure after publication
+
+Compare Search Console query/page pairs over equal 28-day windows. Track setup
+queries, the Claude and Codex guides, project intake and collaboration indexing,
+and clicks through to installation. Separate impressions, CTR and position from
+downloads, successful connection checks and approved workflow outcomes. Search
+Console link data is a sample, not a complete backlink inventory. Ranking and
+indexing remain Google's decisions.

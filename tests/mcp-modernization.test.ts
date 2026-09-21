@@ -22,12 +22,19 @@ describe("modern MCP surface", () => {
   it("exposes a machine-readable workflow resource", () => {
     const resource = JSON.parse(WORKFLOW_RESOURCE);
     expect(resource.version).toBe(1);
-    expect(resource.workflows).toHaveLength(11);
-    expect(resource.workflows[0].recommendedTools).toContain("get_premiere_state");
+    expect(resource.workflows).toHaveLength(WORKFLOW_CATALOG.length);
+    expect(resource.workflows.find((workflow: { id: string }) => workflow.id === "rough-cut").recommendedTools).toContain("get_premiere_state");
+    expect(resource.workflows.find((workflow: { id: string }) => workflow.id === "film-editorial").recommendedTools).toContain("inspect_film_editorial_workflow");
+    expect(resource.guidance).toContain("Prefer visible Project-panel column JSON over dumping full XMP or project-metadata packets.");
+    const metadataReview = resource.workflows.find((workflow: { id: string }) => workflow.id === "metadata-review");
+    expect(metadataReview.recommendedTools).toContain("inspect_project_panel_metadata_uxp");
+    expect(metadataReview.promptNotes).toContain("item_columns");
     const organization = resource.workflows.find((workflow: { id: string }) => workflow.id === "project-organization");
     expect(organization.recommendedTools).toContain("apply_editorial_organization_plan");
     expect(organization.recommendedTools).not.toContain("organize_project_items_uxp");
     expect(organization.summary).toContain("advanced/manual only");
+    const transcriptFirst = resource.workflows.find((workflow: { id: string }) => workflow.id === "transcript-first-context");
+    expect(transcriptFirst.recommendedTools).toContain("create_editorial_context_pack");
   });
 
   it("marks inspection as read-only and script execution as open-world", () => {
@@ -43,8 +50,11 @@ describe("modern MCP surface", () => {
     expect(annotationsForTool("execute_extendscript").openWorldHint).toBe(true);
     expect(annotationsForTool("search_project_context")).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(annotationsForTool("create_context_edit_plan")).toMatchObject({ readOnlyHint: true, idempotentHint: true });
+    expect(annotationsForTool("create_editorial_context_pack")).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(annotationsForTool("create_editorial_plan")).toMatchObject({ readOnlyHint: true, idempotentHint: true });
     expect(annotationsForTool("preview_editorial_plan")).toMatchObject({ readOnlyHint: true, idempotentHint: true });
+    expect(annotationsForTool("verify_delivery_conformance")).toMatchObject({ readOnlyHint: true, idempotentHint: true, openWorldHint: false });
+    expect(annotationsForTool("verify_premiere_connection")).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
     expect(annotationsForTool("apply_editorial_organization_plan")).toMatchObject({
       readOnlyHint: false,
       destructiveHint: false,
@@ -100,6 +110,7 @@ describe("modern MCP surface", () => {
     try {
       const prompts = await client.listPrompts();
       expect(prompts.prompts.map((prompt) => prompt.name)).toContain("premiere-rough-cut");
+      expect(prompts.prompts.map((prompt) => prompt.name)).toContain("premiere-metadata-review");
 
       const resources = await client.listResources();
       expect(resources.resources.map((resource) => resource.uri)).toContain("config://premiere-workflows");
@@ -126,7 +137,9 @@ describe("modern MCP surface", () => {
       // unsafe-script, so the two scripting tools are not advertised.
       expect(tools.tools.map((tool) => tool.name)).not.toContain("execute_extendscript");
       expect(tools.tools.map((tool) => tool.name)).not.toContain("evaluate_expression");
-      expect(tools.tools).toHaveLength(319);
+      expect(tools.tools).toHaveLength(379);
+      expect(tools.tools.find((tool) => tool.name === "preview_after_effects_render_handoff")?.annotations?.readOnlyHint).toBe(true);
+      expect(tools.tools.find((tool) => tool.name === "apply_after_effects_render_handoff")?.annotations?.readOnlyHint).toBe(false);
       const capabilityTool = tools.tools.find((tool) => tool.name === "get_capabilities");
       expect(capabilityTool?.outputSchema).toMatchObject({
         type: "object",
@@ -147,9 +160,21 @@ describe("modern MCP surface", () => {
         "manage_project_context",
         "search_project_context",
         "create_context_edit_plan",
+        "create_editorial_context_pack",
         "create_editorial_plan",
         "preview_editorial_plan",
       ]));
+      expect(tools.tools.find((tool) => tool.name === "create_editorial_context_pack")?.inputSchema)
+        .toMatchObject({
+          properties: {
+            max_entries: { type: "integer", minimum: 1, maximum: 50 },
+            max_characters: { type: "integer", minimum: 1024, maximum: 24_000 },
+          },
+        });
+      expect(tools.tools.find((tool) => tool.name === "search_project_context")?.inputSchema)
+        .toMatchObject({
+          properties: { max_results: { type: "integer", minimum: 1, maximum: 50 } },
+        });
 
       const capabilities = await client.callTool({
         name: "get_capabilities",
@@ -164,6 +189,14 @@ describe("modern MCP surface", () => {
       expect(capabilityData.tools.tools.map((tool: any) => tool.name)).toEqual(
         expect.arrayContaining(tools.tools.map((tool) => tool.name)),
       );
+      expect(
+        capabilityData.tools.tools.find((tool: any) => tool.name === "create_editorial_context_pack"),
+      ).toMatchObject({
+        backend: "local",
+        authority: { required: "inspect", enabled: true },
+        verificationBoundary: "static_metadata_only",
+        hostVerificationRequired: false,
+      });
       expect(
         capabilityData.tools.tools.find((tool: any) => tool.name === "execute_extendscript")
           ?.authority,
@@ -186,7 +219,7 @@ describe("modern MCP surface", () => {
       expect(capabilities?.prompts).toBeUndefined();
 
       const tools = await client.listTools();
-      expect(tools.tools).toHaveLength(319);
+      expect(tools.tools).toHaveLength(379);
 
       const resources = await client.listResources();
       expect(resources.resources.map((resource) => resource.uri)).toContain("config://premiere-workflows");
@@ -214,12 +247,13 @@ describe("modern MCP surface", () => {
         "get_project_info",
         "inspect_sequence_review_report",
         "preview_edit_plan",
+        "create_sequence_checkpoint",
         "verify_delivery_file",
       ]));
       expect(names).not.toContain("create_bin");
-      // Essential is a 13-tool focused path (including the two always-visible
-      // diagnostics), versus 319 tools in the default full catalog.
-      expect(names).toHaveLength(13);
+      // Essential is a 15-tool focused path (including the two always-visible
+      // diagnostics), versus the full default catalog.
+      expect(names).toHaveLength(15);
 
       const capabilities = await client.callTool({
         name: "get_capabilities",

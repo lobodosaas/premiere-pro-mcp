@@ -6,6 +6,431 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.16.4] - 2026-09-20
+
+### Added
+
+- Claude Fable 5.1 client workflow guidance for Cursor and other compatible MCP
+  clients, covering model selection, data-retention opt-in, tool discovery, and
+  serialized Premiere verification. (#576)
+- Named Premiere metadata field inspect and update through existing CEP and UXP
+  tools, with field readback instead of requiring complete packet dumps. (#577)
+
+### Changed
+
+- Shared `AGENTS.md` as the canonical repo map for IDE and coding-agent stubs,
+  and pin client CEP install commands to the published package. (#582)
+
+### Fixed
+
+- `set_item_in_out` and `set_source_in_out` pass seconds, not ticks, to
+  `ProjectItem.setInPoint`/`setOutPoint` and verify tick readback. A Source
+  Monitor readback mismatch restores original marks when possible and otherwise
+  reports a partial state. The ExtendScript reference documents those setter
+  arguments as seconds. (#579)
+- CEP `create_subsequence` verifies the new sequence without ES5
+  `Array.indexOf`, which ExtendScript does not provide. (#579)
+- `ripple_delete` now fails closed when QE sync-lock state cannot be read,
+  instead of omitting neighbours and reporting a verified ripple. (#578)
+- Still-image `capture_frame` / `export_frame` AME fallback restores sequence
+  in/out only after those marks can be read, so a failed restore cannot leave
+  the sequence pinned to one frame. (#580)
+
+Automated checks do not establish licensed Premiere or After Effects playback or
+rendered-output verification.
+
+## [1.16.3] - 2026-09-18
+
+### Changed
+
+- Changelog landing intro no longer stacks a large vertical pad on the shared
+  public-content main padding.
+- npm minor and patch updates: `@posthog/core` 1.54.2, `@posthog/types` 1.412.1,
+  `posthog-node` 5.52.4, `zod` 4.6.5, and `@types/node` 26.6.1.
+
+Automated checks do not establish licensed Premiere or After Effects playback or
+rendered-output verification.
+
+## [1.16.2] - 2026-09-18
+
+### Fixed
+
+- Direct UXP `.ccx` packages now use a plugin-id bundle root and Unix 644/755
+  permission bits so Creative Cloud / UPI can extract plugin metadata. (#566)
+- Path-based UXP commands now resolve native paths through the granted
+  workspace folder instead of advertising them as unsupported on every host.
+  (#567)
+
+Automated checks do not establish licensed Premiere or After Effects playback or
+rendered-output verification.
+
+## [1.16.1] - 2026-09-17
+
+### Added
+
+- Editor-request tools on the production CEP bridge, each with preflight and
+  readback: `add_markers_batch` (up to 200 verified sequence or clip markers per
+  call for beat grids, chapters, silence reviews, and client notes),
+  `select_clips_by_pattern` (every-Nth selection with offset, name/regex,
+  duration, range, track, and enabled filters), `navigate_playhead`
+  (start/end/in/out/work-area/edit/marker/frame stepping),
+  `create_sequence_checkpoint` and `list_sequence_checkpoints` (named
+  `[checkpoint]` sequence clones plus a diff-ready snapshot), and
+  `export_sequence_edl` (CMX 3600 EDL generated from timeline readback with
+  drop-frame support, reel mapping, M2 motion lines, and self-validation through
+  the existing CMX parser, returned inline or written inside an approved
+  workspace).
+- Local review planners: `plan_client_notes_checklist` turns pasted reviewer
+  feedback into a categorized, prioritized checklist with timecodes, ranges,
+  approvals, questions, and an `add_markers_batch` payload;
+  `plan_multicam_angle_switches` plans active-speaker angle cuts for stacked
+  camera tracks with minimum holds, crosstalk cover shots, lead-in cuts,
+  periodic cutaways, razor times, per-camera enable ranges, and markers.
+- The `essential`, `inspection`, `delivery`, and `assistant-edit` tool packs
+  include the relevant new tools; both planners are classified as `inspect`
+  authority. See [docs/editor-requests.md](docs/editor-requests.md) for the
+  community and competitor evidence and verification boundaries.
+
+### Fixed
+
+- `insert_from_source`, `add_to_timeline`, `add_to_timeline_batch`, and
+  `apply_edit_plan` insert operations no longer report success after
+  `Sequence.insertClip` ripples only the named tracks. The public DOM has no
+  sync-lock API; these tools now read QE `isSyncLocked()`, razor spanning clips
+  on locked neighbours, shift later clips with `__writeClipSpan`, and verify
+  the result. Mid-clip inserts on a target track are treated as a
+  split-plus-insert (two new items), not a failure. Default `scope` is
+  `sync_locked` and requires the target sequence to be active so QE razors the
+  same timeline. A razor that does not split a spanning neighbour fails closed.
+  Pass `target_tracks` to opt in to the old target-only ripple; that path still
+  verifies the named pair, honors DOM `Track.isLocked()`, and warns that other
+  tracks may desync. If QE or lock state is unavailable the sync-locked path
+  refuses before mutating. `apply_spot_workflow_plan` uses `target_tracks`
+  because it inserts then trims to the planned duration; a sync-locked ripple
+  would shift overlays and music beds by the untrimmed source length. (#562)
+- `ripple_delete` now closes the gap on the clip's own track and every QE
+  sync-locked track, and refuses when a locked neighbour would be left
+  straddling the hole. (#561)
+
+Automated checks do not establish licensed Premiere or After Effects playback or
+rendered-output verification.
+
+## [1.16.0] - 2026-09-16
+
+### Added
+
+- Local reaction-Shorts planners: `plan_reaction_captions` stacks overlapping
+  speaker colors without guessing unknown speakers, `plan_short_subscribe_cta`
+  places a mid-video subscribe overlay, and `plan_short_export_folder` names a
+  series folder to create before export. Different labeled speakers may now
+  overlap in a word timeline. (#543)
+- Guarded Speech-to-Text start, caption style guidance, and UXP transcription
+  language options. (#513, #515)
+- Install collision-defense identity output for `--version` and `--doctor`, plus
+  a verified npm installation guide and package-identity checks. (#516, #533,
+  #534)
+- Recorded workflow evidence and a source-linked Premiere MCP comparison. (#532)
+- Interactive cinematic landing: 3D timeline, draggable trims, a program
+  monitor, public-page styling, studio install/Name-check callout, Ahrefs
+  verification, and a female-narration advertisement. (#517–#521, #524–#531,
+  #546)
+- Bounded Fly landing events now go to PostHog as well as Google Analytics,
+  without autocapture, session replay, or person profiles. (#522)
+
+### Fixed
+
+- Host-reported tool crashes and false verification for clip markers, MOGRT JSON
+  values, first transcript import, FCP XML destination checks, and UXP tree
+  IDs. (#544)
+- Security audit findings: HTTP and filesystem work is bounded, and bridge
+  directories fail closed when ownership, symlinks, or ancestor replacement
+  rights are untrusted. (#545)
+- AME handoff tools require a saved project so Same as Project preset
+  destinations cannot resolve against a scratch folder. (#535)
+- Homepage overflow and cinematic timeline replay after the landing merge.
+  (#523)
+
+### Changed
+
+- Creating a UXP preset sequence now requires explicit confirmation. (#542)
+- The Claude Desktop bundle no longer requires a UXP token for CEP-only setups.
+- Homepage experiment assignment is exposed at first paint. (#514)
+- Removed the throwaway `uxp-spike` directory. (#520)
+
+Automated checks do not establish licensed Premiere or After Effects playback or
+rendered-output verification.
+
+## [1.15.2] - 2026-09-14
+
+### Fixed
+
+- `trim_clip` now rolls back source metadata to prevent clip corruption when a partial write occurs (source points changed but timeline edge didn't move). Previously these clips entered a permanently-stuck state. (#509, #503)
+- `export_frame`, `capture_frame`, `freeze_frame`, and the `export_sequence_*_review_frames` tools now write the requested frame on macOS Premiere Pro 26.5 / 27 beta. QE still exporters take `(timecodeString, pathWithoutExtension)`; the previous `(path, width, height)` call returned `false` without writing a file, so every frame export fell through to the Media Encoder fallback. Frame time is now formatted with `Time.getFormatted()` in the sequence's display format (drop-frame included), the editor's playhead is no longer moved, and the result reports the timecode and frame index that were rendered. (#510)
+- Preset discovery (`get_encoder_presets`, the default `export_sequence` preset, proxy ingest presets, and the still-image fallback) now looks inside the `.app` bundle that lives one level below `/Applications/Adobe Media Encoder <version>/` on macOS. Previously only the user's own presets under `~/Documents/Adobe/Adobe Media Encoder/*/Presets` were found. (#510)
+- `verify_premiere_connection` now aligns panel and active sequence identity checks. (#501)
+- `create_mogrt_recipe` now exposes composition parameter controls correctly. (#504)
+- `apply_mogrt` now surfaces buildToolScript and importMGT error details. (#505)
+- `inspect_color_value` argument unwrapping no longer fails. (#506)
+
+### Changed
+
+- Removed orphaned chat-plugin directory and build scripts. (#502)
+- Pinned Adobe type definitions at 26.3 until drift receipts are rewritten for stable 26.5. (#508)
+
+## [1.15.1] - 2026-09-11
+
+### Fixed
+
+- Use a null destination for UXP project-root file imports, matching the Premiere API contract.
+- Consolidate exported page aliases with permanent redirects and improve homepage accessibility, image delivery, and installation journeys.
+
+### Changed
+
+- Add a searchable tool reference, precise client configuration, and clearer competitive evaluation guidance.
+- Refresh the homepage experiment with Premiere artwork and gallery layouts, with end-to-end journey coverage.
+- Update landing dependencies and comparable GitHub search measurement.
+
+Automated checks do not establish licensed Premiere or After Effects playback or rendered-output verification.
+
+## [1.15.0] - 2026-09-08
+
+### Added
+
+- Added film editorial evidence, cross-app workflow planning, and verified After Effects render handoff workflows.
+- Improved setup discovery, troubleshooting documentation, and MCP Registry publication validation.
+
+- Added timeline QA: `diff_sequence_snapshots` compares two sequence
+  snapshots (normalized, `get_sequence_structure`, or
+  `inspect_sequence_structure_uxp` shapes) into added, removed, moved,
+  trimmed, retimed, renamed, and enabled changes with frame deltas and
+  EDL-like timecode lines, and `audit_timeline_health` scores a snapshot for
+  flash frames, gaps, overlaps, disabled clips, repeated shots, missing
+  audio or video coverage, overlength, extreme speed, invalid times, and
+  leading or trailing black with review-frame suggestions. Media paths are
+  reduced to a basename and hash in every output.
+- Added speaker layout planning: `plan_speaker_checkerboard` turns
+  speaker-labelled words into frame-snapped per-speaker segments, split
+  points, and track assignments for checkerboarded dialogue, and
+  `plan_active_speaker_reframe` computes per-speaker crop, Scale, and
+  Position framings for a vertical target with hold or eased keyframes at
+  each speaker switch, or static stacked and side-by-side two-speaker
+  layouts. Both route to existing track, razor, transform, crop, and keyframe
+  tools and fall back to `auto_reframe_sequence`.
+- Added rhythm planning: `plan_emphasis_zoom_keyframes` turns sentence
+  starts, emphasis words, a fixed interval, or supplied trigger times into
+  Motion Scale and subject-anchored Position keyframes with easing, hold,
+  cooldown, and alternate-return options, shaped for `add_keyframe` and
+  `automate_effect_parameters_uxp`. `plan_beat_montage` carves a detected beat
+  grid into shots every N beats, assigns clips in order, priority, or
+  round-robin, and returns `add_to_timeline_batch` chunks, a trim plan, and
+  beat markers.
+- Added shorts intelligence: `rank_short_form_candidates` scores
+  sentence-aligned windows of a word timeline with explainable hook,
+  completeness, density, evidence, keyword, duration-fit, and
+  speaker-consistency components, suppresses overlapping candidates, and
+  routes to the existing subclip, derived-sequence, reframe, and caption
+  tools. `plan_chapter_markers` segments a transcript into chapters with
+  TextTiling-style lexical cohesion, titles each chapter from distinctive
+  terms, and returns YouTube timestamps and ready `add_marker` payloads.
+- Added dynamic caption authoring: `build_caption_artifact` turns a word
+  timeline into an SRT or VTT artifact with per-cue word grouping, line
+  wrapping, minimum and maximum cue durations, flicker-suppressing merge gaps,
+  optional VTT karaoke word timestamps, emphasis markup, speaker prefixes, and
+  documented style presets, written only inside an approved workspace or
+  returned inline. `check_caption_safe_zone` reports overlaps between caption
+  or graphic rectangles and approximate TikTok, Reels, Shorts, feed, YouTube,
+  LinkedIn, and X interface zones with a suggested clear position.
+- Added word-level transcript cleanup planning from a revision-bound word
+  timeline: `plan_filler_word_removal`, `plan_pause_tightening`,
+  `plan_word_mute_ranges` (mute or bleep listed words with ready audio
+  keyframes and redacted text), and `detect_repeated_takes`. Plans return
+  frame-snapped removal and keep ranges and route to the existing derived
+  dialogue sequence preview/apply tools; nothing is applied.
+- Added local platform-delivery planning: `plan_platform_delivery_matrix`
+  turns one source sequence into per-platform sequence settings, exact
+  fit/fill reframe math, duration and file-size fit, caption safe zones, and
+  an ordered route through existing clone, reframe, caption, export, and
+  delivery-verification tools. `validate_platform_publish_package` checks a
+  rendered file plus title, description, hashtags, and content flags against
+  approximate TikTok, Reels, Shorts, YouTube, LinkedIn, X, and Facebook limits.
+  Both are read-only and never change Premiere.
+
+### Fixed
+
+- `inspect_video_transition_uxp` now resolves the documented
+  `VideoClipTrackItem` surface through `VideoClipTrackItem.cast()` before
+  reporting a capability gap, so it returns a target snapshot again on
+  Premiere 26.3 and `add_video_transition_uxp` / `remove_video_transition_uxp`
+  are reachable. A genuine gap now names the missing methods. (#454)
+- `ripple_delete_track_item_uxp` and `slip_track_item_uxp` no longer report a
+  bare failure after the host has already committed the transaction. A
+  divergent result now fails with `UXP_COMMITTED_UNVERIFIED`, states that the
+  project has already changed, describes what actually landed (for example a
+  delete that left a gap instead of rippling), and tells the caller not to
+  retry. (#455)
+- `inspect_source_proxy_uxp`, `manage_timeline_source_label_uxp`, and
+  `inspect_source_media_provenance_uxp` now read project-item identity through
+  the documented `ProjectItem.cast()` and await it, instead of failing
+  universally with "Premiere does not expose getId for this target". Bins that
+  expose no readable ID are traversed rather than rejected. (#456)
+- `roll_edit` now moves the source out point and the incoming clip's in point
+  with the visible cut and verifies all four values, so the timeline and the
+  clips' in/out metadata can no longer disagree after a reported success. (#457)
+- `import_fcp_xml` now passes both arguments `app.openFCPXML(path, projPath)`
+  requires. It takes a new required `project_path`, checks that the XML exists,
+  refuses to overwrite an existing project, and verifies the destination
+  project was created. (#458)
+- `manage_sequences_uxp` now forwards only the parameters each action accepts
+  instead of blanket-forwarding every documented field, and explains locally
+  which parameters an action takes when given one it does not. (#459)
+- `attach_custom_property` now reads the sequence project item's XMP packet
+  before and after the write and fails when the property never lands in XMP,
+  instead of reporting an unverified success. (#460)
+- `undo` and `redo` now fail closed with a named capability error, matching the
+  fix already shipped for `multiple_undo`. `undo` no longer throws
+  `ReferenceError: app.project.undo is not a function`, and `redo` no longer
+  reports an unverifiable success. (#462)
+- `set_effect_property` now accepts array values for 2D vector properties such
+  as Motion > Position and Anchor Point, and verifies an array readback
+  component by component instead of with strict equality. (#463)
+- `import_ae_comps` now fails closed when the `.aep` file does not exist and
+  when the target bin gains no items, instead of reporting success for a
+  nonexistent path. (#464)
+- `add_tracks` now fingerprints every existing track before the call and
+  locates those fingerprints afterwards, so it reports explicitly when QE
+  inserted the new tracks at index 0 and shifted every existing track up. A
+  matching total count alone no longer implies success. (#465)
+- `get_render_queue_status` now returns a capability error naming
+  `app.encoder.isRunning` when the host does not expose it, instead of an
+  `isRunning: "unknown"` string that reads as a legitimate status. (#466)
+
+## [1.14.9] - 2026-09-04
+
+### Added
+
+- Expanded the separate After Effects CEP bridge into a guarded MOGRT studio.
+  Five deterministic title, callout, quote, and social recipes run only in an
+  already saved, workspace-contained After Effects project and export to an
+  existing approved directory.
+- Added optional brand-kit constraints, bounded JSON/CSV batch previews,
+  immutable workspace-contained version libraries, source inspection,
+  queue-only renders, and an explicit empty-track Premiere handoff that
+  verifies insertion and exposed-control descriptors.
+- Added capability-aware assistant-editor workflows and GPT-6 Astra discovery
+  guidance so clients can inspect the current, authorized tool surface before
+  proposing an editing workflow.
+
+### Changed
+
+- Hardened the MCP transport's bounded bridge-command backlog and refreshed
+  public tool counts, workflow documentation, registry metadata, and the
+  landing's machine-readable release references.
+
+### Safety
+
+- MOGRT workflows never accept arbitrary script text, create or switch After
+  Effects projects, overwrite artifacts, start a render queue, or treat host
+  acceptance, a ZIP header, or an import descriptor as rendered-frame or
+  visual proof.
+- Capability discovery and workflow guidance describe the current host surface;
+  they do not grant authority or establish licensed-host, playback, render, or
+  marketplace verification.
+
+## [1.14.8] - 2026-09-04
+
+### Added
+
+- Added a separate After Effects CEP bridge and four approval-gated MOGRT
+  authoring tools. The initial `lower_third` recipe only runs in an already
+  saved, workspace-contained AE project and exports to an existing approved
+  directory.
+- Added one-time preview tokens, explicit export confirmation, isolated AE
+  bridge helpers/temp directory, and local ZIP-header artifact verification.
+- Added a local SRT/VTT timing-review plan for lecture and interview captions,
+  including bounded correction previews and a separate structural/playback/
+  rendered-output verification checklist.
+- Added revision-bound, opt-in editorial evidence import for caller-supplied
+  transcript, shot, audio, note, and opaque frame-reference data; it remains
+  local and rejects stale source or timeline revisions.
+- Added no-write `premiere-pro-mcp --doctor --plan-fixes` repair guidance and a
+  narrowly scoped, confirmation-gated local connector recovery path.
+- Added a generated public workflow manifest, workflow-proof receipt/runbook,
+  and a universal client setup guide with explicit distribution boundaries.
+
+### Changed
+
+- Added an in-panel global npm/CEP connector update handoff for Windows. It
+  requires confirmation, waits for Premiere to close without forcing it, and
+  uses the published-package update path.
+- Reused immutable MCP registration descriptors and JSON Schema adapters across
+  stateless server construction, while retaining per-request context, telemetry,
+  and UXP state. Concurrent CEP commands now share a response-directory watcher
+  with polling retained as the correctness fallback.
+- Refined the public landing for mobile and reduced motion, removed the deferred
+  3D dependency path, and refreshed its facts, structured data, sitemap, public
+  crawl policy, and machine-readable reference files.
+
+### Safety
+
+- MOGRT authoring never accepts arbitrary script text, creates or switches AE
+  projects, creates output directories, overwrites artifacts, or treats host
+  acceptance/a ZIP header as import, rendered-frame, or visual proof.
+- Caption timing plans, editorial evidence import, doctor repair plans, and
+  public workflow materials remain distinct from licensed-host, playback,
+  rendered-output, provider, or marketplace verification.
+
+## [1.14.7] - 2026-09-02
+
+### Added
+
+- Added bounded UXP source-proxy readiness inspection, with explicit opt-in
+  disclosure for an attached proxy path, and read-only animated PointF
+  endpoint-displacement inspection.
+
+### Fixed
+
+- Added an explicit `PREMIERE_MCP_PROTOCOL_MODE=legacy` fallback for desktop
+  clients whose stdio protocol negotiation cannot use the modern server mode;
+  the default remains the current automatic mode and invalid values fail fast.
+- Updated the affected `@humanfs/node`, `fast-uri`, and `qs` dependency paths.
+
+## [1.14.6] - 2026-09-02
+
+### Added
+
+- Added `create_editorial_context_pack`, a review-only, revision-aware Markdown
+  reading view for explicitly captured transcript, shot, audio, source,
+  timeline, and editor-note context. It is bounded by entry and character
+  limits and never invokes a provider, Premiere bridge, or project mutation.
+- Added guarded UXP workflows for sequence playhead and range updates, marker
+  batch removal, native transition application, caption-track inventory,
+  silence-cut stringouts, atomic split edits, and beat-grid markers.
+- Added local-only delivery conformance, sampled video scopes and motion
+  analysis, Warp Stabilizer status inspection, and shot-match planning.
+- Added source-backed inventories for documented UXP, CEP, ExtendScript, and
+  native SDK integration surfaces.
+
+### Fixed
+
+- Made unsupported sequence pixel-aspect ratios, partial transitions,
+  unavailable media timing readback, and incomplete delivery probes fail
+  closed instead of reporting unverified success.
+- Corrected marker, encoder, duplicate-media, caption, and capability
+  inference contracts, with expanded mutation verification coverage.
+
+## [1.14.5] - 2026-08-31
+
+### Added
+
+- Added safe user update commands for global npm installations and guarded
+  source check/update scripts. Global updates refresh the CEP connector after
+  npm succeeds; source updates require a clean fast-forwardable checkout.
+
+### Fixed
+
+- Corrected macOS bridge-directory handling when `TMPDIR` is set and made QE
+  transition writes target the intended clip on current Premiere builds.
+
 ## [1.14.4] - 2026-08-29
 
 ### Fixed

@@ -13,10 +13,13 @@ const { mockedExecFile, mockedExecFileAsync } = vi.hoisted(() => {
 vi.mock("node:child_process", () => ({ execFile: mockedExecFile }));
 
 import {
+  analyzeRgbScopes,
+  compareScopeReadings,
   getMediaAnalysisTools,
   parseCropDetectOutput,
   parseIdetOutput,
   parseMediaProbeJson,
+  parseMotionPeakCandidates,
   parseTransientCandidates,
 } from "../../src/tools/media-analysis.js";
 
@@ -53,6 +56,62 @@ describe("media analysis parsers", () => {
     ]);
   });
 
+  it("keeps local motion maxima and the strongest peak inside the minimum interval", () => {
+    const output = [
+      "frame:0 pts_time:0", "lavfi.signalstats.YAVG=2",
+      "frame:1 pts_time:0.25", "lavfi.signalstats.YAVG=15",
+      "frame:2 pts_time:0.5", "lavfi.signalstats.YAVG=2",
+      "frame:3 pts_time:0.75", "lavfi.signalstats.YAVG=20",
+      "frame:4 pts_time:1", "lavfi.signalstats.YAVG=2",
+      "frame:5 pts_time:2", "lavfi.signalstats.YAVG=18",
+    ].join("\n");
+    expect(parseMotionPeakCandidates(output, 12, 1)).toEqual([
+      { timeSeconds: 0.75, difference: 20 }, { timeSeconds: 2, difference: 18 },
+    ]);
+  });
+
+  it("represents an equal-valued motion plateau with one peak", () => {
+    const output = [
+      "frame:0 pts_time:0", "lavfi.signalstats.YAVG=2",
+      "frame:1 pts_time:0.25", "lavfi.signalstats.YAVG=15",
+      "frame:2 pts_time:0.5", "lavfi.signalstats.YAVG=15",
+      "frame:3 pts_time:0.75", "lavfi.signalstats.YAVG=2",
+    ].join("\n");
+    expect(parseMotionPeakCandidates(output, 12, 0.1)).toEqual([
+      { timeSeconds: 0.25, difference: 15 },
+    ]);
+  });
+
+  it("computes waveform, parade, saturation, and RGB endpoint occupancy", () => {
+    const reading = analyzeRgbScopes(Uint8Array.from([0, 0, 0, 255, 255, 255, 255, 0, 0]));
+    expect(reading).toMatchObject({
+      pixels: 3,
+      waveform: { black: 0, white: 100 },
+      rgbParade: { red: { high: 100 }, green: { low: 0 }, blue: { median: 0 } },
+      saturation: { high: 100 },
+      rgbExtremes: { nearBlackPercent: 33.33, nearWhitePercent: 33.33 },
+    });
+    expect(() => analyzeRgbScopes(Uint8Array.from([0, 1]))).toThrow("complete RGB24 pixels");
+  });
+
+  it("compares scope readings with target-minus-reference deltas and coarse directions", () => {
+    const reference = analyzeRgbScopes(Uint8Array.from([100, 100, 100, 120, 120, 120]));
+    const target = analyzeRgbScopes(Uint8Array.from([60, 70, 80, 70, 80, 90]));
+    expect(compareScopeReadings(reference, target)).toMatchObject({
+      targetMinusReference: { medianLuma: expect.any(Number), redBlueBalance: expect.any(Number) },
+      suggestedDirections: { exposure: "raise", warmth: "warmer", saturation: "lower" },
+    });
+  });
+
+  it("keeps the warmth direction stable across proportional exposure changes", () => {
+    const reference = analyzeRgbScopes(Uint8Array.from([100, 75, 50]));
+    const target = analyzeRgbScopes(Uint8Array.from([200, 150, 100]));
+    expect(compareScopeReadings(reference, target)).toMatchObject({
+      targetMinusReference: { redBlueBalance: -0.01 },
+      suggestedDirections: { exposure: "lower", warmth: "hold", saturation: "hold" },
+    });
+  });
+
   it("classifies progressive, mixed, and absent idet summaries", () => {
     expect(parseIdetOutput("Multi frame detection: TFF: 1 BFF: 0 Progressive: 99 Undetermined: 0").classification).toBe("progressive");
     expect(parseIdetOutput("Multi frame detection: TFF: 50 BFF: 0 Progressive: 50 Undetermined: 0").classification).toBe("mixed");
@@ -84,6 +143,13 @@ describe("media analysis tool contracts", () => {
     await expect(tools.detect_audio_transients.handler({ media_path: mediaPath, threshold_dbfs: 1 })).resolves.toMatchObject({ success: false });
     await expect(tools.detect_audio_transients.handler({ media_path: mediaPath, minimum_interval_seconds: 20 })).resolves.toMatchObject({ success: false });
     await expect(tools.detect_audio_transients.handler({ media_path: mediaPath, maximum_events: 0 })).resolves.toMatchObject({ success: false });
+    await expect(tools.detect_motion_peaks.handler({ media_path: mediaPath, sample_seconds: 0 })).resolves.toMatchObject({ success: false });
+    await expect(tools.detect_motion_peaks.handler({ media_path: mediaPath, samples_per_second: 11 })).resolves.toMatchObject({ success: false });
+    await expect(tools.detect_motion_peaks.handler({ media_path: mediaPath, threshold: 256 })).resolves.toMatchObject({ success: false });
+    await expect(tools.detect_motion_peaks.handler({ media_path: mediaPath, minimum_interval_seconds: 0 })).resolves.toMatchObject({ success: false });
+    await expect(tools.detect_motion_peaks.handler({ media_path: mediaPath, maximum_events: 0 })).resolves.toMatchObject({ success: false });
+    await expect(tools.read_video_scopes.handler({ media_path: mediaPath, time_seconds: -1 })).resolves.toMatchObject({ success: false });
+    await expect(tools.plan_shot_match.handler({ reference_media_path: mediaPath, target_media_path: mediaPath, target_time_seconds: -1 })).resolves.toMatchObject({ success: false });
     await expect(tools.analyze_video_interlacing.handler({ media_path: mediaPath, sample_seconds: 0 })).resolves.toMatchObject({ success: false });
     await expect(tools.detect_active_picture_bounds.handler({ media_path: mediaPath, sample_seconds: 301 })).resolves.toMatchObject({ success: false });
     await expect(tools.detect_active_picture_bounds.handler({ media_path: mediaPath, limit: 300 })).resolves.toMatchObject({ success: false });
@@ -102,6 +168,24 @@ describe("media analysis tool contracts", () => {
     const mediaPath = fixture();
     mockedExecFileAsync.mockResolvedValueOnce({ stdout: "", stderr: "pts_time:1\nlavfi.astats.Overall.Peak_level=-4" });
     await expect(tools.detect_audio_transients.handler({ media_path: mediaPath, maximum_events: 1 })).resolves.toMatchObject({ success: true, data: { candidates: [{ timeSeconds: 1, peakDbfs: -4 }] } });
+
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: "", stderr: "pts_time:1\nlavfi.signalstats.YAVG=20" });
+    await expect(tools.detect_motion_peaks.handler({ media_path: mediaPath, threshold: 12, maximum_events: 1 })).resolves.toMatchObject({ success: true, data: { candidates: [{ timeSeconds: 1, difference: 20 }] } });
+    expect(mockedExecFileAsync.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining(["-t", "60", "-an", "-f", "null", "-"]));
+
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: Buffer.alloc(320 * 180 * 3, 128), stderr: Buffer.alloc(0) });
+    await expect(tools.read_video_scopes.handler({ media_path: mediaPath, time_seconds: 2 })).resolves.toMatchObject({ success: true, data: { timeSeconds: 2, pixels: 57_600, sampleSize: { width: 320, height: 180 } } });
+    expect(mockedExecFileAsync.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining(["-ss", "2", "-frames:v", "1", "rgb24", "pipe:1"]));
+
+    mockedExecFileAsync.mockRejectedValueOnce(Object.assign(new Error("timeout"), { killed: true }));
+    await expect(tools.read_video_scopes.handler({ media_path: mediaPath })).resolves.toMatchObject({ success: false, error: expect.stringContaining("timed out after 60 seconds") });
+
+    mockedExecFileAsync.mockRejectedValueOnce(Object.assign(new Error("decode"), { stderr: Buffer.from("invalid video stream") }));
+    await expect(tools.read_video_scopes.handler({ media_path: mediaPath })).resolves.toMatchObject({ success: false, error: expect.stringContaining("invalid video stream") });
+
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: Buffer.alloc(320 * 180 * 3, 100), stderr: Buffer.alloc(0) });
+    mockedExecFileAsync.mockResolvedValueOnce({ stdout: Buffer.alloc(320 * 180 * 3, 80), stderr: Buffer.alloc(0) });
+    await expect(tools.plan_shot_match.handler({ reference_media_path: mediaPath, target_media_path: mediaPath })).resolves.toMatchObject({ success: true, data: { comparison: { suggestedDirections: { exposure: "raise" } } } });
 
     mockedExecFileAsync.mockResolvedValueOnce({ stdout: "", stderr: "Multi frame detection: TFF: 0 BFF: 0 Progressive: 20 Undetermined: 0" });
     await expect(tools.analyze_video_interlacing.handler({ media_path: mediaPath })).resolves.toMatchObject({ success: true, data: { classification: "progressive", passesProgressiveDelivery: true } });

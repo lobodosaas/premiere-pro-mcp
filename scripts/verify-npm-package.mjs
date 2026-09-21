@@ -17,10 +17,58 @@ const requiredFiles = [
   "package/dist/index.js",
   "package/dist/index.d.ts",
   "package/cep-plugin/CSXS/manifest.xml",
+  "package/cep-plugin/bridge-directory-security.cjs",
+  "package/after-effects-cep-plugin/CSXS/manifest.xml",
+  "package/after-effects-cep-plugin/bridge-directory-security.cjs",
   "package/uxp-plugin/manifest.json",
   "package/docs/supported-actions.md",
+  "package/docs/mogrt-authoring.md",
+  "package/docs/premiere-surface-registry.md",
+  "package/docs/adobe-beta-aaf-export-options-drift.md",
+  "package/docs/adobe-beta-project-options-drift.md",
+  "package/docs/adobe-beta-transition-options-drift.md",
+  "package/docs/adobe-beta-rectf-drift.md",
+  "package/docs/adobe-beta-color-drift.md",
+  "package/docs/adobe-beta-pointf-drift.md",
+  "package/docs/adobe-beta-guid-drift.md",
+  "package/docs/adobe-beta-frame-rate-drift.md",
+  "package/docs/adobe-beta-tick-time-drift.md",
+  "package/docs/adobe-beta-c2pa-drift.md",
+  "package/docs/adobe-beta-media-drift.md",
+  "package/docs/adobe-beta-media-manager-drift.md",
+  "package/docs/adobe-beta-transcript-drift.md",
+  "package/docs/adobe-beta-work-area-drift.md",
+  "package/docs/uxp-js-api-inventory.md",
+  "package/docs/premiere-doc-inventory.md",
+  "package/docs/native-sdk-header-inventory.md",
+  "package/docs/uxp-hybrid-addon-receipt.md",
+  "package/docs/uxp-hybrid-ccx-receipt.md",
+  "package/docs/uxp-hybrid-benchmark.md",
+  "package/docs/cep-reference-inventory.md",
+  "package/docs/extendscript-api-inventory.md",
+  "package/dist/resources/premiere-surface-registry.json",
+  "package/dist/resources/adobe-beta-aaf-export-options-drift.json",
+  "package/dist/resources/adobe-beta-project-options-drift.json",
+  "package/dist/resources/adobe-beta-transition-options-drift.json",
+  "package/dist/resources/adobe-beta-rectf-drift.json",
+  "package/dist/resources/adobe-beta-color-drift.json",
+  "package/dist/resources/adobe-beta-pointf-drift.json",
+  "package/dist/resources/adobe-beta-guid-drift.json",
+  "package/dist/resources/adobe-beta-frame-rate-drift.json",
+  "package/dist/resources/adobe-beta-tick-time-drift.json",
+  "package/dist/resources/adobe-beta-c2pa-drift.json",
+  "package/dist/resources/adobe-beta-media-drift.json",
+  "package/dist/resources/adobe-beta-media-manager-drift.json",
+  "package/dist/resources/adobe-beta-transcript-drift.json",
+  "package/dist/resources/adobe-beta-work-area-drift.json",
+  "package/dist/resources/uxp-js-api-inventory.json",
+  "package/dist/resources/premiere-doc-inventory.json",
+  "package/dist/resources/cep-reference-inventory.json",
+  "package/dist/resources/extendscript-api-inventory.json",
   "package/scripts/install-cep.ps1",
   "package/scripts/install-cep.sh",
+  "package/scripts/uninstall-cep.ps1",
+  "package/scripts/uninstall-cep.sh",
 ];
 
 function tarEntries(tarball) {
@@ -103,6 +151,22 @@ try {
   const installedCli = join(installDir, "node_modules", "premiere-pro-mcp", "dist", "index.js");
   if (!existsSync(installedCli)) {
     throw new Error("isolated package installation did not contain the CLI entrypoint");
+  }
+  const installedPackageRoot = join(installDir, "node_modules", "premiere-pro-mcp");
+  const installedRegistry = JSON.parse(readFileSync(join(
+    installedPackageRoot,
+    "dist",
+    "resources",
+    "premiere-surface-registry.json",
+  ), "utf8"));
+  if (installedRegistry.schemaVersion !== 1 || !Array.isArray(installedRegistry.integrationSurfaces)) {
+    throw new Error("installed package did not contain a valid Premiere surface registry");
+  }
+  for (const surface of installedRegistry.integrationSurfaces) {
+    if (surface.inventoryArtifact !== null &&
+      (typeof surface.inventoryArtifact !== "string" || !existsSync(join(installedPackageRoot, surface.inventoryArtifact)))) {
+      throw new Error(`installed package registry references a missing inventory artifact: ${surface.id}`);
+    }
   }
   const help = run(process.execPath, [installedCli, "--help"], { cwd: installDir });
   if (!help.includes("Usage:")) {

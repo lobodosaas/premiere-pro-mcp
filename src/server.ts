@@ -1,4 +1,9 @@
-import { McpServer } from "@modelcontextprotocol/server";
+import {
+  fromJsonSchema,
+  McpServer,
+  type JsonSchemaType,
+  type StandardSchemaWithJSON,
+} from "@modelcontextprotocol/server";
 import { BridgeOptions } from "./bridge/file-bridge.js";
 import { getDiscoveryTools } from "./tools/discovery.js";
 import { getProjectTools } from "./tools/project.js";
@@ -36,9 +41,29 @@ import { getAvSettingsTools } from "./tools/av-settings.js";
 import { getRecoveryTools } from "./tools/recovery.js";
 import { getProjectContextTools } from "./tools/project-context.js";
 import { getEditorialPlanTools } from "./tools/editorial-plans.js";
+import { getEditorialContextPackTools } from "./tools/editorial-context-pack.js";
+import { getFilmEditorialTools } from "./tools/film-editorial.js";
+import { ProjectContextRepository } from "./context/project-context-store.js";
 import { getProjectIntakeTools } from "./tools/project-intake.js";
 import { getCompetitorGapTools } from "./tools/competitor-gaps.js";
+import { getDialogueAnalysisTools } from "./tools/dialogue-analysis.js";
+import { MediaWatchRegistry, getMediaWatchTools } from "./tools/media-watch.js";
+import { getWorkflowRecipeTools } from "./tools/workflow-recipes.js";
+import { getTimelineQaTools } from "./tools/timeline-qa.js";
+import { getCrossAppWorkflowTools } from "./tools/cross-app-workflow.js";
+import { getSpeakerLayoutTools } from "./tools/speaker-layout.js";
+import { getRhythmPlanTools } from "./tools/rhythm-plans.js";
+import { getShortsIntelligenceTools } from "./tools/shorts-intelligence.js";
+import { getCaptionAuthoringTools } from "./tools/caption-authoring.js";
+import { getReactionShortsTools } from "./tools/reaction-shorts.js";
+import { getTranscriptWordEditTools } from "./tools/transcript-word-edits.js";
+import { getPlatformDeliveryTools } from "./tools/platform-delivery.js";
+import { getEditorRequestTools } from "./tools/editor-requests.js";
+import { getReviewPlanTools } from "./tools/review-plans.js";
 import { getUxpTools } from "./tools/uxp.js";
+import { getMogrtAuthoringTools } from "./tools/mogrt-authoring.js";
+import { getMogrtStudioTools } from "./tools/mogrt-studio.js";
+import { getRenderHandoffTools } from "./tools/render-handoff.js";
 import type { UxpWebSocketBridge } from "./bridge/uxp-websocket-bridge.js";
 import {
   guardToolHandler,
@@ -48,6 +73,7 @@ import {
 import { EXTENDSCRIPT_REFERENCE } from "./resources/extendscript-reference.js";
 import { getLiveContextResources } from "./resources/live-context-resources.js";
 import { PROJECT_CONTEXT_RESOURCE } from "./context/project-context-resource.js";
+import { buildPremiereInstructions } from "./workflows/agent-instructions.js";
 import { WORKFLOW_PROMPTS, WORKFLOW_RESOURCE } from "./workflows/catalog.js";
 import {
   annotationsForTool,
@@ -58,8 +84,8 @@ import {
   resolveToolPacks,
   type ToolPackSelection,
 } from "./workflows/tool-packs.js";
-import { readServerBuildInfo, type ServerBuildInfo } from "./build-info.js";
 import { getTelemetry, type Telemetry } from "./telemetry.js";
+import { readServerBuildInfo, type ServerBuildInfo } from "./build-info.js";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -81,67 +107,6 @@ export const SERVER_VERSION = ((): string => {
   }
 })();
 
-const PREMIERE_INSTRUCTIONS = `You are controlling Adobe Premiere Pro through MCP tools. Follow these best practices:
-
-WORKFLOW ORDER:
-1. Always call get_project_info first to understand the current state.
-2. Import media before adding to timeline.
-3. Create/select a sequence before timeline operations.
-4. Add clips first, then effects, then transitions.
-5. Save the project after making significant changes.
-
-TIMELINE RULES:
-- Clips are identified by node_id. Use get_active_sequence or list_sequence_tracks to discover node IDs.
-- Video clips on higher track indices appear on top of lower ones (compositing order).
-- Images default to ~5 seconds duration when added to timeline.
-- The first clip added to a new sequence determines its resolution and frame rate.
-- Time values are in seconds (the tools handle tick conversion internally).
-
-EFFECTS & TRANSITIONS:
-- Apply effects by name using apply_effect (e.g., "Gaussian Blur", "Lumetri Color").
-- Use list_available_effects to find exact effect names.
-- Transitions require clips to be adjacent (no gap between them).
-- Keep transitions short (0.5-2 seconds typically).
-- Use color_correct for Lumetri Color adjustments rather than manual property setting.
-
-KEYFRAMES:
-- Use get_effect_properties to discover property names before setting values.
-- Enable keyframes with add_keyframe; the property auto-enables time-varying.
-- Interpolation types: "linear" (smooth), "hold" (instant jump), "bezier" (custom easing).
-
-QE DOM TOOLS:
-- Tools marked "Uses QE DOM" use an undocumented API. They are powerful but may behave unexpectedly.
-- ripple_delete remains QE-based. roll_edit, slide_edit, and slip_edit use public timeline properties with readback verification; test them in a disposable sequence before production use.
-- Premiere does not expose a supported scripting API for changing timeline-clip speed; speed tools fail before mutation.
-
-CLIPS & SELECTION:
-- Use set_clip_selection to select clips before operations that work on selection (link, unlink, scene_edit_detection).
-- Use overwrite_clip for 3-point editing (overwrites existing content).
-- Use add_to_timeline for insert editing (ripples content forward).
-
-BINS & ORGANIZATION:
-- Bins are folders in the project panel. Use create_bin, delete_bin, rename_bin.
-- Use move_item_to_bin to organize imported media.
-- create_smart_bin creates auto-populating search bins.
-
-EXPORT:
-- Use export_sequence for AME-based encoding with presets.
-- Use export_frame to capture a single frame as an image.
-- Use start_batch_encode to begin rendering all queued items.
-
-ERROR HANDLING:
-- If a tool returns "No active sequence", call set_active_sequence first.
-- If a tool returns "Clip not found", the node_id may have changed after timeline edits. Re-query the sequence.
-- If "QE clip not found", the clip index may differ between DOM and QE. Try re-querying.
-
-CUSTOM SCRIPTING:
-- Use execute_extendscript to write and run any ExtendScript code for tasks not covered by existing tools.
-- Use evaluate_expression for quick one-line queries.
-- Use inspect_dom_object to explore unfamiliar objects.
-- Use get_premiere_state as your first call to understand the full current context.
-- Use get_sequence_structure for detailed timeline layout before edits.
-- Read the "extendscript-reference" resource for the complete API cheat sheet.
-`;
 
 interface ToolDef {
   description: string;
@@ -152,16 +117,39 @@ interface ToolDef {
 }
 
 const toolCatalogCache = new Map<string, Record<string, ToolDef>>();
-const schemaCache = new WeakMap<
+const inputSchemaCache = new WeakMap<
   Record<string, unknown>,
-  Record<string, z.ZodTypeAny>
+  StandardSchemaWithJSON<unknown, unknown>
 >();
-const toolResultOutputSchema = z.object({
-  ok: z.boolean().describe("Whether the tool completed successfully."),
-  tool: z.string().min(1).describe("The registered MCP tool name."),
-  data: z.unknown().optional().describe("Tool-specific result data when ok is true."),
-  error: z.string().optional().describe("Failure detail when ok is false."),
-});
+const inputSchemaContentCache = new Map<
+  string,
+  StandardSchemaWithJSON<unknown, unknown>
+>();
+const JSON_SCHEMA_DRAFT_2020_12 = "https://json-schema.org/draft/2020-12/schema";
+const toolResultOutputSchema = fromJsonSchema({
+  $schema: JSON_SCHEMA_DRAFT_2020_12,
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    ok: {
+      type: "boolean",
+      description: "Whether the tool completed successfully.",
+    },
+    tool: {
+      type: "string",
+      minLength: 1,
+      description: "The registered MCP tool name.",
+    },
+    data: {
+      description: "Tool-specific result data when ok is true.",
+    },
+    error: {
+      type: "string",
+      description: "Failure detail when ok is false.",
+    },
+  },
+  required: ["ok", "tool"],
+} as JsonSchemaType);
 const debugEnabled = /^(1|true|yes|on|debug)$/i.test(
   process.env.PREMIERE_MCP_DEBUG ?? "",
 );
@@ -187,140 +175,48 @@ function debugLog(message: string): void {
   }
 }
 
-function jsonSchemaPropToZod(prop: Record<string, unknown>): z.ZodTypeAny {
-  const propType = prop.type as string | string[] | undefined;
-
-  // Union of member types, e.g. ["number", "string", "array"] for
-  // coordinate values. Each member inherits the shared constraints
-  // (items/minItems/maxItems/maxLength) that apply to it.
-  if (Array.isArray(propType)) {
-    const options = propType.map((member) =>
-      jsonSchemaPropToZod({ ...prop, type: member }),
-    );
-    if (options.length === 0) return z.unknown();
-    if (options.length === 1) return options[0];
-    return z.union(options as [z.ZodTypeAny, z.ZodTypeAny, ...z.ZodTypeAny[]]);
-  }
-
-  if (propType === "string") {
-    if (prop.enum && Array.isArray(prop.enum) && prop.enum.length > 0) {
-      const enumValues = prop.enum as [string, ...string[]];
-      return z.enum(enumValues);
-    }
-    const schema = z.string();
-    return typeof prop.maxLength === "number"
-      ? schema.max(prop.maxLength)
-      : schema;
-  }
-
-  if (propType === "number") {
-    return z.number();
-  }
-
-  if (propType === "integer") {
-    return z.number().int();
-  }
-
-  if (propType === "boolean") {
-    return z.boolean();
-  }
-
-  if (propType === "array") {
-    const itemSchema = (prop.items ?? {}) as Record<string, unknown>;
-    // Use unknown as a safe fallback while still emitting a concrete items schema.
-    const itemZod =
-      Object.keys(itemSchema).length > 0
-        ? jsonSchemaPropToZod(itemSchema)
-        : z.unknown();
-    let schema = z.array(itemZod);
-    if (typeof prop.minItems === "number") schema = schema.min(prop.minItems);
-    if (typeof prop.maxItems === "number") schema = schema.max(prop.maxItems);
-    return schema;
-  }
-
-  if (propType === "object") {
-    const nestedProperties = (prop.properties ?? {}) as Record<
-      string,
-      Record<string, unknown>
-    >;
-    const nestedRequired = new Set((prop.required ?? []) as string[]);
-
-    if (Object.keys(nestedProperties).length === 0) {
-      return z.record(z.string(), z.unknown());
-    }
-
-    const nestedShape: Record<string, z.ZodTypeAny> = {};
-    for (const [nestedKey, nestedProp] of Object.entries(nestedProperties)) {
-      let nestedZod = jsonSchemaPropToZod(nestedProp);
-      if (nestedProp.description) {
-        nestedZod = nestedZod.describe(nestedProp.description as string);
-      }
-      if (!nestedRequired.has(nestedKey)) {
-        nestedZod = nestedZod.optional();
-      }
-      nestedShape[nestedKey] = nestedZod;
-    }
-
-    return z.object(nestedShape).passthrough();
-  }
-
-  return z.unknown();
-}
-
 /**
- * Convert a JSON Schema-style parameters object to a Zod shape for MCP SDK registration.
+ * Reuse the source JSON Schema directly. The MCP SDK's adapter supplies both
+ * AJV validation and the exact schema needed for tools/list, avoiding a costly
+ * Zod-to-JSON-Schema conversion for every stateless HTTP request.
  */
-function jsonSchemaToZodShape(
+function jsonSchemaToInputSchema(
   params: Record<string, unknown>,
-): Record<string, z.ZodTypeAny> {
-  const cached = schemaCache.get(params);
+): StandardSchemaWithJSON<unknown, unknown> {
+  const cached = inputSchemaCache.get(params);
   if (cached) return cached;
-  const shape: Record<string, z.ZodTypeAny> = {};
-  const properties = (params.properties ?? {}) as Record<
-    string,
-    Record<string, unknown>
-  >;
-  const required = (params.required ?? []) as string[];
 
-  for (const [key, prop] of Object.entries(properties)) {
-    let zodType = jsonSchemaPropToZod(prop);
-
-    if (prop.description) {
-      zodType = zodType.describe(prop.description as string);
-    }
-
-    if (!required.includes(key)) {
-      zodType = zodType.optional();
-    }
-
-    shape[key] = zodType;
+  // Context-aware tools are intentionally re-created for each server, so their
+  // parameter objects have new identities even though their JSON Schema is
+  // unchanged. Reuse the compiled adapter by schema content as well.
+  const cacheKey = JSON.stringify(params);
+  const contentCached = inputSchemaContentCache.get(cacheKey);
+  if (contentCached) {
+    inputSchemaCache.set(params, contentCached);
+    return contentCached;
   }
 
-  schemaCache.set(params, shape);
-  return shape;
+  const sourceSchema = params.$schema === undefined
+    ? { $schema: JSON_SCHEMA_DRAFT_2020_12, ...params }
+    : params;
+  const schema = fromJsonSchema(sourceSchema as JsonSchemaType);
+  inputSchemaCache.set(params, schema);
+  inputSchemaContentCache.set(cacheKey, schema);
+  return schema;
 }
 
-function collectTools(
+function collectStaticTools(
   bridgeOptions: BridgeOptions,
   capabilities: ReturnType<typeof resolveCapabilities>,
-  uxpBridge?: UxpWebSocketBridge,
-  telemetry?: Telemetry,
-  toolPacks?: ToolPackSelection,
-  cacheable = false,
-  buildInfo?: ServerBuildInfo,
-  brokerReport?: () => import("./bridge/broker-heartbeat.js").BrokerRuntimeReport | null,
 ): Record<string, ToolDef> {
   const cacheKey = JSON.stringify({
     tempDir: bridgeOptions.tempDir ?? process.env.PREMIERE_TEMP_DIR ?? null,
     timeoutMs:
       bridgeOptions.timeoutMs ?? process.env.PREMIERE_TIMEOUT_MS ?? null,
+    failFastOnUnreadyHeartbeat: bridgeOptions.failFastOnUnreadyHeartbeat ?? false,
     capabilities: [...capabilities.capabilities].sort(),
-    toolPacks: toolPacks ?? null,
   });
-  // Health tools close over the telemetry sink and UXP adapter. The default
-  // sink is a singleton and may be cached; a caller-supplied sink or UXP bridge
-  // must remain instance-specific.
-  const cached = !uxpBridge && cacheable ? toolCatalogCache.get(cacheKey) : undefined;
+  const cached = toolCatalogCache.get(cacheKey);
   if (cached) return cached;
 
   const tools: Record<string, ToolDef> = {
@@ -333,6 +229,9 @@ function collectTools(
     ...getTransitionsTools(bridgeOptions),
     ...getAudioTools(bridgeOptions),
     ...getTextTools(bridgeOptions),
+    ...getMogrtAuthoringTools(bridgeOptions),
+    ...getMogrtStudioTools(bridgeOptions),
+    ...getRenderHandoffTools(bridgeOptions),
     ...getMarkerTools(bridgeOptions),
     ...getTrackTools(bridgeOptions),
     ...getPlayheadTools(bridgeOptions),
@@ -357,10 +256,48 @@ function collectTools(
     ...getSpotWorkflowTools(bridgeOptions, { capabilities }),
     ...getAvSettingsTools(bridgeOptions),
     ...getRecoveryTools(bridgeOptions),
-    ...getProjectContextTools(bridgeOptions),
-    ...getEditorialPlanTools({ uxpBridge }),
     ...getProjectIntakeTools(bridgeOptions),
+    ...getDialogueAnalysisTools(),
+    ...getWorkflowRecipeTools(),
+    ...getTimelineQaTools(),
+    ...getCrossAppWorkflowTools(),
+    ...getSpeakerLayoutTools(),
+    ...getRhythmPlanTools(),
+    ...getShortsIntelligenceTools(),
+    ...getCaptionAuthoringTools(),
+    ...getReactionShortsTools(),
+    ...getTranscriptWordEditTools(),
+    ...getPlatformDeliveryTools(),
+    ...getEditorRequestTools(bridgeOptions),
+    ...getReviewPlanTools(),
+  };
+  toolCatalogCache.set(cacheKey, tools);
+  return tools;
+}
+
+function collectTools(
+  bridgeOptions: BridgeOptions,
+  capabilities: ReturnType<typeof resolveCapabilities>,
+  uxpBridge?: UxpWebSocketBridge,
+  telemetry?: Telemetry,
+  toolPacks?: ToolPackSelection,
+  projectContextRepository = new ProjectContextRepository(),
+  mediaWatchRegistry = new MediaWatchRegistry(),
+  buildInfo?: ServerBuildInfo,
+  brokerReport?: () => import("./bridge/broker-heartbeat.js").BrokerRuntimeReport | null,
+): Record<string, ToolDef> {
+  // Streamable HTTP creates an independent McpServer for every request. Most
+  // tool definitions are immutable, while context, telemetry, and UXP tools
+  // close over server-specific state. Reuse only the former so initialization
+  // stays fast without ever leaking one request's project context or bridge.
+  const tools: Record<string, ToolDef> = {
+    ...collectStaticTools(bridgeOptions, capabilities),
+    ...getProjectContextTools(bridgeOptions, { repository: projectContextRepository }),
+    ...getEditorialContextPackTools({ repository: projectContextRepository }),
+    ...getFilmEditorialTools({ repository: projectContextRepository }),
+    ...getEditorialPlanTools({ repository: projectContextRepository, uxpBridge }),
     ...getCompetitorGapTools(bridgeOptions, uxpBridge),
+    ...getMediaWatchTools(mediaWatchRegistry),
     ...(uxpBridge ? getUxpTools(uxpBridge) : {}),
   };
   Object.assign(
@@ -373,13 +310,16 @@ function collectTools(
       brokerReport,
     }),
   );
-  if (!uxpBridge && cacheable) toolCatalogCache.set(cacheKey, tools);
   return tools;
 }
 
 export interface ServerOptions {
   uxpBridge?: UxpWebSocketBridge;
   telemetry?: Telemetry;
+  /** Allows embedded hosts to share an explicitly configured context backend. */
+  contextRepository?: ProjectContextRepository;
+  /** Shares session-scoped watched-folder state across request-scoped servers. */
+  mediaWatchRegistry?: MediaWatchRegistry;
   /** Overrides PREMIERE_MCP_TOOL_PACKS for this server instance. */
   toolPacks?: string;
   /** Build snapshot captured at broker/server startup. Read from dist/ when omitted. */
@@ -392,13 +332,43 @@ export function createServer(
   bridgeOptions: BridgeOptions,
   serverOptions: ServerOptions = {},
 ): McpServer {
+
+  const capabilities = resolveCapabilities();
+  const toolPacks = serverOptions.toolPacks === undefined
+    ? resolveToolPacks()
+    : resolveToolPacks(serverOptions.toolPacks, "explicit");
+  const telemetry = serverOptions.telemetry ?? getTelemetry();
+  const promptsOff = promptsDisabled();
+  // Context consumers must share a single in-memory backend as well as the
+  // durable backends; independent repository instances would otherwise make
+  // a just-captured memory context invisible to plans and reading packs.
+  const projectContextRepository = serverOptions.contextRepository ?? new ProjectContextRepository();
+  const mediaWatchRegistry = serverOptions.mediaWatchRegistry ?? new MediaWatchRegistry();
+
+  // Collect all tools from each module
+  const toolModules = collectTools(
+    bridgeOptions,
+    capabilities,
+    serverOptions.uxpBridge,
+    telemetry,
+    toolPacks,
+    projectContextRepository,
+    mediaWatchRegistry,
+    serverOptions.buildInfo ?? readServerBuildInfo(),
+    serverOptions.brokerReport,
+  );
+
+  const premiereInstructions = buildPremiereInstructions(new Set(
+    Object.keys(toolModules).filter((name) =>
+      isToolPermitted(name, capabilities) && isToolInSelectedPacks(name, toolPacks)),
+  ));
   const server = new McpServer(
     {
       name: "premiere-pro-mcp",
       version: SERVER_VERSION,
     },
     {
-      instructions: PREMIERE_INSTRUCTIONS,
+      instructions: premiereInstructions,
       cacheHints: {
         "tools/list": { ttlMs: 30_000, cacheScope: "private" },
         "prompts/list": { ttlMs: 300_000, cacheScope: "public" },
@@ -416,25 +386,6 @@ export function createServer(
         },
       },
     },
-  );
-
-  const capabilities = resolveCapabilities();
-  const toolPacks = serverOptions.toolPacks === undefined
-    ? resolveToolPacks()
-    : resolveToolPacks(serverOptions.toolPacks, "explicit");
-  const telemetry = serverOptions.telemetry ?? getTelemetry();
-  const promptsOff = promptsDisabled();
-
-  // Collect all tools from each module
-  const toolModules = collectTools(
-    bridgeOptions,
-    capabilities,
-    serverOptions.uxpBridge,
-    telemetry,
-    toolPacks,
-    !serverOptions.telemetry,
-    serverOptions.buildInfo ?? readServerBuildInfo(),
-    serverOptions.brokerReport,
   );
 
   // Register each tool with the MCP server
@@ -457,7 +408,7 @@ export function createServer(
       continue;
     }
 
-    const zodShape = jsonSchemaToZodShape(tool.parameters);
+    const inputSchema = jsonSchemaToInputSchema(tool.parameters);
     const guardedHandler = guardToolHandler(name, tool.handler, capabilities);
 
     const annotations = annotationsForTool(name);
@@ -466,14 +417,14 @@ export function createServer(
       {
         title: annotations.title,
         description: tool.description,
-        inputSchema: z.object(zodShape),
+        inputSchema,
         outputSchema: toolResultOutputSchema,
         annotations,
       },
-      async (args: Record<string, unknown>) => {
+      async (args: unknown) => {
         const startedAt = Date.now();
         try {
-          const result = await guardedHandler(args);
+          const result = await guardedHandler(args as Record<string, unknown>);
           telemetry.capture("mcp_tool_call", {
             tool: name,
             outcome: result.success ? "succeeded" : "failed",
@@ -584,7 +535,7 @@ export function createServer(
       contents: [
         {
           uri: uri.href,
-          text: PREMIERE_INSTRUCTIONS,
+          text: premiereInstructions,
         },
       ],
     }),

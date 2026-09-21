@@ -251,6 +251,7 @@ describe("next-wave UXP event workflows", () => {
       getMediaFilePath: vi.fn(async () => "C:/private/camera.mov"),
       getProxyPath: vi.fn(async () => "C:/private/proxy.mov"),
       getOriginatingProjectPath: vi.fn(async () => "C:/private/source.prproj"),
+      getMedia: vi.fn(async () => ({ start: { seconds: 2 }, duration: { seconds: 5 } })),
       createSetOfflineAction: vi.fn(() => ({ apply: () => { offline = true; } })),
     };
     const project = {
@@ -275,6 +276,8 @@ describe("next-wave UXP event workflows", () => {
       items: [{ projectItemId: "clip-1", offline: false, hasProxy: true }],
     });
     expect(inspected.items[0]).not.toHaveProperty("mediaPath");
+    expect(inspected.items[0]).not.toHaveProperty("mediaTiming");
+    expect(clip.getMedia).not.toHaveBeenCalled();
     await expect(definitions["media.health.setOffline"].handler({
       expectedOffline: false,
     })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
@@ -284,6 +287,302 @@ describe("next-wave UXP event workflows", () => {
       updated: 1, items: [{ projectItemId: "clip-1", offline: true }],
       outcome: "verified", verificationBoundary: "offline_state_readback",
     });
+  });
+
+  it("reads opt-in media timing through stable properties, including beta promise-shape compatibility", async () => {
+    let media: Record<string, unknown> = {
+      start: { seconds: 1.25 },
+      duration: { seconds: 9.5 },
+    };
+    const clip = {
+      name: "Camera A",
+      getId: vi.fn(async () => "clip-1"),
+      isOffline: vi.fn(async () => false),
+      canChangeMediaPath: vi.fn(async () => true),
+      canProxy: vi.fn(async () => true),
+      hasProxy: vi.fn(async () => false),
+      isMergedClip: vi.fn(async () => false),
+      isMulticamClip: vi.fn(async () => false),
+      getMedia: vi.fn(async () => media),
+    };
+    const project = { guid: "project-1" };
+    const definitions = NextWorkflows.createNextWorkflowDefinitions({
+      ppro: {
+        Project: { getActiveProject: vi.fn(async () => project) },
+        ProjectUtils: { getSelection: vi.fn(async () => ({ getItems: vi.fn(async () => [clip]) })) },
+        ClipProjectItem: { cast: vi.fn((item: unknown) => item) },
+      },
+    });
+
+    await expect(definitions["media.health.inspect"].handler({ includeMediaTiming: true })).resolves.toMatchObject({
+      items: [{
+        mediaTiming: {
+          available: true,
+          startSeconds: 1.25,
+          durationSeconds: 9.5,
+          startAccessor: "start",
+          durationAccessor: "duration",
+        },
+      }],
+    });
+
+    const betaPropertyMedia = {
+      getStart: vi.fn(async () => ({ seconds: 99 })),
+      getDuration: vi.fn(async () => ({ seconds: 99 })),
+      start: Promise.resolve({ seconds: 3 }),
+      duration: Promise.resolve({ seconds: 12 }),
+    };
+    media = betaPropertyMedia;
+    await expect(definitions["media.health.inspect"].handler({ includeMediaTiming: true })).resolves.toMatchObject({
+      items: [{
+        mediaTiming: {
+          available: true,
+          startSeconds: 3,
+          durationSeconds: 12,
+          startAccessor: "start",
+          durationAccessor: "duration",
+        },
+      }],
+    });
+    expect(betaPropertyMedia.getStart).not.toHaveBeenCalled();
+    expect(betaPropertyMedia.getDuration).not.toHaveBeenCalled();
+
+    const failedPropertyMedia = {
+      getStart: vi.fn(async () => ({ seconds: 99 })),
+      getDuration: vi.fn(async () => ({ seconds: 99 })),
+      get start() { throw new Error("start unavailable"); },
+      duration: { seconds: 7 },
+    };
+    media = failedPropertyMedia;
+    await expect(definitions["media.health.inspect"].handler({ includeMediaTiming: true })).resolves.toMatchObject({
+      items: [{
+        mediaTiming: {
+          available: false,
+          startSeconds: null,
+          durationSeconds: 7,
+          startAccessor: "start",
+          durationAccessor: "duration",
+        },
+      }],
+    });
+    expect(failedPropertyMedia.getStart).not.toHaveBeenCalled();
+    expect(failedPropertyMedia.getDuration).not.toHaveBeenCalled();
+
+    media = { start: { seconds: -1 }, duration: { seconds: 86400001 } };
+    await expect(definitions["media.health.inspect"].handler({ includeMediaTiming: true })).resolves.toMatchObject({
+      items: [{
+        mediaTiming: {
+          available: false,
+          startSeconds: null,
+          durationSeconds: null,
+          startAccessor: "start",
+          durationAccessor: "duration",
+        },
+      }],
+    });
+    await expect(definitions["media.health.inspect"].handler({ includeMediaTiming: "yes" })).rejects.toMatchObject({
+      code: "UXP_INVALID_ARGUMENT",
+    });
+  });
+
+  it("guards, serializes, replays, and reads back a source-media start-time action", async () => {
+    let startSeconds = 10, durationSeconds = 60;
+    const media = {
+      get start() { return { seconds: startSeconds }; },
+      get duration() { return { seconds: durationSeconds }; },
+      createSetStartAction: vi.fn((time: { seconds: number }) => ({
+        apply: () => {
+          startSeconds = time.seconds;
+          if (time.seconds === 16) durationSeconds = 59;
+        },
+      })),
+    };
+    const clip = {
+      getId: vi.fn(async () => "clip-1"),
+      getMedia: vi.fn(async () => media),
+    };
+    const root = { getItems: vi.fn(async () => [clip]) };
+    const project = {
+      guid: "project-1",
+      getRootItem: vi.fn(async () => root),
+      lockedAccess: vi.fn((callback: () => void) => callback()),
+      executeTransaction: vi.fn((callback: (compound: { addAction: (action: { apply: () => void }) => boolean }) => void) => {
+        callback({ addAction: (action) => { action.apply(); return true; } });
+        return true;
+      }),
+    };
+    const ppro = {
+      Project: { getActiveProject: vi.fn(async () => project) },
+      ProjectItem: { cast: vi.fn((item: unknown) => item) },
+      ClipProjectItem: { cast: vi.fn((item: unknown) => item) },
+      FolderItem: { cast: vi.fn(() => null) },
+      TickTime: { createWithSeconds: vi.fn((seconds: number) => ({ seconds })) },
+    };
+    const registry = Commands.createCommandRegistry({ ppro, Protocol });
+
+    await expect(registry.dispatch("source.mediaTiming.inspect", { projectItemId: "clip-1" })).resolves.toEqual({
+      projectItemId: "clip-1", startSeconds: 10, durationSeconds: 60,
+      verificationBoundary: "source_media_timing_readback",
+    });
+    await expect(registry.dispatch("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 10, durationSeconds: 60 }, startSeconds: 12,
+    })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    expect(media.createSetStartAction).not.toHaveBeenCalled();
+    await expect(registry.dispatch("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 10 }, startSeconds: 12, confirmSetStart: true,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(media.createSetStartAction).not.toHaveBeenCalled();
+
+    const firstArgs = {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 10, durationSeconds: 60 },
+      startSeconds: 12, confirmSetStart: true, operationId: "source-start-1",
+    };
+    await expect(registry.dispatch("source.mediaTiming.setStart", firstArgs)).resolves.toMatchObject({
+      updated: true, projectItemId: "clip-1", outcome: "verified", operationId: "source-start-1",
+      before: { startSeconds: 10, durationSeconds: 60 }, after: { startSeconds: 12, durationSeconds: 60 },
+    });
+    expect(project.executeTransaction).toHaveBeenCalledWith(expect.any(Function), "Set source media start time");
+    await expect(registry.dispatch("source.mediaTiming.setStart", firstArgs)).resolves.toMatchObject({
+      replayed: true, operationId: "source-start-1",
+    });
+    expect(media.createSetStartAction).toHaveBeenCalledTimes(1);
+
+    const expectedTiming = { startSeconds: 12, durationSeconds: 60 };
+    const concurrentFirst = registry.dispatch("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming, startSeconds: 15, confirmSetStart: true, operationId: "source-start-2",
+    });
+    const concurrentSecond = registry.dispatch("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming, startSeconds: 18, confirmSetStart: true, operationId: "source-start-3",
+    });
+    await expect(concurrentFirst).resolves.toMatchObject({
+      updated: true, after: { startSeconds: 15, durationSeconds: 60 }, operationId: "source-start-2",
+    });
+    await expect(concurrentSecond).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    expect(media.createSetStartAction).toHaveBeenCalledTimes(2);
+    expect(project.executeTransaction).toHaveBeenCalledTimes(2);
+    expect(startSeconds).toBe(15);
+
+    await expect(registry.dispatch("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 12, durationSeconds: 60 },
+      startSeconds: 19, confirmSetStart: true,
+    })).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    expect(media.createSetStartAction).toHaveBeenCalledTimes(2);
+
+    await expect(registry.dispatch("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 15, durationSeconds: 60 },
+      startSeconds: 16, confirmSetStart: true, operationId: "source-start-4",
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+    expect(project.executeTransaction).toHaveBeenCalledTimes(3);
+    expect(startSeconds).toBe(16);
+    expect(durationSeconds).toBe(59);
+
+    const betaPromiseMedia = {
+      start: Promise.resolve({ seconds: 16 }),
+      duration: Promise.resolve({ seconds: 59 }),
+      createSetStartAction: vi.fn(),
+    };
+    clip.getMedia.mockResolvedValue(betaPromiseMedia);
+    await expect(registry.dispatch("source.mediaTiming.setStart", {
+      projectItemId: "clip-1", expectedTiming: { startSeconds: 16, durationSeconds: 59 },
+      startSeconds: 19, confirmSetStart: true,
+    })).rejects.toMatchObject({ code: "UXP_COMMAND_UNAVAILABLE" });
+    expect(betaPromiseMedia.createSetStartAction).not.toHaveBeenCalled();
+  });
+
+  it("guards, serializes, replays, and reads back source-media interpretation overrides", async () => {
+    let frameRate = 23.976, pixelAspectRatio = 1;
+    const clip = {
+      getId: vi.fn(async () => "clip-1"),
+      getFootageInterpretation: vi.fn(async () => ({
+        getFrameRate: () => frameRate,
+        getPixelAspectRatio: () => pixelAspectRatio,
+      })),
+      createSetOverrideFrameRateAction: vi.fn((value: number) => ({ apply: () => { frameRate = value; } })),
+      createSetOverridePixelAspectRatioAction: vi.fn((numerator: number, denominator: number) => ({
+        apply: () => { pixelAspectRatio = numerator / denominator; },
+      })),
+    };
+    const root = { getItems: vi.fn(async () => [clip]) };
+    const project = {
+      guid: "project-1",
+      getRootItem: vi.fn(async () => root),
+      lockedAccess: vi.fn((callback: () => void) => callback()),
+      executeTransaction: vi.fn((callback: (compound: { addAction: (action: { apply: () => void }) => boolean }) => void) => {
+        callback({ addAction: (action) => { action.apply(); return true; } });
+        return true;
+      }),
+    };
+    const ppro = {
+      Project: { getActiveProject: vi.fn(async () => project) },
+      ProjectItem: { cast: vi.fn((item: unknown) => item) },
+      ClipProjectItem: { cast: vi.fn((item: unknown) => item) },
+      FolderItem: { cast: vi.fn(() => null) },
+    };
+    const registry = Commands.createCommandRegistry({ ppro, Protocol });
+    const initial = { projectGuid: "project-1", frameRate: 23.976, pixelAspectRatio: 1 };
+
+    await expect(registry.dispatch("source.mediaOverrides.inspect", { projectItemId: "clip-1" })).resolves.toEqual({
+      ...initial,
+      projectItemId: "clip-1",
+      verificationBoundary: "source_media_effective_interpretation_readback",
+    });
+    await expect(registry.dispatch("source.mediaOverrides.update", {
+      projectItemId: "clip-1", expectedOverrides: initial, frameRate: 25,
+    })).rejects.toMatchObject({ code: "UXP_CONFIRMATION_REQUIRED" });
+    await expect(registry.dispatch("source.mediaOverrides.update", {
+      projectItemId: "clip-1", expectedOverrides: initial, frameRate: 25, confirmMediaInterpretation: true,
+    })).rejects.toMatchObject({ code: "UXP_INVALID_ARGUMENT" });
+    expect(clip.createSetOverrideFrameRateAction).not.toHaveBeenCalled();
+
+    const firstArgs = {
+      projectItemId: "clip-1", expectedOverrides: initial, frameRate: 25,
+      pixelAspectRatio: { numerator: 4, denominator: 3 }, confirmMediaInterpretation: true,
+      operationId: "source-override-1",
+    };
+    await expect(registry.dispatch("source.mediaOverrides.update", firstArgs)).resolves.toMatchObject({
+      updated: true, operationId: "source-override-1", outcome: "verified",
+      before: { projectGuid: "project-1", projectItemId: "clip-1", frameRate: 23.976, pixelAspectRatio: 1 },
+      after: { projectGuid: "project-1", projectItemId: "clip-1", frameRate: 25, pixelAspectRatio: 4 / 3 },
+      requested: { frameRate: 25, pixelAspectRatio: { numerator: 4, denominator: 3 } },
+    });
+    expect(project.executeTransaction).toHaveBeenCalledWith(expect.any(Function), "Set source media interpretation override");
+    await expect(registry.dispatch("source.mediaOverrides.update", firstArgs)).resolves.toMatchObject({
+      replayed: true, operationId: "source-override-1",
+    });
+    expect(clip.createSetOverrideFrameRateAction).toHaveBeenCalledTimes(1);
+    expect(clip.createSetOverridePixelAspectRatioAction).toHaveBeenCalledTimes(1);
+
+    const expectedCurrent = { projectGuid: "project-1", frameRate: 25, pixelAspectRatio: 4 / 3 };
+    const concurrentFirst = registry.dispatch("source.mediaOverrides.update", {
+      projectItemId: "clip-1", expectedOverrides: expectedCurrent, frameRate: 30,
+      confirmMediaInterpretation: true, operationId: "source-override-2",
+    });
+    const concurrentSecond = registry.dispatch("source.mediaOverrides.update", {
+      projectItemId: "clip-1", expectedOverrides: expectedCurrent, pixelAspectRatio: { numerator: 16, denominator: 9 },
+      confirmMediaInterpretation: true, operationId: "source-override-3",
+    });
+    await expect(concurrentFirst).resolves.toMatchObject({
+      updated: true, operationId: "source-override-2", after: { frameRate: 30, pixelAspectRatio: 4 / 3 },
+    });
+    await expect(concurrentSecond).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    expect(clip.createSetOverrideFrameRateAction).toHaveBeenCalledTimes(2);
+    expect(clip.createSetOverridePixelAspectRatioAction).toHaveBeenCalledTimes(1);
+    expect(frameRate).toBe(30);
+    expect(pixelAspectRatio).toBeCloseTo(4 / 3);
+
+    await expect(registry.dispatch("source.mediaOverrides.update", {
+      projectItemId: "clip-1", expectedOverrides: expectedCurrent, frameRate: 24,
+      confirmMediaInterpretation: true, operationId: "source-override-4",
+    })).rejects.toMatchObject({ code: "UXP_STALE_TARGET" });
+    expect(clip.createSetOverrideFrameRateAction).toHaveBeenCalledTimes(2);
+
+    clip.createSetOverrideFrameRateAction.mockImplementationOnce(() => ({ apply: () => { frameRate = 29.97; } }));
+    await expect(registry.dispatch("source.mediaOverrides.update", {
+      projectItemId: "clip-1", expectedOverrides: { projectGuid: "project-1", frameRate: 30, pixelAspectRatio: 4 / 3 }, frameRate: 24,
+      confirmMediaInterpretation: true, operationId: "source-override-5",
+    })).rejects.toMatchObject({ code: "UXP_VERIFICATION_FAILED" });
+    expect(project.executeTransaction).toHaveBeenCalledTimes(3);
+    expect(frameRate).toBe(29.97);
   });
 
   it("sets caption-track mute state through direct host promises and reads it back", async () => {

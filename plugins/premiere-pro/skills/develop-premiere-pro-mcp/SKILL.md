@@ -11,9 +11,9 @@ Premiere Pro host.
 
 ## Orient to the repository
 
-1. Read `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, and `RESEARCH.md` only as needed
-   for the task. Treat current source and release metadata as authoritative over dated
-   snapshots.
+1. Read `AGENTS.md` first, then `README.md`, `SECURITY.md`, `CONTRIBUTING.md`, and
+   `RESEARCH.md` only as needed for the task. Treat current source and release metadata
+   as authoritative over dated snapshots.
 2. Inspect `git status` before editing. Do not stage, rewrite, or remove unrelated work.
 3. Trace the relevant path before changing it:
    - `src/server.ts` assembles the MCP surface.
@@ -37,6 +37,18 @@ Premiere Pro host.
 - Prefer documented Premiere APIs. Label QE DOM behavior experimental.
 - Verify mutation postconditions. Do not treat a host API return value alone as proof of
   success, and do not silently fall back from failed UXP work to CEP or QE.
+- Premiere metadata is several documented surfaces, not one blob: Project-panel
+  column JSON (`getProjectColumnsMetadata`), Premiere-private project metadata XML,
+  file/clip XMP, panel-layout/schema XML, plus adjacent color-label, interpretation,
+  marker, and transcript tools. Documented `ppro.Metadata.*` methods are already
+  mapped. Do not wrap undocumented QE metadata, dump unbounded packets, or treat
+  `premiere://project/metadata` as XMP. Field-level inspect/update is bounded
+  (`uxp.XMPMeta` / AdobeXMPScript, 256 fields, sensitive EXIF omitted by default,
+  field readback). CEP still accepts a complete XML payload plus `updatedFields`.
+  Adobe exposes no field-level schema enumerator. Keep C2PA as beta until a
+  stable host pin exists. When adding metadata behavior, update
+  `src/workflows/agent-instructions.ts`, the workflow catalog prompt, and both
+  `edit-premiere-project` skill copies together.
 - Preserve private-directory ownership checks, authentication, size limits, secret
   handling, and telemetry privacy. Never collect prompts, arguments, results, tokens,
   IP addresses, project paths, media names, or person profiles.

@@ -16,11 +16,16 @@ const geistMono = Geist_Mono({
 });
 
 const siteUrl = "https://premiere-pro-mcp.com";
-const title = "Premiere Pro Workflow Automation | Local MCP Server";
+const title = "MCP for Adobe Premiere Pro | Reviewable Workflow Automation";
 const description =
-  "Use a compatible AI client to inspect local Premiere projects, preview bounded work, and verify supported workflow results before you rely on them.";
+  "Premiere Pro MCP connects compatible AI clients to local, reviewable Adobe Premiere Pro workflows with explicit previews, confirmation, and returned diagnostics.";
 const googleAnalyticsId =
   process.env.NEXT_PUBLIC_GOOGLE_ANALYTICS_ID ?? "G-XSH74T16E4";
+const posthogProjectToken =
+  process.env.NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN ??
+  "phc_ua4YCP5MJnrHUgWryu23xyuKYMuyVfwPacgYJYRwBVXb";
+const posthogHost =
+  process.env.NEXT_PUBLIC_POSTHOG_HOST ?? "https://us.i.posthog.com";
 
 export const metadata: Metadata = {
   title: {
@@ -34,10 +39,14 @@ export const metadata: Metadata = {
   creator: "MCP for Adobe Premiere Pro contributors",
   publisher: product.name,
   verification: {
+    other: { "ahrefs-site-verification": "433e9794fce9fecdaa8a314a3b3c3f1d14d146a9a65442cfdc794dfeb38066aa" },
     google: "DYKtInlwQzKguGVKyDbZY55-7gKySyg3N9yl9fERiho",
   },
   keywords: [
     "MCP for Adobe Premiere Pro",
+    "Premiere Pro MCP",
+    "Premiere Pro MCP server",
+    "Model Context Protocol for Premiere Pro",
     "Adobe Premiere Pro AI",
     "Model Context Protocol",
     "AI video editing",
@@ -46,8 +55,14 @@ export const metadata: Metadata = {
     "Premiere Pro scripting",
     "Claude MCP server",
     "MCP server for Adobe Premiere Pro",
+    "how to set up Premiere Pro MCP",
+    "AI Premiere Pro",
+    "how to set up Premiere Pro AI",
     "Cursor Premiere Pro integration",
     "Claude Premiere Pro integration",
+    "Claude Premiere Pro",
+    "ChatGPT Premiere Pro",
+    "Codex Premiere Pro",
     "AI video editor tools",
     "video editing automation",
   ],
@@ -75,8 +90,8 @@ export const metadata: Metadata = {
     images: ["/marketing/premiere-pro-mcp-social-square-v1.png"],
   },
   icons: {
-    icon: "/marketing/premiere-pro-mcp-mark-v1.png",
-    apple: "/marketing/premiere-pro-mcp-mark-v1.png",
+    icon: "/marketing/premiere-pro-mcp-icon-180.png",
+    apple: "/marketing/premiere-pro-mcp-icon-180.png",
   },
   robots: {
     index: true,
@@ -101,20 +116,34 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className="scroll-smooth" data-scroll-behavior="smooth">
+      <head>
+        <link
+          rel="alternate"
+          type="text/plain"
+          href="/llms.txt"
+          title="Machine-readable reference for MCP for Adobe Premiere Pro"
+        />
+        <link
+          rel="alternate"
+          type="text/plain"
+          href="/llms-full.txt"
+          title="Complete machine-readable reference for MCP for Adobe Premiere Pro"
+        />
+      </head>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
         <a className="skip-link" href="#main-content">Skip to main content</a>
         <MarketingPageView />
         {children}
-        {googleAnalyticsId ? (
-          <>
-            <Script
-              src="/analytics.js"
-              strategy="lazyOnload"
-              data-google-analytics-id={googleAnalyticsId}
-            />
-          </>
+        {googleAnalyticsId || posthogProjectToken ? (
+          <Script
+            src="/analytics.js"
+            strategy="lazyOnload"
+            data-google-analytics-id={googleAnalyticsId}
+            data-posthog-project-token={posthogProjectToken}
+            data-posthog-host={posthogHost}
+          />
         ) : null}
       </body>
     </html>

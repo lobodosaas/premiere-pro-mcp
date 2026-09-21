@@ -1,4 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { runInNewContext } from "node:vm";
 import { getHelpersSource } from "../../src/bridge/script-builder.js";
 import { BridgeOptions } from "../../src/bridge/file-bridge.js";
 
@@ -28,6 +32,25 @@ import { getPlayheadTools } from "../../src/tools/playhead.js";
 
 const mockedSendCommand = vi.mocked(sendCommand);
 const bridgeOptions: BridgeOptions = { tempDir: "/tmp/test-bridge", timeoutMs: 5000 };
+const temporaryDirectories: string[] = [];
+
+function temporaryPreset(): string {
+  const directory = mkdtempSync(join(tmpdir(), "premiere-ame-preset-"));
+  temporaryDirectories.push(directory);
+  const path = join(directory, "preset.epr");
+  writeFileSync(path, "<preset />");
+  return path;
+}
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    try {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    } catch {
+      // Windows can leave a locked temp dir after the test already observed the script.
+    }
+  }
+});
 
 /** Run a tool handler and return the ExtendScript it generated. */
 async function scriptFor(tool: { handler: (args: never) => Promise<unknown> }, args: unknown) {
@@ -45,6 +68,14 @@ async function scriptFor(tool: { handler: (args: never) => Promise<unknown> }, a
 async function codeFor(tool: { handler: (args: never) => Promise<unknown> }, args: unknown) {
   const script = await scriptFor(tool, args);
   return script.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+}
+
+async function executePixelAspectRatioScript(sequence: unknown, ratio = "1.4222") {
+  const utility = getUtilityTools(bridgeOptions);
+  const script = await scriptFor(utility.set_sequence_pixel_aspect_ratio, { ratio });
+  return JSON.parse(String(runInNewContext(`${getHelpersSource()}\n${script}`, {
+    app: { project: { activeSequence: sequence } },
+  })));
 }
 
 beforeEach(() => vi.clearAllMocks());
@@ -218,6 +249,10 @@ describe("issue #9 — frame export uses the QE DOM and verifies the file landed
     expect(helpers).toContain("seq.setInPoint(__ticksToSeconds(savedIn))");
     expect(helpers).toContain("seq.setOutPoint(__ticksToSeconds(savedOut))");
     expect(helpers).not.toContain("seq.setInPoint(String(startTicks))");
+    // If either in or out cannot be read, refuse the one-frame mutation rather
+    // than leaving the sequence pinned to the still-export range.
+    expect(helpers).toContain("savedIn === null || savedIn === undefined || savedOut === null || savedOut === undefined");
+    expect(helpers).toContain("could not read sequence in/out points, so they were not changed");
   });
 });
 
@@ -402,11 +437,12 @@ describe("issue #189 — Premiere 26.3 capability boundaries and macOS presets",
     const script = await scriptFor(timeline.add_to_timeline, {
       item_id: "clip-1", track_index: 0, audio_track_index: 0, start_seconds: 3.4,
     });
-    expect(script).toContain("beforeVideoCount");
-    expect(script).toContain("afterVideoCount > beforeVideoCount + 1");
-    expect(script).toContain("residual frame fragment");
-    expect(script).toContain("matchedItem");
-    expect(script).toContain("verified: true");
+    expect(script).toContain("__insertClipHonoringSyncLock(");
+    expect(getHelpersSource()).toContain("beforeVideoCount");
+    expect(getHelpersSource()).toContain("afterVideoCount > beforeVideoCount + expectedVideoAdded");
+    expect(getHelpersSource()).toContain("residual frame fragment");
+    expect(getHelpersSource()).toContain("matched");
+    expect(script).toContain("verified: outcome.data.verified");
   });
 });
 
@@ -416,7 +452,7 @@ describe("issue #194 — string-backed MOGRT effect properties", () => {
 
   it("accepts and safely serializes the JSON string exposed by MOGRT text properties", async () => {
     expect(keyframes.set_effect_property.parameters.properties.value).toMatchObject({
-      type: ["number", "string", "array"],
+      type: ["number", "string", "boolean", "array", "object"],
     });
 
     const script = await scriptFor(keyframes.set_effect_property, {
@@ -428,7 +464,7 @@ describe("issue #194 — string-backed MOGRT effect properties", () => {
 
     expect(script).toContain('var requestedValue = "{\\"textEditValue\\":\\"Hello \\\\\\\"editor\\\\\\\"\\"}";');
     expect(script).toContain("prop.setValue(requestedValue, true)");
-    expect(script).toContain("readbackMatches(requestedValue, readbackValue)");
+    expect(script).toContain("__sameParameterValue(readbackValue, requestedValue)");
     expect(script).toContain("readbackVerified: true");
   });
 });
@@ -522,6 +558,105 @@ describe("issue #37 — sequence frame rate uses ticks per frame", () => {
   });
 });
 
+// https://github.com/leancoderkavy/premiere-pro-mcp/issues/335
+describe("issue #335 — pixel aspect ratio must fail closed on unsupported CEP hosts", () => {
+  const utility = getUtilityTools(bridgeOptions);
+
+  it("checks host support and verifies the readback before reporting success", async () => {
+    const script = await codeFor(utility.set_sequence_pixel_aspect_ratio, { ratio: "1.0" });
+
+    expect(script).toContain("currentRatio = settings.videoPixelAspectRatio");
+    expect(script).toContain('typeof currentRatio === "undefined"');
+    expect(script).toContain("No sequence settings were changed");
+    expect(script).toContain("settings.videoPixelAspectRatio = requestedRatio");
+    expect(script).toContain("observed = seq.getSettings()");
+    expect(script).toContain("observedRatio = String(observed.videoPixelAspectRatio)");
+    expect(script.indexOf('typeof currentRatio === "undefined"'))
+      .toBeLessThan(script.indexOf("settings.videoPixelAspectRatio = requestedRatio"));
+  });
+
+  it("returns structured failures for unavailable and rejected host settings", async () => {
+    const unavailableSetSettings = vi.fn();
+    await expect(executePixelAspectRatioScript({
+      name: "Unsupported setting",
+      getSettings: () => ({}),
+      setSettings: unavailableSetSettings,
+    })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("does not expose a writable"),
+    });
+    expect(unavailableSetSettings).not.toHaveBeenCalled();
+
+    const lockedSettings: Record<string, string> = {};
+    Object.defineProperty(lockedSettings, "videoPixelAspectRatio", {
+      get: () => "1.0",
+      set: () => { throw new Error("locked"); },
+    });
+    const rejectedSetSettings = vi.fn();
+    await expect(executePixelAspectRatioScript({
+      name: "Read-only setting",
+      getSettings: () => lockedSettings,
+      setSettings: rejectedSetSettings,
+    })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("rejected the sequence pixel-aspect-ratio update"),
+    });
+    expect(rejectedSetSettings).not.toHaveBeenCalled();
+
+    await expect(executePixelAspectRatioScript({
+      name: "Apply failure",
+      getSettings: () => ({ videoPixelAspectRatio: "1.0" }),
+      setSettings: () => { throw new Error("host refused"); },
+    })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("could not apply the sequence pixel-aspect-ratio update"),
+    });
+  });
+
+  it("treats a false host result and mismatched readback as unverified", async () => {
+    await expect(executePixelAspectRatioScript({
+      name: "Rejected return value",
+      getSettings: () => ({ videoPixelAspectRatio: "1.0" }),
+      setSettings: () => false,
+    })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("rejected the sequence pixel-aspect-ratio update"),
+    });
+
+    const initialSettings = { videoPixelAspectRatio: "1.0" };
+    await expect(executePixelAspectRatioScript({
+      name: "Mismatched readback",
+      getSettings: vi.fn().mockReturnValueOnce(initialSettings).mockReturnValueOnce({ videoPixelAspectRatio: "1.0" }),
+      setSettings: () => undefined,
+    })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("did not apply the requested sequence pixel aspect ratio"),
+    });
+  });
+
+  it("reports success only after an applied setting reads back exactly", async () => {
+    const settings = { videoPixelAspectRatio: "1.0" };
+    const result = await executePixelAspectRatioScript({
+      name: "Verified sequence",
+      getSettings: () => settings,
+      setSettings: () => true,
+    });
+
+    expect(result).toEqual({
+      success: true,
+      data: { ratio: "1.4222", sequence: "Verified sequence", verified: true },
+    });
+  });
+
+  it("rejects non-string aspect ratios before sending a Premiere command", async () => {
+    mockedSendCommand.mockClear();
+    const result = await utility.set_sequence_pixel_aspect_ratio.handler({ ratio: 1 as never });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+});
+
 // https://github.com/leancoderkavy/premiere-pro-mcp/issues/235
 describe("issue #235 — CEP tool calls use the host's documented argument types", () => {
   const utility = getUtilityTools(bridgeOptions);
@@ -532,7 +667,8 @@ describe("issue #235 — CEP tool calls use the host's documented argument types
     const script = await scriptFor(utility.set_sequence_pixel_aspect_ratio, { ratio: "1.0" });
 
     expect(utility.set_sequence_pixel_aspect_ratio.parameters.properties.ratio).toMatchObject({ type: "string" });
-    expect(script).toContain('settings.videoPixelAspectRatio = "1.0"');
+    expect(script).toContain('var requestedRatio = "1.0"');
+    expect(script).toContain("settings.videoPixelAspectRatio = requestedRatio");
     expect(script).toContain("seq.getSettings()");
     expect(script).toContain("Premiere did not apply the requested sequence pixel aspect ratio");
   });
@@ -644,6 +780,8 @@ describe("issue #237 — reported mutations must be observable or fail", () => {
 
     expect(imports).toContain("new File");
     expect(imports).toContain("beforeIds");
+    expect(duplicates).toContain("var nodeId = String(item.nodeId || \"\")");
+    expect(duplicates).toContain("pathMap[mediaPath].nodeIds[nodeId]");
     expect(imports).toContain("Premiere did not add any of the requested sequences");
     expect(duplicates).toContain("__duplicateMediaStats");
     expect(duplicates).toContain("duplicate media groups did not decrease");
@@ -682,7 +820,7 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
   const exports = getExportTools(bridgeOptions);
 
   it("captures AME job IDs and does not present queueing as a completed encode", async () => {
-    const queued = await scriptFor(exports.add_to_render_queue, { output_path: "/tmp/render.mp4" });
+    const queued = await scriptFor(exports.add_to_render_queue, { output_path: "/tmp/render.mp4", preset_path: temporaryPreset() });
     const projectItem = await scriptFor(exports.encode_project_item, {
       item_id: "item-1",
       output_path: "/tmp/render.mp4",
@@ -691,7 +829,7 @@ describe("issue #238 — AME uses canonical paths and documented encodeFile posi
 
     expect(queued).toContain("var outputFile = new File");
     expect(queued).toContain("var jobId = encoder.encodeSequence");
-    expect(queued).toContain("this does not prove that asynchronous encoding finished");
+    expect(queued).toContain("Queue presence and output-file creation are not verified");
     expect(projectItem).toContain("outputFile.fsName");
     expect(projectItem).toContain("var jobId = app.encoder.encodeProjectItem");
   });
@@ -814,7 +952,7 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
 
   it("serializes an [x, y] set_effect_property value as an array literal with element-wise verification", async () => {
     expect(keyframes.set_effect_property.parameters.properties.value).toMatchObject({
-      type: ["number", "string", "array"],
+      type: ["number", "string", "boolean", "array", "object"],
     });
 
     const script = await scriptFor(keyframes.set_effect_property, {
@@ -826,7 +964,7 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
 
     expect(script).toContain("var requestedValue = [0.5, 0.555013];");
     expect(script).toContain("prop.setValue(requestedValue, true)");
-    expect(script).toContain("var requestedIsArray = true");
+    expect(script).toContain("__sameParameterValue(readbackValue, requestedValue)");
   });
 
   it("rejects malformed set_effect_property arrays before bridge access", async () => {
@@ -834,12 +972,12 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
       node_id: "clip-1",
       effect_name: "Movimento",
       property_name: "Posição",
-      value: [0.5],
+      value: [0.5, 0.5, 0.5, 0.5, 0.5],
     });
 
     expect(result).toEqual({
       success: false,
-      error: "Array values must be a two-element [x, y] array of numbers; no mutation was attempted.",
+      error: "value must be an array of 1 to 4 numbers for a vector property",
     });
     expect(mockedSendCommand).not.toHaveBeenCalled();
   });
@@ -853,7 +991,7 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
     });
 
     expect(script).not.toMatch(/\.every\(/);
-    expect(script).toContain("readbackMatches(requestedValue, readbackValue");
+    expect(script).toContain("__sameParameterValue(actual[index], expected[index])");
   });
 
   it("snapshots the previous value before writing and restores it when verification fails", async () => {
@@ -987,5 +1125,197 @@ describe("caption array keyframes — Position [x, y] and relative removal", () 
     });
     expect(result.success).toBe(false);
     expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+});
+// https://github.com/leancoderkavy/premiere-pro-mcp/issues/322
+describe("issue #322 — marker filtering retains the requested sequence collection", () => {
+  const utility = getUtilityTools(bridgeOptions);
+
+  it("resolves the requested sequence once and returns its identity with the marker set", async () => {
+    const script = await scriptFor(utility.get_sequence_markers_by_type, {
+      sequence_id: "target-sequence", marker_type: "Comment",
+    });
+
+    expect(script).toContain('var seq = __findSequence("target-sequence")');
+    expect(script).toContain("var selectedSequence = { id: String(seq.sequenceID)");
+    expect(script).toContain("var markerCollection = seq.markers");
+    expect(script).toContain("markerCollection.getFirstMarker()");
+    expect(script).toContain("markerCollection.getNextMarker(m)");
+    expect(script).toContain("sequence: selectedSequence");
+  });
+});
+
+// https://github.com/leancoderkavy/premiere-pro-mcp/issues/323
+describe("issue #323 — AME handoffs are unverified until a queue or file readback", () => {
+  const exports = getExportTools(bridgeOptions);
+  const project = getProjectTools(bridgeOptions);
+
+  it("does not present AME acceptance as a queued, started, or completed encode", async () => {
+    const render = await scriptFor(exports.add_to_render_queue, { output_path: "/tmp/render.mp4", preset_path: temporaryPreset() });
+    const item = await scriptFor(exports.encode_project_item, {
+      item_id: "item-1", output_path: "/tmp/render.mp4", preset_path: "/tmp/preset.epr",
+    });
+    const proxy = await scriptFor(exports.manage_proxies, {
+      item_id: "item-1", action: "create", output_path: "/tmp/proxy.mov", preset_path: "/tmp/proxy.epr",
+    });
+    const file = await scriptFor(exports.encode_file, {
+      input_path: "/tmp/source.mov", output_path: "/tmp/render.mp4", preset_path: "/tmp/preset.epr",
+    });
+    const batch = await scriptFor(project.start_batch_encode, {});
+
+    for (const script of [render, item, proxy, file]) {
+      expect(script).toContain('if (!jobId || String(jobId) === "0") return __error');
+      expect(script).toContain("accepted: true");
+      expect(script).toContain('outcome: "committed_unverified"');
+      expect(script).not.toContain("queued: true");
+    }
+    expect(batch).toContain("requested: true");
+    expect(batch).toContain('outcome: "committed_unverified"');
+    expect(batch).not.toContain("started: true");
+    expect(batch).toContain("var startResult = app.encoder.startBatch()");
+    expect(batch).toContain("if (startResult !== 1 && startResult !== true)");
+  });
+});
+
+// https://github.com/leancoderkavy/premiere-pro-mcp/issues/324
+describe("issue #324 — duplicate media requires distinct project-item node IDs", () => {
+  const utility = getUtilityTools(bridgeOptions);
+
+  it("deduplicates each media path by stable node ID before forming a group", async () => {
+    const script = await scriptFor(utility.get_duplicate_media, {});
+
+    expect(script).toContain("var nodeId = String(item.nodeId || \"\")");
+    expect(script).toContain("pathMap[mp] = { items: [], nodeIds: {} }");
+    expect(script).toContain("if (!pathMap[mp].nodeIds[nodeId])");
+    expect(script).toContain("pathMap[path].items.length > 1");
+    expect(script).not.toContain("pathMap[path].length > 1");
+  });
+});
+
+// https://github.com/leancoderkavy/premiere-pro-mcp/issues/326
+describe("issue #326 — sequence creation requires project-collection readback", () => {
+  const sequence = getSequenceTools(bridgeOptions);
+
+  it("does not report a QE-active sequence as created unless it is discoverable", async () => {
+    const script = await scriptFor(sequence.create_sequence, {
+      name: "Verified Sequence", preset_path: "/tmp/sequence.sqpreset",
+    });
+    expect(script).toContain("var beforeSequenceIds = {}");
+    expect(script).toContain("var sequenceId = String(seq.sequenceID)");
+    expect(script).toContain("if (beforeSequenceIds[sequenceId])");
+    expect(script).toContain("did not create a new sequence");
+    expect(script).toContain("var created = __findSequence(sequenceId)");
+    expect(script).toContain("no creation success is reported");
+    expect(script).toContain("verified: true");
+  });
+});
+
+// https://github.com/leancoderkavy/premiere-pro-mcp/issues/327
+describe("issue #327 — legacy media replacement is fail-closed", () => {
+  const clipboard = getClipboardTools(bridgeOptions);
+
+  it("never uses overwriteClip when duration and adjacent-track preservation cannot be verified", async () => {
+    expect(clipboard.replace_clip_media.operationalCapability).toMatchObject({
+      backend: "local", backends: ["local"], status: "unsupported", hostVerificationRequired: false,
+    });
+    const result = await clipboard.replace_clip_media.handler({ clip_node_id: "clip-1", new_item_id: "item-2" } as never);
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("No mutation was attempted") });
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+});
+
+// QE still-frame export on Premiere 26.5 / 27 (macOS, verified 2026-09-12 against a
+// hold-keyframe camera switch): exportFramePNG/exportFrameJPEG take
+// (timecodeString, pathWithoutExtension). A (path, width, height) call returns false
+// and writes nothing; a ticks string exports frame 0. And /Applications/<Adobe app>/
+// is a plain folder holding the .app bundle, so Contents lives one level down.
+describe("QE still frames are addressed by timecode and macOS bundles are resolved one level down", () => {
+  it("formats the frame with Time.getFormatted in the sequence display format and strips the extension", () => {
+    const helpers = getHelpersSource();
+
+    expect(helpers).toContain("function __qeTimecodeForTicks(");
+    expect(helpers).toContain("getFormatted(fr, displayFormat)");
+    expect(helpers).toContain("fn.call(qeSeq, at.timecode, basePath)");
+    expect(helpers).not.toContain("fn.call(qeSeq, outputPath, w, h)");
+    // The timecode argument alone selects the frame; the editor's playhead is left alone.
+    expect(helpers).not.toContain("seq.setPlayerPosition(String(ticks))");
+  });
+
+  it("looks for Contents inside <app folder>/<name>.app on macOS", () => {
+    const helpers = getHelpersSource();
+
+    expect(helpers).toContain("/\\.app$/i");
+    expect(helpers).toContain('"/Contents/" + relativePath');
+  });
+});
+
+// https://github.com/leancoderkavy/premiere-pro-mcp/issues/503
+describe("issue #503 — trim_clip partial write rollback prevents clip corruption", () => {
+  const timeline = getTimelineTools(bridgeOptions);
+
+  it("captures original source points before attempting trim", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    expect(script).toContain("var originalInPointTicks = String(clip.inPoint.ticks)");
+    expect(script).toContain("var originalOutPointTicks = String(clip.outPoint.ticks)");
+  });
+
+  it("detects partial write when source metadata changed but timeline didn't move", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    expect(script).toContain("var sourceMetadataChanged = afterInTicks !== originalInPointTicks || afterOutTicks !== originalOutPointTicks");
+    expect(script).toContain("var timelineMoved = afterStartTicks !== originalStartTicks || afterEndTicks !== originalEndTicks");
+  });
+
+  it("rolls back source metadata when partial write is detected", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    expect(script).toContain("if (sourceMetadataChanged)");
+    expect(script).toContain("restoredIn.ticks = originalInPointTicks");
+    expect(script).toContain("restoredOut.ticks = originalOutPointTicks");
+    expect(script).toContain("afterResult.clip.inPoint = restoredIn");
+    expect(script).toContain("afterResult.clip.outPoint = restoredOut");
+  });
+
+  it("verifies rollback succeeded before reporting the error", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    expect(script).toContain("var rolledBack = __findClip");
+    expect(script).toContain("var rollbackSucceeded = String(rolledBack.clip.inPoint.ticks) === originalInPointTicks");
+    expect(script).toContain("String(rolledBack.clip.outPoint.ticks) === originalOutPointTicks");
+  });
+
+  it("explains partial write with rollback and provides workaround guidance", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    expect(script).toContain("The write partially changed source metadata without moving the timeline edge");
+    expect(script).toContain("would poison the clip for future trims");
+    expect(script).toContain("The source metadata was rolled back to its original state");
+    expect(script).toContain("set in/out on Source Monitor before placing via create_sequence_from_clips");
+  });
+
+  it("distinguishes between partial write (rollback) and no-op (no rollback needed)", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    // Partial write path: sourceMetadataChanged is true
+    expect(script).toContain("if (sourceMetadataChanged)");
+    expect(script).toContain("rolled back to its original state");
+
+    // No-op path: sourceMetadataChanged is false
+    expect(script).toContain("The source metadata was unchanged, so the clip remains consistent");
+  });
+
+  it("reports rollback verification failure distinctly", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    expect(script).toContain("rollback of source metadata could not be verified");
+    expect(script).toContain("The clip may be in an inconsistent state");
+    expect(script).toContain("Use Undo to restore it");
+  });
+
+  it("handles clip not found after partial write", async () => {
+    const script = await scriptFor(timeline.trim_clip, { node_id: "clip-1", new_in_seconds: 0.3 });
+
+    expect(script).toContain("the clip could not be re-found for rollback");
   });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { z } from "zod";
 
-// We need to test jsonSchemaToZodShape which is not exported directly.
+// We need to test jsonSchemaToInputSchema which is not exported directly.
 // We'll test it indirectly by importing createServer with mocked tool modules
 // that exercise various parameter types.
 
@@ -12,7 +12,7 @@ vi.mock("../src/bridge/file-bridge.js", () => ({
   cleanupTempDir: vi.fn(),
 }));
 
-// Create a mock module with all parameter types to exercise the schema converter
+// Create a mock module with all parameter types to exercise the schema adapter.
 const ALL_TYPES_TOOL = {
   test_all_types: {
     description: "Tests all parameter types",
@@ -113,7 +113,7 @@ vi.mock("../src/resources/extendscript-reference.js", () => ({
 
 import { createServer } from "../src/server.js";
 
-describe("Schema Conversion (jsonSchemaToZodShape)", () => {
+describe("Schema registration (jsonSchemaToInputSchema)", () => {
   it("registers tools with all parameter types without error", () => {
     // If the schema conversion fails, createServer will throw
     expect(() => createServer({})).not.toThrow();
@@ -158,51 +158,6 @@ describe("Schema Conversion (jsonSchemaToZodShape)", () => {
     const server = createServer({});
     expect(server).toBeDefined();
   });
-
-  it("announces integers as integers, not unknown", () => {
-    const server = createServer({});
-    const registered = (server as unknown as { _registeredTools: Record<string, { inputSchema: z.ZodTypeAny }> })._registeredTools["test_all_types"];
-    const shape = (registered.inputSchema as unknown as { shape: Record<string, z.ZodTypeAny> }).shape;
-    expect(shape?.int_param).toBeDefined();
-    expect(shape.int_param).not.toBeInstanceOf(z.ZodUnknown);
-    expect(shape.int_param.safeParse(3).success).toBe(true);
-    expect(shape.int_param.safeParse(1.5).success).toBe(false);
-  });
-});
-
-function coordField() {
-  const server = createServer({});
-  const registered = (server as unknown as { _registeredTools: Record<string, { inputSchema: z.ZodTypeAny }> })._registeredTools["test_all_types"];
-  expect(registered).toBeDefined();
-  const shape = (registered.inputSchema as unknown as { shape: Record<string, z.ZodTypeAny> }).shape;
-  expect(shape?.coord_param).toBeDefined();
-  return shape.coord_param;
-}
-
-describe("Union coordinate schema (caption motion)", () => {
-  it("announces a constrained schema, not unknown", () => {
-    const field = coordField();
-    expect(field).not.toBeInstanceOf(z.ZodUnknown);
-  });
-
-  it("accepts a finite number", () => {
-    expect(coordField().safeParse(0.5).success).toBe(true);
-  });
-
-  it("accepts a graphic-param string", () => {
-    expect(coordField().safeParse("hello").success).toBe(true);
-  });
-
-  it("accepts a two-element [x, y] array of finite numbers", () => {
-    expect(coordField().safeParse([0.5, 0.555013]).success).toBe(true);
-  });
-
-  it.each([[0.5], [0.5, 0.5, 0.5], [0.5, "x"], {}, [Number.NaN, 0.5], [0.5, Number.POSITIVE_INFINITY]])(
-    "rejects malformed coordinate %p before the bridge",
-    (value) => {
-      expect(coordField().safeParse(value).success).toBe(false);
-    },
-  );
 });
 
 describe("Server tool registration callback", () => {

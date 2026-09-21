@@ -2,6 +2,12 @@ import { z } from "zod";
 
 export const WORKFLOW_CATALOG = [
   {
+    id: "film-editorial",
+    title: "Review film editorial coverage and handoff",
+    summary: "Capture source and timeline context, supply an explicit film manifest, inspect coverage and review layouts, resolve revision-bound notes and turnover exceptions, then use separately guarded host tools for approved edits and exports.",
+    recommendedTools: ["manage_project_context", "inspect_film_editorial_workflow", "create_editorial_plan", "preview_editorial_plan", "diff_sequence_snapshots"],
+  },
+  {
     id: "rough-cut",
     title: "Assemble a rough cut",
     summary: "Inspect the project, import media, create or select a sequence, assemble clips, then verify and save.",
@@ -29,7 +35,7 @@ export const WORKFLOW_CATALOG = [
     id: "delivery",
     title: "Prepare a delivery export",
     summary: "Validate the sequence and destination, export with an explicit preset, then report the produced artifact.",
-    recommendedTools: ["get_premiere_state", "get_active_sequence", "export_sequence"],
+    recommendedTools: ["get_premiere_state", "get_active_sequence", "export_sequence", "verify_delivery_file", "verify_delivery_conformance"],
   },
   {
     id: "contextual-rough-cut",
@@ -38,10 +44,23 @@ export const WORKFLOW_CATALOG = [
     recommendedTools: ["manage_project_context", "search_project_context", "create_context_edit_plan", "preview_edit_plan", "apply_edit_plan"],
   },
   {
+    id: "transcript-first-context",
+    title: "Review a transcript-first context pack",
+    summary: "Capture explicit local transcript and media evidence, compact only the passages relevant to the intent, then review stable evidence IDs and revisions before proposing an edit.",
+    recommendedTools: ["manage_project_context", "create_editorial_context_pack", "create_editorial_plan", "preview_editorial_plan"],
+  },
+  {
     id: "transcript-rough-cut",
     title: "Plan a transcript-driven rough cut",
     summary: "Export Premiere's native transcript, select revision-locked source ranges, map them to verified 1x placements in a duplicate sequence, then execute the descending cut plan with re-query verification.",
     recommendedTools: ["get_clip_transcript_uxp", "search_clip_transcript_uxp", "preview_transcript_edit_uxp", "plan_transcript_rough_cut_uxp", "manage_sequences_uxp", "split_clip", "get_sequence_structure"],
+  },
+  {
+    id: "metadata-review",
+    title: "Review and update clip metadata",
+    summary: "Inspect visible Project-panel columns first, then named project/XMP fields. Request full XML only when needed. Writes use field_name/value or complete XML, or a locked UXP field/packet transaction with readback; schema creation does not set per-item values.",
+    recommendedTools: ["get_metadata", "get_xmp_metadata", "inspect_project_panel_metadata_uxp", "manage_metadata_uxp", "set_metadata", "set_xmp_metadata"],
+    promptNotes: "Prefer inspect_project_panel_metadata_uxp action item_columns or manage_metadata_uxp inspect_fields / get_metadata parse_fields. Request full project-metadata XML or XMP only when a named field is missing. Premiere-private project metadata is not file XMP. Do not treat premiere://project/metadata as a packet dump. Writes use field_name/value or complete XML, or a UXP update_field/update with readback; never fall back from a failed UXP write to CEP.",
   },
   {
     id: "project-organization",
@@ -62,10 +81,40 @@ export const WORKFLOW_CATALOG = [
     recommendedTools: ["manage_project_context", "create_editorial_plan", "preview_editorial_plan", "import_media", "create_caption_track", "get_sequence_structure"],
   },
   {
+    id: "reaction-shorts",
+    title: "Caption and deliver reaction Shorts",
+    summary: "Plan stacked speaker-colored captions without guessing unknown speakers, place a mid-video subscribe overlay, export into a series-named folder, then verify review frames before delivery.",
+    recommendedTools: ["plan_reaction_captions", "plan_short_subscribe_cta", "plan_short_export_folder", "import_mogrt", "export_sequence_review_frames", "export_sequence"],
+  },
+  {
     id: "platform-cutdown",
     title: "Plan platform cutdowns",
     summary: "Capture source-sequence context, propose bounded platform dimensions, review derivative sequence routes, then create and verify each cutdown deliberately.",
     recommendedTools: ["manage_project_context", "create_editorial_plan", "preview_editorial_plan", "manage_sequences_uxp", "auto_reframe_sequence", "get_sequence_structure", "export_sequence"],
+  },
+  {
+    id: "dialogue-first-cut",
+    title: "Review a dialogue-first cut",
+    summary: "Analyze supplied transcript evidence locally, review deterministic candidates, lock source revisions, then create and structurally verify a new ordinary sequence.",
+    recommendedTools: ["get_clip_transcript_uxp", "analyze_dialogue_edit_candidates", "preview_derived_dialogue_sequence_uxp", "apply_derived_dialogue_sequence_uxp", "get_sequence_structure"],
+  },
+  {
+    id: "podcast-first-cut",
+    title: "Review a podcast first cut",
+    summary: "Review speaker and synchronization assignments, bind every camera segment to a transcript revision and master-audio range, then create a new ordinary sequence without changing sources.",
+    recommendedTools: ["get_clip_transcript_uxp", "analyze_dialogue_edit_candidates", "preview_derived_dialogue_sequence_uxp", "apply_derived_dialogue_sequence_uxp", "inspect_sequence_review_report"],
+  },
+  {
+    id: "watched-media-intake",
+    title: "Review watched media intake",
+    summary: "Start a session-scoped local watcher, inspect its path-redacted candidate set, then deliberately import only approved files.",
+    recommendedTools: ["manage_media_watch", "preview_watched_media_import", "import_project_media_uxp", "get_project_info"],
+  },
+  {
+    id: "recipe-driven-edit",
+    title: "Preview a workflow recipe",
+    summary: "Select a built-in or workspace-local declarative recipe, review its allowlisted tool manifest, then execute each step through the normal guarded tools.",
+    recommendedTools: ["search_workflow_recipes", "preview_workflow_recipe", "get_premiere_state"],
   },
 ] as const;
 
@@ -75,6 +124,7 @@ export const WORKFLOW_RESOURCE = JSON.stringify(
     guidance: [
       "Inspect current state before mutating the project.",
       "Re-query clip identifiers after timeline edits.",
+      "Prefer visible Project-panel column JSON over dumping full XMP or project-metadata packets.",
       "Ask for confirmation before destructive edits or final exports when intent is ambiguous.",
       "Verify the resulting sequence and save only after successful edits.",
     ],
@@ -105,6 +155,7 @@ export const WORKFLOW_PROMPTS = WORKFLOW_CATALOG.map((workflow) => ({
             `Use the ${workflow.title.toLowerCase()} workflow to accomplish: ${goal}`,
             constraints ? `Constraints: ${constraints}` : undefined,
             `Begin with project inspection. Prefer these tools when applicable: ${workflow.recommendedTools.join(", ")}.`,
+            "promptNotes" in workflow ? workflow.promptNotes : undefined,
             "Before each mutation, validate the active project/sequence and relevant identifiers. After editing, inspect the result and clearly report completed, skipped, and failed steps.",
           ].filter(Boolean).join("\n"),
         },

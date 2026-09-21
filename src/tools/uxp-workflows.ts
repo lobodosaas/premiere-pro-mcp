@@ -5,6 +5,7 @@ type WorkflowArgs = {
   media_type?: string;
   track_index?: number;
   clip_index?: number;
+  expected_sequence_guid?: string;
   effect_id?: string;
   insertion_index?: number;
   component_index?: number;
@@ -25,6 +26,21 @@ type WorkflowArgs = {
   project_metadata?: string;
   xmp_metadata?: string;
   updated_fields?: string[];
+  expected_project_guid?: string;
+  expected_project_panel_metadata?: string;
+  project_panel_metadata?: string;
+  confirm_update?: boolean;
+  field_name?: string;
+  field_label?: string;
+  field_namespace?: string;
+  packet?: string;
+  include_sensitive?: boolean;
+  namespaces?: string[];
+  packets?: string[];
+  expected_value?: string;
+  value?: string;
+  schema_field_type?: string;
+  confirm_create?: boolean;
   frame_rate?: number;
   pixel_aspect_ratio?: number;
   field_type?: number;
@@ -43,7 +59,6 @@ type WorkflowArgs = {
   folder_types?: string[];
   destination?: string;
   operation_id?: string;
-  expected_sequence_guid?: string;
   selection_items?: TimelineSelectionItemArgs[];
   selection_targets?: TimelineSelectionTargetArgs[];
 };
@@ -143,6 +158,25 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
         });
         return invalidAction(args.action);
       },
+    },
+
+    inspect_track_item_identity_uxp: {
+      description: "Inspect one active-sequence clip's native match name, item type, media UUID, reported track index, and selection state through documented UXP APIs. It rechecks the active sequence identity before returning and does not expose media paths, effect parameters, or rendered output.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          media_type: { type: "string", enum: ["video", "audio"] },
+          track_index: { type: "integer", minimum: 0 },
+          clip_index: { type: "integer", minimum: 0 },
+          expected_sequence_guid: { type: "string", minLength: 1, maxLength: 512, description: "Optional stale-snapshot guard from a recent identity inspection." },
+        },
+        required: ["media_type", "track_index", "clip_index"],
+      },
+      handler: async (args: WorkflowArgs) => invoke(bridge, "trackItem.identity.inspect", {
+        mediaType: args.media_type, trackIndex: args.track_index, clipIndex: args.clip_index,
+        ...(args.expected_sequence_guid === undefined ? {} : { expectedSequenceGuid: args.expected_sequence_guid }),
+      }),
     },
 
     batch_selected_clips_uxp: {
@@ -265,7 +299,7 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     detect_scene_edits_uxp: {
-      description: "Run Premiere's documented scene-edit detection on the current timeline selection using cuts, markers, or subclips. This direct host mutation is not claimed undoable.",
+      description: "Run Premiere's documented scene-edit detection on the current timeline selection using cuts, markers, or subclips. create_markers still runs when a selected item has no marker collection and reports committed_unverified if no markers can be read back. This direct host mutation is not claimed undoable.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -341,22 +375,44 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
     },
 
     manage_metadata_uxp: {
-      description: "Read bounded project/XMP metadata or update either form together in one locked, undoable Premiere transaction with readback evidence.",
+      description: "Read bounded project/XMP metadata, inspect named fields from column JSON and XMP, or update one field/packet together in a locked undoable Premiere transaction with readback. Prefer inspect_fields or item_columns before requesting full XML. GPS and camera serials are omitted unless include_sensitive is true.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
         properties: {
-          action: { type: "string", enum: ["get", "update"] },
+          action: { type: "string", enum: ["get", "update", "inspect_fields", "update_field"] },
           ...projectItemProperties,
           project_metadata: { type: "string", maxLength: 350000, description: "Project metadata; combined readback is limited to a 900,000-byte serialized UTF-8 result." },
           xmp_metadata: { type: "string", maxLength: 350000, description: "XMP metadata; combined readback is limited to a 900,000-byte serialized UTF-8 result." },
           updated_fields: { type: "array", minItems: 1, maxItems: 128, items: { type: "string", minLength: 1, maxLength: 512 } },
+          include_sensitive: { type: "boolean", description: "For inspect_fields, include GPS, serials, and similar EXIF. Default false." },
+          namespaces: {
+            type: "array", minItems: 1, maxItems: 8,
+            items: { type: "string", minLength: 1, maxLength: 512 },
+            description: "Optional inspect_fields filter: namespace URI or alias (premiere, dc, xmp, xmpDM, exif, iptc, photoshop).",
+          },
+          packets: {
+            type: "array", minItems: 1, maxItems: 3,
+            items: { type: "string", enum: ["columns", "project", "xmp"] },
+            description: "Optional inspect_fields packet selection. Default is columns, project, and xmp.",
+          },
+          packet: { type: "string", enum: ["project", "xmp"], description: "Required for update_field. project is Premiere-private metadata; xmp is the file/clip packet." },
+          field_namespace: { type: "string", minLength: 1, maxLength: 512, description: "XMP namespace URI or alias. Default premiere for project updates; required for xmp updates." },
+          field_name: { type: "string", minLength: 1, maxLength: 512, description: "Required for update_field. Example: Column.Intrinsic.LogNote or dc description." },
+          value: { type: "string", maxLength: 4096, description: "Required replacement value for update_field." },
+          expected_value: { type: "string", maxLength: 4096, description: "Optional compare-and-set guard for update_field." },
           operation_id: operationId,
         },
         required: ["action"],
       },
       handler: async (args: WorkflowArgs) => {
         if (args.action === "get") return invoke(bridge, "metadata.get", target(args));
+        if (args.action === "inspect_fields") return invoke(bridge, "metadata.fields.inspect", {
+          ...target(args),
+          ...(args.include_sensitive === undefined ? {} : { includeSensitive: args.include_sensitive }),
+          ...(args.namespaces === undefined ? {} : { namespaces: args.namespaces }),
+          ...(args.packets === undefined ? {} : { packets: args.packets }),
+        });
         if (args.action === "update") return invoke(bridge, "metadata.update", {
             ...target(args),
             ...(args.project_metadata === undefined ? {} : { projectMetadata: args.project_metadata }),
@@ -364,6 +420,123 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
             ...(args.updated_fields === undefined ? {} : { updatedFields: args.updated_fields }),
             ...operation(args),
           });
+        if (args.action === "update_field") return invoke(bridge, "metadata.fields.update", {
+          ...target(args),
+          packet: args.packet,
+          ...(args.field_namespace === undefined ? {} : { namespace: args.field_namespace }),
+          name: args.field_name,
+          value: args.value,
+          ...(args.expected_value === undefined ? {} : { expectedValue: args.expected_value }),
+          ...operation(args),
+        });
+        return invalidAction(args.action);
+      },
+    },
+
+    inspect_project_panel_metadata_uxp: {
+      description: "Read bounded native Project-panel metadata: panel layout XML, or one media item's visible columns as JSON (ColumnName, ColumnValue, ColumnID, ColumnPath). Column JSON is the current view, not every XMP namespace. This is read-only; it neither creates schema fields nor writes Project-panel state.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["panel", "item_columns"] },
+          ...projectItemProperties,
+        },
+        required: ["action"],
+      },
+      operationalCapability: {
+        backend: "UXP" as const,
+        backends: ["uxp" as const],
+        minimumPremiereVersion: "25.6",
+        verificationBoundary: "structured_uxp_readback" as const,
+        hostVerificationRequired: true,
+        notes: ["Available only through an authenticated UXP bridge whose runtime capability handshake advertises the requested metadata Project-panel command."],
+      },
+      handler: async (args: WorkflowArgs) => {
+        if (args.action === "panel") return invoke(bridge, "metadata.projectPanel.get");
+        if (args.action === "item_columns") return invoke(bridge, "metadata.columns.get", target(args));
+        return invalidAction(args.action);
+      },
+    },
+
+    manage_project_panel_metadata_uxp: {
+      description: "Inspect or guardedly replace native Project-panel metadata. Update requires the exact inspected project GUID and XML, explicit confirmation, a replay key, local per-project serialization, and exact native readback; Premiere does not expose an atomic compare-and-set for this direct non-undoable setter.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["inspect", "update"] },
+          expected_project_guid: { type: "string", minLength: 1, maxLength: 512, description: "Required for update; must exactly match inspect's active-project GUID." },
+          expected_project_panel_metadata: { type: "string", maxLength: 12288, description: "Required for update; exact inspected Project-panel XML. The UXP host enforces a 12 KiB UTF-8 bound." },
+          project_panel_metadata: { type: "string", maxLength: 12288, description: "Required replacement Project-panel XML. The UXP host enforces a 12 KiB UTF-8 bound." },
+          confirm_update: { type: "boolean", description: "Required true for update because this direct setter is non-undoable." },
+          operation_id: { ...operationId, description: "Required replay key for a guarded Project-panel metadata replacement." },
+        },
+        required: ["action"],
+      },
+      operationalCapability: {
+        backend: "UXP" as const,
+        backends: ["uxp" as const],
+        minimumPremiereVersion: "25.6",
+        verificationBoundary: "project_panel_metadata_exact_readback" as const,
+        hostVerificationRequired: true,
+        notes: [
+          "Update is available only when the authenticated UXP bridge advertises metadata.projectPanel.update.",
+          "The direct documented setter is non-undoable and has no cancellation support; exact readback proves only the active project returned the requested XML after the setter completed.",
+        ],
+      },
+      handler: async (args: WorkflowArgs) => {
+        if (args.action === "inspect") return invoke(bridge, "metadata.projectPanel.get");
+        if (args.action === "update") return invoke(bridge, "metadata.projectPanel.update", {
+          expectedProjectGuid: args.expected_project_guid,
+          expectedProjectPanelMetadata: args.expected_project_panel_metadata,
+          projectPanelMetadata: args.project_panel_metadata,
+          confirmUpdate: args.confirm_update,
+          operationId: args.operation_id,
+        });
+        return invalidAction(args.action);
+      },
+    },
+
+    create_project_metadata_field_uxp: {
+      description: "Inspect a bounded native Project-panel schema or request one typed Project metadata field through Adobe's documented direct UXP API. Creation requires the exact inspected project GUID/XML, explicit confirmation, and a replay key; it is non-undoable and reports host acceptance plus schema-change readback without claiming field-level verification or atomic compare-and-set semantics.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["inspect", "create"] },
+          expected_project_guid: { type: "string", minLength: 1, maxLength: 512, description: "Required for create; must exactly match inspect's active-project GUID." },
+          expected_project_panel_metadata: { type: "string", maxLength: 350000, description: "Required for create; exact inspected Project-panel XML. Inspect uses the same 350,000-character / 900 KiB serialized read bound as inspect_project_panel_metadata_uxp." },
+          field_name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[A-Za-z][A-Za-z0-9_.-]{0,127}$", description: "Required stable metadata field identifier. Starts with a letter; only letters, digits, periods, underscores, and hyphens are accepted." },
+          field_label: { type: "string", minLength: 1, maxLength: 255, description: "Required user-visible label for the new metadata field." },
+          schema_field_type: { type: "string", enum: ["integer", "real", "text", "boolean"], description: "Required documented Premiere metadata-field type." },
+          confirm_create: { type: "boolean", description: "Required true for create because this direct schema API is non-undoable." },
+          operation_id: { ...operationId, description: "Required replay key for a guarded Project metadata schema field creation." },
+        },
+        required: ["action"],
+      },
+      operationalCapability: {
+        backend: "UXP" as const,
+        backends: ["uxp" as const],
+        minimumPremiereVersion: "25.6",
+        verificationBoundary: "project_panel_metadata_change_readback" as const,
+        hostVerificationRequired: true,
+        notes: [
+          "Creation is available only when the authenticated UXP bridge advertises metadata.projectSchema.create.",
+          "Adobe supplies no atomic compare-and-set or field-level schema getter; success is always committed_unverified even when post-call Project-panel XML changes.",
+        ],
+      },
+      handler: async (args: WorkflowArgs) => {
+        if (args.action === "inspect") return invoke(bridge, "metadata.projectSchema.inspect");
+        if (args.action === "create") return invoke(bridge, "metadata.projectSchema.create", {
+          expectedProjectGuid: args.expected_project_guid,
+          expectedProjectPanelMetadata: args.expected_project_panel_metadata,
+          fieldName: args.field_name,
+          fieldLabel: args.field_label,
+          fieldType: args.schema_field_type,
+          confirmCreate: args.confirm_create,
+          operationId: args.operation_id,
+        });
         return invalidAction(args.action);
       },
     },
@@ -473,6 +646,12 @@ export function getUxpWorkflowTools(bridge: UxpWebSocketBridge) {
           ...operation(args),
         });
       },
+    },
+
+    inspect_premiere_environment_uxp: {
+      description: "Inspect After Effects interoperability and the active Premiere project's current and supported graphics-white luminance values through documented read-only UXP APIs.",
+      parameters: {},
+      handler: async () => invoke(bridge, "environment.inspect"),
     },
 
     get_uxp_workspace_access: {

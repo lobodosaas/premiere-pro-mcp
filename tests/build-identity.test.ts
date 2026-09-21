@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { testTempBase } from "./setup/clean-temp-dir.js";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
@@ -24,7 +25,7 @@ afterEach(async () => {
 });
 
 async function tempDir(): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), "premiere-mcp-buildinfo-"));
+  const directory = await mkdtemp(path.join(testTempBase(), "premiere-mcp-buildinfo-"));
   tempDirs.push(directory);
   return directory;
 }
@@ -123,13 +124,13 @@ describe("get_capabilities runtime identity", () => {
         },
       },
     );
-    const result = await tools.get_capabilities.handler({});
+    const result = await tools.get_capabilities.handler({ available_only: true });
     expect(result.success).toBe(true);
     expect(result.data.runtime.build).toMatchObject({ found: true, commit: "abc123" });
     expect(result.data.runtime.toolPacks.selected).toEqual(["inspection"]);
     const entries = new Map(result.data.tools.tools.map((tool: { name: string }) => [tool.name, tool]));
     expect(entries.get("ping")).toMatchObject({ registered: true });
-    expect(entries.get("add_keyframe")).toMatchObject({ registered: false });
+    expect(entries.has("add_keyframe")).toBe(false);
     expect(result.data.runtime.uxp).toMatchObject({ connected: false, status: "no_bridge" });
   });
 
@@ -225,7 +226,7 @@ describe("get_capabilities runtime identity", () => {
       toolPacks: resolveToolPacks("essential,animation"),
     });
     const animated = new Map(
-      (await withAnimation.get_capabilities.handler({})).data.tools.tools.map((tool: { name: string }) => [tool.name, tool]),
+      (await withAnimation.get_capabilities.handler({ available_only: true })).data.tools.tools.map((tool: { name: string }) => [tool.name, tool]),
     );
     expect(animated.get("add_keyframe")).toMatchObject({ registered: true });
     expect(animated.get("animate_caption_clip_uxp")).toMatchObject({ registered: true });
@@ -234,10 +235,10 @@ describe("get_capabilities runtime identity", () => {
       toolPacks: resolveToolPacks("essential"),
     });
     const narrowed = new Map(
-      (await essentialOnly.get_capabilities.handler({})).data.tools.tools.map((tool: { name: string }) => [tool.name, tool]),
+      (await essentialOnly.get_capabilities.handler({ available_only: true })).data.tools.tools.map((tool: { name: string }) => [tool.name, tool]),
     );
-    expect(narrowed.get("add_keyframe")).toMatchObject({ registered: false });
-    expect(narrowed.get("animate_caption_clip_uxp")).toMatchObject({ registered: false });
+    expect(narrowed.has("add_keyframe")).toBe(false);
+    expect(narrowed.has("animate_caption_clip_uxp")).toBe(false);
   });
 });
 

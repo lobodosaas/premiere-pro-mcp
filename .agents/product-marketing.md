@@ -1,7 +1,7 @@
 # Product Marketing Context
 
-**Document version:** v9
-**Last updated:** 2026-08-27
+**Document version:** v11
+**Last updated:** 2026-09-04
 
 ## Product Overview
 
@@ -137,7 +137,11 @@
 
 ## Proof Points
 
-**Release facts:** v1.14.4 registers 321 core tools; the default profile exposes 319; an authenticated compatible UXP host can add 55 capability-gated tools for a 374-tool connected surface. The release also declares 37 modules, 4 MCP resources, and 11 workflow prompts. It includes focused tool packs, explicit output schemas, a read-only review report, npm package verification compatible with the current npm CLI, verified razor and batch-effect checks, and optional fail-closed OAuth resource-server validation for allowlisted trusted operators. OAuth does not provide public desktop pairing or per-user Premiere routing. These are catalog, packaging, and HTTP authorization facts from the repository, not a promise that a particular host operation will work.
+**Published release facts:** v1.16.3 registers 381 core tools; the default profile exposes 379; an authenticated compatible UXP host can add 95 capability-gated tools for a 474-tool connected surface. The release also declares 56 modules, 4 MCP resources, and 18 workflow prompts. It adds a separately installed After Effects CEP connector and guarded MOGRT studio: five bounded recipes, optional brand-kit constraints, JSON/CSV batch previews, immutable local-library publishing, source inspection, queue-only renders, and explicit Premiere verification handoff. That feature requires a user-opened, saved After Effects project and does not claim visual, import, playback, or completed-render verification. The downloaded npm artifact and matching tag were inspected; provenance is recorded in `landing/lib/published-release.json`. These are catalog and packaging facts and do not establish a successful host operation.
+
+**Development source:** The separate source catalog currently has 381 core tools, 379 default-profile tools, 95 UXP additions, and 474 connected tools across 56 modules and 19 guided workflows. The source version string can match the public release while containing unreleased changes. Regenerate AI references with `npm run marketing:generate`; do not replace published facts merely because main changed.
+
+**Workflow launch:** `/workflows/` provides three evaluation recipes and a synthetic-media download without signup. The project-check prompt is read-only; frame export requires explicit confirmation; product-spot starter ends at preview. The ZIP contains no native Premiere project or recorded demonstration. Host validation and outside-tester outcomes are pending. The plan and execution register live in `docs/marketing/`.
 
 **Compatibility boundary:** The release targets Premiere Pro 2020–2026; UXP workflows require a compatible Premiere Pro 25.6.0+ host and advertised capabilities. CEP remains the default compatibility route. A compatibility range, package validation, CI pass, HTTP health check, or local build is not real-host proof.
 
@@ -174,6 +178,8 @@
 
 *Newest first. One line per revision: what changed and why.*
 
+- v11 (2026-09-04) — Separated inspected published-package facts from development-source counts, aligned the published facts with the inspected v1.15.0 artifact, and added the workflow-kit launch and measurement boundaries.
+- v10 (2026-09-04) — Prepared v1.14.8 guarded After Effects MOGRT-authoring positioning; preserved the licensed-host, visual, and import-verification boundaries.
 - v9 (2026-08-23) — Refreshed the Adobe AI Assistant public-beta scope and added project-backup, visual-review, and delivery-QC guide intents with explicit evidence boundaries.
 - v8 (2026-08-22) — Prepared v1.13.0 release-candidate positioning for preview-only Project Intake while preserving the unpublished and licensed-host evidence boundaries.
 - v7 (2026-08-22) — Added the read-only Project Intake workflow and refreshed source-derived tool, module, and workflow counts; kept release publication and licensed-host proof separate.

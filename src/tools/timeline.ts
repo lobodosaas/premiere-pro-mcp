@@ -5,7 +5,7 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
   return {
     add_to_timeline: {
       description:
-        "Insert a project item at a timeline position and verify Premiere added no unexpected same-track fragments.",
+        "Insert a project item at a timeline position, ripple QE sync-locked tracks to match Premiere's insert, and verify Premiere added no unexpected same-track fragments. Pass scope 'target_tracks' to ripple only the named pair (this will desync other tracks).",
       parameters: {
         type: "object" as const,
         properties: {
@@ -25,13 +25,26 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             type: "number",
             description: "Audio track index for the audio portion (default: 0)",
           },
+          scope: {
+            type: "string",
+            enum: ["sync_locked", "target_tracks"],
+            description:
+              "Which tracks shift: 'sync_locked' (default) matches Premiere's insert; 'target_tracks' ripples only the named pair and WILL desync other tracks.",
+          },
       },
       required: ["item_id"],
       },
-      handler: async (args: { item_id: string; track_index?: number; start_seconds?: number; audio_track_index?: number }) => {
+      handler: async (args: {
+        item_id: string;
+        track_index?: number;
+        start_seconds?: number;
+        audio_track_index?: number;
+        scope?: "sync_locked" | "target_tracks";
+      }) => {
         const trackIndex = args.track_index ?? 0;
         const startSeconds = args.start_seconds ?? 0;
         const audioTrackIndex = args.audio_track_index ?? 0;
+        const scope = args.scope === "target_tracks" ? "target_tracks" : "sync_locked";
         if (!Number.isInteger(trackIndex) || trackIndex < 0 ||
             !Number.isInteger(audioTrackIndex) || audioTrackIndex < 0 ||
             !Number.isFinite(startSeconds) || startSeconds < 0) {
@@ -44,72 +57,22 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
         const script = buildToolScript(`
           var seq = app.project.activeSequence;
           if (!seq) return __error("No active sequence");
-          var videoTrack = seq.videoTracks[${trackIndex}];
-          if (!videoTrack) return __error("Video track index ${trackIndex} is out of range");
-          var audioTrack = seq.audioTracks[${audioTrackIndex}];
-          
           var item = __findProjectItem("${escapeForExtendScript(args.item_id)}");
           if (!item) return __error("Project item not found: ${escapeForExtendScript(args.item_id)}");
-          
-          var beforeVideoCount = videoTrack.clips.numItems;
-          var beforeAudioCount = audioTrack ? audioTrack.clips.numItems : 0;
-          var beforeVideoIds = {};
-          var beforeAudioIds = {};
-          var i;
-          for (i = 0; i < beforeVideoCount; i++) beforeVideoIds[videoTrack.clips[i].nodeId] = true;
-          if (audioTrack) {
-            for (i = 0; i < beforeAudioCount; i++) beforeAudioIds[audioTrack.clips[i].nodeId] = true;
-          }
-
           var startTicks = __secondsToTicks(${startSeconds}).toString();
-          seq.insertClip(item, startTicks, ${trackIndex}, ${audioTrackIndex});
-
-          var afterVideoCount = videoTrack.clips.numItems;
-          var afterAudioCount = audioTrack ? audioTrack.clips.numItems : 0;
-          if (afterVideoCount > beforeVideoCount + 1 || (audioTrack && afterAudioCount > beforeAudioCount + 1)) {
-            return __error("Premiere inserted more than one clip on a targeted track. This can leave a residual frame fragment at an exact boundary; the insertion may be partial, but is not reported as verified.");
-          }
-
-          var inserted = [];
-          for (i = 0; i < afterVideoCount; i++) {
-            var videoClip = videoTrack.clips[i];
-            if (!beforeVideoIds[videoClip.nodeId]) inserted.push({ clip: videoClip, trackType: "video" });
-          }
-          if (audioTrack) {
-            for (i = 0; i < afterAudioCount; i++) {
-              var audioClip = audioTrack.clips[i];
-              if (!beforeAudioIds[audioClip.nodeId]) inserted.push({ clip: audioClip, trackType: "audio" });
-            }
-          }
-          if (!inserted.length) {
-            return __error("Premiere did not add a new track item at the requested insertion point.");
-          }
-
-          var frameTicks = parseFloat(seq.timebase);
-          if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
-          var tolerance = __ticksToSeconds(frameTicks);
-          var matchedItem = false;
-          for (i = 0; i < inserted.length; i++) {
-            var insertedClip = inserted[i].clip;
-            if (insertedClip.projectItem && insertedClip.projectItem.nodeId === item.nodeId) {
-              matchedItem = true;
-              if (Math.abs(__ticksToSeconds(insertedClip.start.ticks) - ${startSeconds}) > tolerance) {
-                return __error("Premiere added the requested item but not at the requested timeline frame; the insertion is not reported as verified.");
-              }
-            }
-          }
-          if (!matchedItem) {
-            return __error("Premiere changed the target track but the requested project item was not found after insertion.");
-          }
-          
-          return __result({
+          var outcome = __insertClipHonoringSyncLock(seq, item, startTicks, ${trackIndex}, ${audioTrackIndex}, "${scope}");
+          if (!outcome.ok) return __error(outcome.error);
+          var payload = {
             added: true,
-            verified: true,
-            item: item.name,
+            verified: outcome.data.verified,
+            syncLockHonored: outcome.data.syncLockHonored,
+            item: outcome.data.item,
             trackIndex: ${trackIndex},
             startSeconds: ${startSeconds},
-            insertedTrackItems: inserted.length
-          });
+            insertedTrackItems: outcome.data.insertedTrackItems
+          };
+          if (outcome.data.warning) payload.warning = outcome.data.warning;
+          return __result(payload);
         `);
         return sendCommand(script, bridgeOptions);
       },
@@ -182,6 +145,17 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           if (!frameTicks || isNaN(frameTicks)) frameTicks = TICKS_PER_SECOND / 24;
           var tolerance = __ticksToSeconds(frameTicks);
 
+          // Capture the visible span and source range as tick strings before any
+          // write. Premiere can mutate the same Time instance on write, so never
+          // keep the object references. A move must preserve both the duration
+          // and the source in/out points; anything else is a trim or a stretch.
+          var originalStartTicks = String(clip.start.ticks);
+          var originalEndTicks = String(clip.end.ticks);
+          var originalInPointTicks = String(clip.inPoint.ticks);
+          var originalOutPointTicks = String(clip.outPoint.ticks);
+          var spanTicks = parseFloat(originalEndTicks) - parseFloat(originalStartTicks);
+          if (!(spanTicks > 0)) return __error("Clip has an empty or inverted timeline range; move was not attempted.");
+
           ${args.new_track_index !== undefined ? `
           // The track change is attempted before the start time is written, so
           // a failure here leaves the clip completely untouched rather than
@@ -211,14 +185,51 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           }
           if (!qeClip) return __error("Could not locate the clip among the QE track's items; cannot change track.");
 
+          // QE moveToTrack takes track *deltas*, not an absolute index.
+          var videoDelta = result.trackType === "video" ? (${args.new_track_index} - result.trackIndex) : 0;
+          var audioDelta = result.trackType === "audio" ? (${args.new_track_index} - result.trackIndex) : 0;
           try {
-            qeClip.moveToTrack(${args.new_track_index});
+            qeClip.moveToTrack(videoDelta, audioDelta, "0", false);
           } catch (moveErr) {
             return __error("Could not move the clip to track ${args.new_track_index}: the QE moveToTrack API rejected the call (" + moveErr.toString() + "). This is a known QE limitation on Premiere Pro 26.x (confirmed on 26.2.2). The clip was left untouched — call move_clip without new_track_index to reposition it in time.");
           }
+          var afterMove = __findClip("${nodeId}");
+          if (!afterMove) return __error("Clip ${nodeId} could not be found after the track move; the timeline may be in an unexpected state.");
+          if (afterMove.trackIndex !== ${args.new_track_index}) {
+            return __error("Premiere did not move the clip to track ${args.new_track_index}; it is still on track " + afterMove.trackIndex + ", so the start time was not written. Structural clip edits are known to no-op on some Premiere Pro 26.x installations (confirmed on 26.2.2).");
+          }
+          // moveToTrack can rewrite end independently of start (#550). Re-assert
+          // the original span before verifying, then fail closed if it did not hold.
+          if (String(afterMove.clip.start.ticks) !== originalStartTicks || String(afterMove.clip.end.ticks) !== originalEndTicks) {
+            try {
+              __writeClipSpan(afterMove.clip, originalStartTicks, originalEndTicks);
+            } catch (spanErr) {
+              return __error("Premiere changed the clip's timeline range during the track move and it could not be restored (" + spanErr.toString() + "). Use Undo and retry in the Premiere UI.");
+            }
+            afterMove = __findClip("${nodeId}");
+            if (!afterMove) return __error("Clip ${nodeId} could not be found after restoring its timeline range; the timeline may be in an unexpected state.");
+          }
+          var afterMoveStartTicks = String(afterMove.clip.start.ticks);
+          var afterMoveEndTicks = String(afterMove.clip.end.ticks);
+          if (parseFloat(afterMoveStartTicks) >= parseFloat(afterMoveEndTicks)) {
+            return __error("Premiere left clip ${nodeId} with an inverted or empty timeline range after the track move. Use Undo and retry in the Premiere UI.");
+          }
+          if (Math.abs((parseFloat(afterMoveEndTicks) - parseFloat(afterMoveStartTicks)) - spanTicks) > 1) {
+            return __error("Premiere changed the clip duration during the track move. Use Undo and retry in the Premiere UI.");
+          }
+          clip = afterMove.clip;
           ` : ""}
 
-          clip.start = __secondsToTicks(${args.new_start_seconds}).toString();
+          // Writing start alone leaves end in place on Premiere Pro 26.x, which
+          // stretches (earlier move) or trims (later move) the clip instead of
+          // moving it. Write both edges in the order that keeps start < end.
+          var newStartTicks = __secondsToTicks(${args.new_start_seconds});
+          var newEndTicks = newStartTicks + spanTicks;
+          try {
+            __writeClipSpan(clip, newStartTicks, newEndTicks);
+          } catch (moveWriteErr) {
+            return __error("Premiere rejected the timeline move (" + moveWriteErr.toString() + "). Inspect the clip; if only one edge moved, use Undo to restore it.");
+          }
 
           // Re-find the clip rather than trusting the original reference, which
           // can go stale once the clip changes track.
@@ -226,8 +237,33 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           if (!after) return __error("Clip ${nodeId} could not be found after the move; the timeline may be in an unexpected state.");
 
           var actualStart = __ticksToSeconds(after.clip.start.ticks);
+          var actualEnd = __ticksToSeconds(after.clip.end.ticks);
+          var moveDrift = [];
           if (Math.abs(actualStart - ${args.new_start_seconds}) > tolerance) {
-            return __error("Premiere did not move the clip: requested start ${args.new_start_seconds}s, read back " + actualStart + "s. Structural clip edits are known to no-op on some Premiere Pro 26.x installations (confirmed on 26.2.2).");
+            moveDrift.push("requested start ${args.new_start_seconds}s, read back " + actualStart + "s");
+          }
+          if (Math.abs((actualEnd - actualStart) - __ticksToSeconds(spanTicks)) > tolerance) {
+            moveDrift.push("visible duration changed from " + __ticksToSeconds(spanTicks) + "s to " + (actualEnd - actualStart) + "s");
+          }
+          if (String(after.clip.inPoint.ticks) !== originalInPointTicks || String(after.clip.outPoint.ticks) !== originalOutPointTicks) {
+            moveDrift.push("source in/out points changed, so the clip was trimmed or slipped rather than moved");
+          }
+          if (moveDrift.length) {
+            ${args.new_track_index === undefined ? `
+            // Best-effort rollback: the original range on this track was vacated
+            // by this very clip, so writing it back cannot land on a neighbour.
+            var rolledBack = false;
+            try {
+              __writeClipSpan(after.clip, originalStartTicks, originalEndTicks);
+              var restored = __findClip("${nodeId}");
+              rolledBack = !!restored &&
+                String(restored.clip.start.ticks) === originalStartTicks && String(restored.clip.end.ticks) === originalEndTicks &&
+                String(restored.clip.inPoint.ticks) === originalInPointTicks && String(restored.clip.outPoint.ticks) === originalOutPointTicks;
+            } catch (rollbackErr) {}
+            return __error("Premiere did not apply a verified move: " + moveDrift.join("; ") + ". " + (rolledBack ? "The clip was restored to its original timeline range." : "The clip may be in an inconsistent state; use Undo to restore it.") + " Structural clip edits are known to no-op on some Premiere Pro 26.x installations (confirmed on 26.2.2).");
+            ` : `
+            return __error("Premiere did not apply a verified move: " + moveDrift.join("; ") + ". The clip changed track, so its original range is not rewritten automatically; use Undo to restore it. Structural clip edits are known to no-op on some Premiere Pro 26.x installations (confirmed on 26.2.2).");
+            `}
           }
           ${args.new_track_index !== undefined ? `
           if (after.trackIndex !== ${args.new_track_index}) {
@@ -240,6 +276,8 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             verified: true,
             clipName: clipName,
             newStart: actualStart,
+            newEnd: actualEnd,
+            durationSeconds: actualEnd - actualStart,
             trackIndex: after.trackIndex
           });
         `);
@@ -398,7 +436,20 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           // A source-point trim can only have an exact CEP postcondition when
           // the source and visible durations agree. Retimed/reversed clips need
           // host-specific semantics, so refusing them is safer than guessing.
-          if (Math.abs((before.end - before.start) - (before.outPoint - before.inPoint)) > tolerance) {
+          var durationMismatch = Math.abs((before.end - before.start) - (before.outPoint - before.inPoint));
+          if (durationMismatch > tolerance) {
+            // Check if this looks like a partial write (source metadata changed but timeline didn't)
+            // by seeing if the clip appears to be at 100% speed but has mismatched durations.
+            // A truly retimed clip would show consistent metadata; a corrupted one won't.
+            try {
+              var playbackSpeed = clip.getSpeed ? clip.getSpeed() : null;
+              // If speed is exactly 100 or unreadable, this is likely a partial-write corruption, not a retime.
+              if (playbackSpeed === null || Math.abs(playbackSpeed - 100) < 0.01) {
+                return __error("Clip has inconsistent source/timeline durations (source: " + (before.outPoint - before.inPoint).toFixed(3) + "s, timeline: " + (before.end - before.start).toFixed(3) + "s) at 100% speed. This can happen after a partial trim write. Undo the previous edit or use the host UI to restore consistency before retrying trim_clip.");
+              }
+            } catch(speedError) {
+              // clip.getSpeed() might not be available on all Premiere versions; fall through to generic check
+            }
             return __error("trim_clip does not support retimed or otherwise non-1x clips because CEP cannot prove the requested source trim maps to the correct timeline edge. Use a host-verified workflow instead.");
           }
 
@@ -418,6 +469,13 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           if (beforeKeyframes.outside.length && "${keyframePolicy}" === "reject") {
             return __error("Refusing trim before mutation: " + beforeKeyframes.outside.length + " effect keyframe(s) would remain outside the visible clip. Use keyframe_policy: preserve only if retaining those keyframes is intentional, or adjust them explicitly with the keyframe tools.");
           }
+
+          // Capture original ticks as strings. Do not keep the Time object
+          // references — Premiere can mutate the same instance on write.
+          var originalInPointTicks = String(clip.inPoint.ticks);
+          var originalOutPointTicks = String(clip.outPoint.ticks);
+          var originalStartTicks = String(clip.start.ticks);
+          var originalEndTicks = String(clip.end.ticks);
 
           ${args.new_in_seconds !== undefined ? `clip.inPoint = __secondsToTicks(${args.new_in_seconds}).toString();` : "clip.outPoint = __secondsToTicks(" + args.new_out_seconds + ").toString();"}
 
@@ -465,8 +523,42 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
             drift.push("visible timeline duration does not match the applied source range");
           }
 
+          var afterInTicks = String(afterResult.clip.inPoint.ticks);
+          var afterOutTicks = String(afterResult.clip.outPoint.ticks);
+          var afterStartTicks = String(afterResult.clip.start.ticks);
+          var afterEndTicks = String(afterResult.clip.end.ticks);
+          var sourceMetadataChanged = afterInTicks !== originalInPointTicks || afterOutTicks !== originalOutPointTicks;
+          var timelineMoved = afterStartTicks !== originalStartTicks || afterEndTicks !== originalEndTicks;
+          if (!timelineMoved) {
+            drift.push("visible timeline start/end ticks did not move");
+          }
+
           if (drift.length) {
-            return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". The source metadata may have changed, but this is not reported as success. Structural clip edits are known to no-op on some Premiere Pro 26.x installations.");
+            if (sourceMetadataChanged) {
+              // Partial write: source in/out changed without a verified timeline edge.
+              var restoredIn = new Time();
+              restoredIn.ticks = originalInPointTicks;
+              var restoredOut = new Time();
+              restoredOut.ticks = originalOutPointTicks;
+              afterResult.clip.inPoint = restoredIn;
+              afterResult.clip.outPoint = restoredOut;
+
+              var rolledBack = __findClip("${escapeForExtendScript(args.node_id)}");
+              if (rolledBack) {
+                var rollbackSucceeded = String(rolledBack.clip.inPoint.ticks) === originalInPointTicks &&
+                                        String(rolledBack.clip.outPoint.ticks) === originalOutPointTicks;
+
+                if (rollbackSucceeded) {
+                  return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". The write partially changed source metadata without moving the timeline edge, which would poison the clip for future trims. The source metadata was rolled back to its original state. Structural clip edits are known to no-op on some Premiere Pro 26.x installations. Use the workaround (set in/out on Source Monitor before placing via create_sequence_from_clips) or undo and retry in the Premiere UI.");
+                } else {
+                  return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". A partial write occurred and rollback of source metadata could not be verified. The clip may be in an inconsistent state. Use Undo to restore it.");
+                }
+              } else {
+                return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". A partial write occurred but the clip could not be re-found for rollback. The clip may be in an inconsistent state. Use Undo to restore it.");
+              }
+            } else {
+              return __error("Premiere did not apply a verified timeline trim: " + drift.join("; ") + ". The source metadata was unchanged, so the clip remains consistent. Structural clip edits are known to no-op on some Premiere Pro 26.x installations.");
+            }
           }
 
           var afterKeyframes = __findOutOfRangeKeyframes(afterResult.clip, after.end - after.start);
@@ -686,8 +778,12 @@ export function getTimelineTools(bridgeOptions: BridgeOptions) {
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found: ${escapeForExtendScript(args.node_id)}");
           
-          result.clip.setDisabled(${args.enabled ? "false" : "true"});
-          return __result({ clipName: result.clip.name, enabled: ${args.enabled} });
+          var wantDisabled = ${args.enabled ? "false" : "true"};
+          result.clip.disabled = wantDisabled;
+          var verified = __findClip("${escapeForExtendScript(args.node_id)}");
+          if (!verified) return __error("Clip state changed, but the clip could not be re-resolved for verification.");
+          if (!!verified.clip.disabled !== wantDisabled) return __error("Premiere did not persist the requested clip enabled state.");
+          return __result({ clipName: verified.clip.name, enabled: !verified.clip.disabled, verified: true });
         `);
         return sendCommand(script, bridgeOptions);
       },

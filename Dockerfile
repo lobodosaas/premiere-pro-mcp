@@ -9,13 +9,22 @@ RUN npm ci
 COPY tsconfig.json ./
 COPY src/ ./src/
 COPY scripts/copy-adobe-uxp-coverage.mjs ./scripts/copy-adobe-uxp-coverage.mjs
+COPY scripts/write-build-info.mjs ./scripts/write-build-info.mjs
+COPY scripts/generate-adobe-api-inventory.mjs ./scripts/generate-adobe-api-inventory.mjs
+COPY scripts/generate-uxp-js-api-inventory.mjs ./scripts/generate-uxp-js-api-inventory.mjs
 
 RUN npm run build
 
 # ── Stage 2: Build Next.js landing page (→ landing/.next/out/) ───────────────
 FROM node:20-alpine AS landing-builder
 
-WORKDIR /landing
+WORKDIR /app
+COPY release-metadata.json ./release-metadata.json
+COPY scripts/generate-marketing-reference.mjs ./scripts/generate-marketing-reference.mjs
+COPY scripts/tool-reference-data.mjs ./scripts/tool-reference-data.mjs
+COPY docs/supported-actions.md ./docs/supported-actions.md
+
+WORKDIR /app/landing
 
 COPY landing/package*.json ./
 RUN npm ci
@@ -29,6 +38,9 @@ FROM node:20-alpine AS runner
 
 WORKDIR /app
 
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF
+
 ENV NODE_ENV=production
 
 RUN apk add --no-cache ffmpeg
@@ -39,7 +51,14 @@ RUN npm ci --omit=dev
 COPY --from=mcp-builder /app/dist ./dist
 
 # Copy Next.js static export to landing-dist (referenced in http-server.ts)
-COPY --from=landing-builder /landing/out ./landing-dist
+COPY --from=landing-builder /app/landing/out ./landing-dist
+
+# Keep the editor control plane and media subprocesses unprivileged. Runtime
+# bridge files use this user's private temp directory; context lives in HOME.
+RUN mkdir -p /home/node/.local/state/premiere-pro-mcp/context \
+    && chown -R node:node /home/node/.local \
+    && chmod 700 /home/node/.local/state/premiere-pro-mcp/context
+USER node
 
 EXPOSE 3000
 

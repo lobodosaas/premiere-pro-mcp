@@ -69,6 +69,36 @@ type MediaHealthArgs = {
   match_path?: string;
   ignore_subclips?: boolean;
   include_paths?: boolean;
+  include_media_timing?: boolean;
+  operation_id?: string;
+};
+
+type SourceMediaTimingArgs = {
+  action?: string;
+  project_item_id?: string;
+  expected_timing?: {
+    start_seconds?: number;
+    duration_seconds?: number;
+  };
+  start_seconds?: number;
+  confirm_set_start?: boolean;
+  operation_id?: string;
+};
+
+type SourceMediaOverridesArgs = {
+  action?: string;
+  project_item_id?: string;
+  expected_overrides?: {
+    project_guid?: string;
+    frame_rate?: number;
+    pixel_aspect_ratio?: number;
+  };
+  frame_rate?: number;
+  pixel_aspect_ratio?: {
+    numerator?: number;
+    denominator?: number;
+  };
+  confirm_media_interpretation?: boolean;
   operation_id?: string;
 };
 
@@ -130,7 +160,7 @@ function eventQuery(args: EventArgs, includeTimeout: boolean) {
 export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
   return {
     inspect_premiere_events_uxp: {
-      description: "List or briefly wait for bounded, redacted Premiere host-event receipts without polling the complete project state.",
+      description: "List or briefly wait for bounded, redacted Premiere host-event receipts without polling the complete project state. Compatible hosts can also emit timeline.snap.* receipts plus operation.clip.extend.reached and coalesced operation.effect.drag.over receipts for documented root notifications; raw event payloads are never returned.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -354,7 +384,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
       },
     },
     maintain_media_health_uxp: {
-      description: "Inspect up to 64 source media items, refresh them serially, transactionally set them offline, or find project items matching an approved media path. Native paths are redacted unless explicitly requested.",
+      description: "Inspect up to 64 source media items, refresh them serially, transactionally set them offline, or find project items matching an approved media path. Native paths are redacted unless explicitly requested; opt-in media timing is read-only, bounded, and runtime-compatible.",
       parameters: {
         type: "object" as const,
         additionalProperties: false,
@@ -370,6 +400,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
           match_path: { type: "string", minLength: 1, maxLength: 4096 },
           ignore_subclips: { type: "boolean" },
           include_paths: { type: "boolean", description: "Explicitly include media/proxy/origin paths; defaults to redacted." },
+          include_media_timing: { type: "boolean", description: "For inspect only, include bounded source start/duration readback; defaults to false." },
           operation_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
         },
         required: ["action"],
@@ -378,6 +409,7 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
         if (args.action === "inspect") return invoke(bridge, "media.health.inspect", {
           ...(args.project_item_ids !== undefined ? { projectItemIds: args.project_item_ids } : {}),
           ...(args.include_paths !== undefined ? { includePaths: args.include_paths } : {}),
+          ...(args.include_media_timing !== undefined ? { includeMediaTiming: args.include_media_timing } : {}),
         });
         if (args.action === "refresh") return invoke(bridge, "media.health.refresh", {
           ...(args.project_item_ids !== undefined ? { projectItemIds: args.project_item_ids } : {}),
@@ -397,6 +429,113 @@ export function getUxpNextWorkflowTools(bridge: UxpWebSocketBridge) {
           ...(args.include_paths !== undefined ? { includePaths: args.include_paths } : {}),
         });
         return { success: false, error: `Unsupported media-health action: ${String(args.action)}` };
+      },
+    },
+    manage_source_media_timing_uxp: {
+      description: "Inspect or transactionally set one source media item's timecode start through stable Premiere 26.3 UXP APIs. Setting requires the exact bounded timing snapshot, explicit confirmation, one undoable transaction, per-item serialization, and native readback.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["inspect", "set_start"] },
+          project_item_id: { type: "string", minLength: 1, maxLength: 512 },
+          expected_timing: {
+            type: "object", additionalProperties: false,
+            properties: {
+              start_seconds: { type: "number", minimum: 0, maximum: 86400000 },
+              duration_seconds: { type: "number", minimum: 0, maximum: 86400000 },
+            },
+            required: ["start_seconds", "duration_seconds"],
+            description: "Required for set_start. Copy the complete snapshot returned by inspect; a changed start or duration rejects the request before action creation.",
+          },
+          start_seconds: { type: "number", minimum: 0, maximum: 86400000 },
+          confirm_set_start: { type: "boolean", description: "Required true for set_start because source timecode changes can affect editorial synchronization." },
+          operation_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
+        },
+        required: ["action", "project_item_id"],
+      },
+      handler: async (args: SourceMediaTimingArgs) => {
+        const common = {
+          ...(args.project_item_id === undefined ? {} : { projectItemId: args.project_item_id }),
+        };
+        if (args.action === "inspect") return invoke(bridge, "source.mediaTiming.inspect", common);
+        if (args.action === "set_start") return invoke(bridge, "source.mediaTiming.setStart", {
+          ...common,
+          ...(args.expected_timing === undefined ? {} : { expectedTiming: {
+            ...(args.expected_timing.start_seconds === undefined ? {} : { startSeconds: args.expected_timing.start_seconds }),
+            ...(args.expected_timing.duration_seconds === undefined ? {} : { durationSeconds: args.expected_timing.duration_seconds }),
+          } }),
+          ...(args.start_seconds === undefined ? {} : { startSeconds: args.start_seconds }),
+          ...(args.confirm_set_start === undefined ? {} : { confirmSetStart: args.confirm_set_start }),
+          ...(args.operation_id === undefined ? {} : { operationId: args.operation_id }),
+        });
+        return { success: false, error: `Unsupported source-media timing action: ${String(args.action)}` };
+      },
+    },
+    manage_source_media_overrides_uxp: {
+      description: "Inspect or transactionally set one source media item's explicit frame-rate and/or pixel-aspect-ratio override through stable Premiere 26.3 UXP actions. Updates require the complete effective-interpretation snapshot, explicit confirmation, an operation_id, per-item serialization, one undoable transaction, and native effective-value readback. Premiere does not expose an override-presence getter, so this tool cannot clear or distinguish an explicit override from matching file-native interpretation.",
+      parameters: {
+        type: "object" as const,
+        additionalProperties: false,
+        properties: {
+          action: { type: "string", enum: ["inspect", "update"] },
+          project_item_id: { type: "string", minLength: 1, maxLength: 512 },
+          expected_overrides: {
+            type: "object", additionalProperties: false,
+            properties: {
+              project_guid: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$" },
+              frame_rate: { type: "number", minimum: 1, maximum: 240 },
+              pixel_aspect_ratio: { type: "number", minimum: 0.01, maximum: 100 },
+            },
+            required: ["project_guid", "frame_rate", "pixel_aspect_ratio"],
+            description: "Required for update; copy the complete snapshot returned by inspect. Any changed effective value or active project rejects before the transaction.",
+          },
+          frame_rate: { type: "number", minimum: 1, maximum: 240 },
+          pixel_aspect_ratio: {
+            type: "object", additionalProperties: false,
+            properties: {
+              numerator: { type: "integer", minimum: 1, maximum: 10000 },
+              denominator: { type: "integer", minimum: 1, maximum: 10000 },
+            },
+            required: ["numerator", "denominator"],
+          },
+          confirm_media_interpretation: { type: "boolean", description: "Required true for update because source interpretation can alter editorial timing and framing." },
+          operation_id: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,128}$", description: "Required for update so an interrupted mutation can be safely replayed." },
+        },
+        required: ["action", "project_item_id"],
+      },
+      operationalCapability: {
+        backend: "UXP" as const,
+        backends: ["uxp" as const],
+        minimumPremiereVersion: "26.3",
+        verificationBoundary: "structured_uxp_readback" as const,
+        hostVerificationRequired: true,
+        notes: [
+          "The documented UXP actions and effective-value readback are covered by mocks and static declaration inventory.",
+          "No licensed Premiere host validation has run; the API has no override-presence or clear-override getter.",
+        ],
+      },
+      handler: async (args: SourceMediaOverridesArgs) => {
+        const common = {
+          ...(args.project_item_id === undefined ? {} : { projectItemId: args.project_item_id }),
+        };
+        if (args.action === "inspect") return invoke(bridge, "source.mediaOverrides.inspect", common);
+        if (args.action === "update") return invoke(bridge, "source.mediaOverrides.update", {
+          ...common,
+          ...(args.expected_overrides === undefined ? {} : { expectedOverrides: {
+            ...(args.expected_overrides.project_guid === undefined ? {} : { projectGuid: args.expected_overrides.project_guid }),
+            ...(args.expected_overrides.frame_rate === undefined ? {} : { frameRate: args.expected_overrides.frame_rate }),
+            ...(args.expected_overrides.pixel_aspect_ratio === undefined ? {} : { pixelAspectRatio: args.expected_overrides.pixel_aspect_ratio }),
+          } }),
+          ...(args.frame_rate === undefined ? {} : { frameRate: args.frame_rate }),
+          ...(args.pixel_aspect_ratio === undefined ? {} : { pixelAspectRatio: {
+            ...(args.pixel_aspect_ratio.numerator === undefined ? {} : { numerator: args.pixel_aspect_ratio.numerator }),
+            ...(args.pixel_aspect_ratio.denominator === undefined ? {} : { denominator: args.pixel_aspect_ratio.denominator }),
+          } }),
+          ...(args.confirm_media_interpretation === undefined ? {} : { confirmMediaInterpretation: args.confirm_media_interpretation }),
+          ...(args.operation_id === undefined ? {} : { operationId: args.operation_id }),
+        });
+        return { success: false, error: `Unsupported source-media override action: ${String(args.action)}` };
       },
     },
     manage_track_state_uxp: {

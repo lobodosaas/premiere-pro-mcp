@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   deliveryFileChangedDuringHash,
@@ -22,7 +23,12 @@ function temporaryFile(name: string, contents: string | Buffer): string {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
-    rmSync(directory, { recursive: true, force: true });
+    try {
+      rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 50 });
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOTEMPTY" && code !== "EBUSY") throw error;
+    }
   }
 });
 
@@ -108,5 +114,12 @@ describe("export preset inspection", () => {
     expect(() => inspectExportPresetFile(wrongExtension)).toThrow(".epr");
     const empty = temporaryFile("empty.epr", "");
     expect(() => inspectExportPresetFile(empty)).toThrow("empty");
+  });
+
+  it("refuses Same as Project presets before Premiere is contacted", () => {
+    const xml = temporaryFile("same-as-project.epr", "<Exporter Dest=\"SameAsProject\" />");
+    expect(() => inspectExportPresetFile(xml)).toThrow("Same as Project");
+    const gzipped = temporaryFile("same-as-project-gz.epr", gzipSync(Buffer.from("<DoUseSameAsProject>true</DoUseSameAsProject>")));
+    expect(() => inspectExportPresetFile(gzipped)).toThrow("Same as Project");
   });
 });

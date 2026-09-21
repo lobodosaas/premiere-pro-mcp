@@ -51,10 +51,23 @@ import { getProjectManagerTools } from "../../src/tools/project-manager.js";
 import { getRecoveryTools } from "../../src/tools/recovery.js";
 import { getAvSettingsTools } from "../../src/tools/av-settings.js";
 import { getProjectContextTools } from "../../src/tools/project-context.js";
+import { getEditorialContextPackTools } from "../../src/tools/editorial-context-pack.js";
 import { getEditorialPlanTools } from "../../src/tools/editorial-plans.js";
 import { getProjectIntakeTools } from "../../src/tools/project-intake.js";
 import { getCompetitorGapTools } from "../../src/tools/competitor-gaps.js";
 import { getSpotWorkflowTools } from "../../src/tools/spot-workflows.js";
+import { getMogrtAuthoringTools } from "../../src/tools/mogrt-authoring.js";
+import { getMogrtStudioTools } from "../../src/tools/mogrt-studio.js";
+import { getPlatformDeliveryTools } from "../../src/tools/platform-delivery.js";
+import { getEditorRequestTools } from "../../src/tools/editor-requests.js";
+import { getReviewPlanTools } from "../../src/tools/review-plans.js";
+import { getTimelineQaTools } from "../../src/tools/timeline-qa.js";
+import { getSpeakerLayoutTools } from "../../src/tools/speaker-layout.js";
+import { getRhythmPlanTools } from "../../src/tools/rhythm-plans.js";
+import { getShortsIntelligenceTools } from "../../src/tools/shorts-intelligence.js";
+import { getCaptionAuthoringTools } from "../../src/tools/caption-authoring.js";
+import { getReactionShortsTools } from "../../src/tools/reaction-shorts.js";
+import { getTranscriptWordEditTools } from "../../src/tools/transcript-word-edits.js";
 import type { Telemetry, TelemetryProperties } from "../../src/telemetry.js";
 
 interface ToolDef {
@@ -104,10 +117,23 @@ const ALL_MODULES: Array<{
   { name: "recovery", getter: getRecoveryTools, minTools: 2 },
   { name: "av-settings", getter: getAvSettingsTools, minTools: 4 },
   { name: "project-context", getter: getProjectContextTools, minTools: 3 },
+  { name: "editorial-context-pack", getter: getEditorialContextPackTools, minTools: 1 },
   { name: "editorial-plans", getter: () => getEditorialPlanTools(), minTools: 2 },
   { name: "project-intake", getter: getProjectIntakeTools, minTools: 1 },
   { name: "competitor-gaps", getter: getCompetitorGapTools, minTools: 8 },
   { name: "spot-workflows", getter: getSpotWorkflowTools, minTools: 4 },
+  { name: "mogrt-authoring", getter: getMogrtAuthoringTools, minTools: 4 },
+  { name: "mogrt-studio", getter: getMogrtStudioTools, minTools: 11 },
+  { name: "platform-delivery", getter: getPlatformDeliveryTools, minTools: 2 },
+  { name: "transcript-word-edits", getter: getTranscriptWordEditTools, minTools: 4 },
+  { name: "caption-authoring", getter: getCaptionAuthoringTools, minTools: 2 },
+  { name: "reaction-shorts", getter: getReactionShortsTools, minTools: 3 },
+  { name: "shorts-intelligence", getter: getShortsIntelligenceTools, minTools: 2 },
+  { name: "rhythm-plans", getter: getRhythmPlanTools, minTools: 2 },
+  { name: "speaker-layout", getter: getSpeakerLayoutTools, minTools: 2 },
+  { name: "timeline-qa", getter: getTimelineQaTools, minTools: 2 },
+  { name: "editor-requests", getter: getEditorRequestTools, minTools: 6 },
+  { name: "review-plans", getter: getReviewPlanTools, minTools: 2 },
 ];
 
 describe("Tool Module Structure", () => {
@@ -192,16 +218,16 @@ describe("Tool Module Structure", () => {
 });
 
 describe("Total Tool Count", () => {
-  it("all modules together have 319 tools", () => {
+  it("all modules together have 370 tools", () => {
     let total = 0;
     for (const mod of ALL_MODULES) {
       total += Object.keys(mod.getter(bridgeOptions)).length;
     }
-    expect(total).toBe(319);
+    expect(total).toBe(370);
   });
 
-  it("there are 37 directly enumerated modules", () => {
-    expect(ALL_MODULES.length).toBe(37);
+  it("there are 50 directly enumerated modules", () => {
+    expect(ALL_MODULES.length).toBe(50);
   });
 });
 
@@ -546,6 +572,16 @@ describe("Tool Handler Behavior", () => {
       expect(tools.play_timeline.parameters).toEqual({});
     });
 
+    it("writes and verifies the public TrackItem disabled property", async () => {
+      const tools = getTimelineTools(bridgeOptions);
+      await (tools.enable_disable_clip.handler as any)({ node_id: "clip-1", enabled: false });
+      const script = mockedSendCommand.mock.calls[0][0];
+      expect(script).toContain("result.clip.disabled = wantDisabled");
+      expect(script).toContain('var verified = __findClip("clip-1")');
+      expect(script).toContain("!!verified.clip.disabled !== wantDisabled");
+      expect(script).not.toContain("setDisabled(");
+    });
+
     it("does not claim legacy source-monitor or stop-playback requests are verified", async () => {
       const tools = getPlaybackTools(bridgeOptions);
       await (tools.stop_playback.handler as any)({});
@@ -698,7 +734,35 @@ describe("Tool Handler Behavior", () => {
     it("verifies ripple delete and passes QE razor a sequence timecode", async () => {
       await (getAdvancedTools(bridgeOptions).ripple_delete.handler as any)({ node_id: "clip-1" });
       let script = mockedSendCommand.mock.calls[0][0];
-      expect(script).toContain("if (__findClip(deletedNodeId))");
+      // Ripple is implemented explicitly: QE rippleDelete() is never called.
+      expect(script).not.toContain("rippleDelete()");
+      // Sync-locked tracks participate, and a locked one refuses before mutating.
+      expect(script).toContain("isSyncLocked()");
+      expect(script).toContain("Ripple delete refused; nothing was changed.");
+      // The refusal names the remedy for the common linked-audio case.
+      expect(script).toContain("use range_content 'delete' to also remove clips that sit entirely inside the range");
+      // An insider Premiere already removed with the target is not a failure.
+      expect(script).toContain("removedWithTarget: true");
+      // Every shifted clip is re-found and checked for position and duration.
+      expect(script).toContain("var verifyProblems = []");
+      expect(script).toContain("duration changed from");
+
+      vi.clearAllMocks();
+      await (getAdvancedTools(bridgeOptions).ripple_delete.handler as any)({
+        node_id: "clip-1",
+        scope: "own_track",
+      });
+      script = mockedSendCommand.mock.calls[0][0];
+      expect(script).not.toContain("isSyncLocked()");
+
+      vi.clearAllMocks();
+      await (getAdvancedTools(bridgeOptions).ripple_delete.handler as any)({
+        node_id: "clip-1",
+        dry_run: true,
+      });
+      script = mockedSendCommand.mock.calls[0][0];
+      expect(script).toContain("dryRun: true");
+      expect(script).not.toContain("target.remove(");
 
       vi.clearAllMocks();
       await (getTimelineTools(bridgeOptions).split_clip.handler as any)({ time_seconds: 2 });
@@ -717,7 +781,7 @@ describe("Tool Handler Behavior", () => {
       expect(script).toContain("getAudioTrackAt(t).razor(__razorTc)");
     });
 
-    it("checks transition API availability and verifies track state", async () => {
+    it("targets the QE clip, preserves an unsupported speed boundary, and verifies track state", async () => {
       const tools = getTransitionsTools(bridgeOptions);
       await (tools.add_transition.handler as any)({
         transition_name: "Cross Dissolve",
@@ -725,9 +789,38 @@ describe("Tool Handler Behavior", () => {
         cut_point_seconds: 2,
       });
       const script = mockedSendCommand.mock.calls[0][0];
-      expect(script).toContain('typeof qeTrack.addTransition !== "function"');
-      expect(script).toContain("transitionCountBefore");
-      expect(script).toContain("domTrack.transitions.numItems <= transitionCountBefore");
+      expect(script).toContain("var targetClip = incomingClip || outgoingClip");
+      expect(script).toContain("__findQeClipByDomClip(qeTrack, targetClip)");
+      expect(script).toContain('typeof qeClip.addTransition !== "function"');
+      expect(script).toContain('qeClip.addTransition(transitionQE, targetHead, String(durationFrames), "0", 0.5, false, true)');
+      expect(script).not.toContain("qeTrack.addTransition(");
+      expect(script).toContain("transitionAtCut");
+      expect(script).toContain("Math.abs(((transitionStart + transitionEnd) / 2) - cutTicks) <= frameTicks / 2");
+      expect(script).toContain("DOM readback did not find it at the requested cut point");
+
+      vi.clearAllMocks();
+      await (tools.add_transition_to_clip.handler as any)({
+        node_id: "clip-1", transition_name: "Cross Dissolve", position: "both",
+      });
+      const clipScript = mockedSendCommand.mock.calls[0][0];
+      expect(clipScript).toContain('result.trackType !== "video"');
+      expect(clipScript).toContain("__findQeClipByDomClip(qeTrack, result.clip)");
+      expect(clipScript).toContain("var requestedCount = position === \"both\" ? 2 : 1");
+      expect(clipScript).toContain('qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true)');
+      expect(clipScript).toContain('qeClip.addTransition(transitionQE, false, String(durationFrames), "0", 0.5, false, true)');
+      expect(clipScript).toContain("startVerified");
+      expect(clipScript).toContain("endVerified");
+      expect(clipScript).toContain("var verifiedMidpoint = (verifiedStart + verifiedEnd) / 2");
+      expect(clipScript).toContain("the request was partially applied");
+
+      vi.clearAllMocks();
+      await (tools.batch_add_transitions.handler as any)({ transition_name: "Cross Dissolve" });
+      const batchScript = mockedSendCommand.mock.calls[0][0];
+      expect(batchScript).toContain("__findQeClipByDomClip(qeTrack, incomingClip)");
+      expect(batchScript).toContain('qeClip.addTransition(transitionQE, true, String(durationFrames), "0", 0.5, false, true)');
+      expect(batchScript).toContain("verifiedCount !== requestedCount");
+      expect(batchScript).toContain("Math.abs(((readStart + readEnd) / 2) - expectedCut) <= frameTicks / 2");
+      expect(batchScript).toContain("DOM readback did not find a transition at cut");
     });
   });
 
@@ -932,8 +1025,8 @@ describe("Script Generation Patterns", () => {
 
         if (mockedSendCommand.mock.calls.length > 0) {
           const script = mockedSendCommand.mock.calls[0][0];
-          const hasResult = script.includes("__result") || script.includes("__error");
-          expect(hasResult, `${mod.name}.${name} script should use __result or __error`).toBe(true);
+          const hasResult = script.includes("__result") || script.includes("__error") || script.includes("__aeResult") || script.includes("__aeError");
+          expect(hasResult, `${mod.name}.${name} script should use a host result helper`).toBe(true);
         }
         if (mockedSendRawCommand.mock.calls.length > 0) {
           // Raw commands (scripting module) may not follow the pattern

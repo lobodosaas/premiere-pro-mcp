@@ -1,11 +1,13 @@
 "use strict";
 // Keep in sync with uxp-plugin/manifest.json "version"; enforced by
 // tests/uxp/panel-version.test.ts so a stale panel can be told apart.
-const PANEL_VERSION = "1.14.4";
-const { entrypoints, host, storage } = require("uxp");
+const PANEL_VERSION = "1.16.4";
+const uxp = require("uxp");
+const { entrypoints, host, storage } = uxp;
 const ppro = require("premierepro");
 const Protocol = globalThis.PremiereMcpProtocol;
 const TranscriptSupport = globalThis.PremiereMcpTranscript;
+const TranscriptImport = globalThis.PremiereMcpTranscriptImport || (typeof require === "function" ? require("./transcript-import.cjs") : null);
 const WorkspaceSupport = globalThis.PremiereMcpWorkspace;
 const EventSupport = globalThis.PremiereMcpEvents;
 const Commands = globalThis.PremiereMcpCommands;
@@ -13,14 +15,20 @@ const CommandDiagnostics = globalThis.PremiereMcpCommandDiagnostics;
 const workspaceBroker = WorkspaceSupport.createWorkspaceBroker({ fs: storage && storage.localFileSystem });
 const eventJournal = EventSupport.createEventJournal({ capacity: 512 });
 const commandDiagnostics = CommandDiagnostics.createCommandDiagnostics({ capacity: 64 });
+const transcriptImportRuntime = TranscriptImport && typeof TranscriptImport.createTranscriptImportRuntime === "function"
+  ? TranscriptImport.createTranscriptImportRuntime({ ppro, TranscriptSupport, Protocol })
+  : null;
 const commandRegistry = Commands.createCommandRegistry({
   ppro,
   Protocol,
   workspace: workspaceBroker,
   events: eventJournal,
   storage: typeof globalThis !== "undefined" ? globalThis.localStorage : null,
-  transcriptImportHandler: importTranscript,
-  transcriptImportProbe: canImportTranscript
+  xmp: uxp.xmp && typeof uxp.xmp.XMPMeta === "function"
+    ? uxp.xmp
+    : { XMPMeta: uxp.XMPMeta, XMPConst: uxp.XMPConst },
+  transcriptImportHandler: transcriptImportRuntime && transcriptImportRuntime.importTranscript,
+  transcriptImportProbe: transcriptImportRuntime && transcriptImportRuntime.canImportTranscript
 });
 let socket = null;
 let connectionGeneration = 0;
@@ -42,6 +50,27 @@ entrypoints.setup({
     }
   }
 });
+const BRIDGE_SESSION_KEY = "premiere-mcp.bridge-session";
+
+function persistBridgeSession(url, token) {
+  const storage = typeof globalThis !== "undefined" ? globalThis.localStorage : null;
+  if (!storage || typeof storage.setItem !== "function") return;
+  try { storage.setItem(BRIDGE_SESSION_KEY, JSON.stringify({ url: url || "", token: token || "" })); } catch (_) {}
+}
+
+function restoreBridgeSession() {
+  const storage = typeof globalThis !== "undefined" ? globalThis.localStorage : null;
+  if (!storage || typeof storage.getItem !== "function") return;
+  try {
+    const value = JSON.parse(storage.getItem(BRIDGE_SESSION_KEY) || "null");
+    if (!value || typeof value !== "object") return;
+    const urlEl = document.getElementById("bridge-url");
+    const tokenEl = document.getElementById("bridge-token");
+    if (urlEl && typeof value.url === "string" && value.url) urlEl.value = value.url;
+    if (tokenEl && typeof value.token === "string") tokenEl.value = value.token;
+  } catch (_) {}
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("connect").addEventListener("click", connect);
   document.getElementById("refresh").addEventListener("click", () => publishState("manual"));
@@ -50,6 +79,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   try { await workspaceBroker.initialize(); } catch (error) { setStatus(error.message || String(error)); }
   try { await commandRegistry.initialize(); } catch (error) { setStatus(error.message || String(error)); }
   renderWorkspaceStatus();
+  restoreBridgeSession();
   subscribeHostEvents();
   connect();
   startFallbackPolling();
@@ -64,6 +94,7 @@ async function capabilities() {
     cancellable: "preflight only", verification: "exporter return plus workspace file check", undoable: false, atomic: false
   });
   const supportedHost = TranscriptSupport.versionAtLeast(host && host.version, "25.6.0");
+  const transcriptImportHost = TranscriptSupport.versionAtLeast(host && host.version, "26.3.0");
   const transcriptExportApi = supportedHost && !!(ppro.Transcript && ppro.Transcript.exportToJSON && ppro.Transcript.importFromJSON);
   const transcriptNativeHasApi = supportedHost && !!(ppro.Transcript && typeof ppro.Transcript.hasTranscript === "function");
   const transcriptHasApi = transcriptNativeHasApi || !!(supportedHost && ppro.Transcript && typeof ppro.Transcript.exportToJSON === "function");
@@ -75,6 +106,16 @@ async function capabilities() {
       nativeCheckMinVersion: "26.3.0", nativeCheck: transcriptNativeHasApi,
       fallback: transcriptNativeHasApi ? null : transcriptHasApi ? "export-probe" : null,
       fallbackMinVersion: transcriptHasApi ? "25.6.0" : null
+    },
+    "transcript.import": {
+      supported: transcriptImportHost && !!transcriptImportRuntime && transcriptImportRuntime.canImportTranscript(),
+      readOnly: false,
+      destructive: true,
+      undoable: true,
+      idempotent: true,
+      minVersion: "26.3.0",
+      confirmationRequired: true,
+      verification: "bounded exact transcript-export SHA-256 readback"
     },
     "captions.inspect": { supported: supportedHost, readOnly: true, minVersion: "25.6.0" },
     "captions.create": { supported: false, reason: "No documented Premiere UXP caption creation API." },
@@ -149,7 +190,13 @@ async function transcriptContext(args) {
   if (!ppro.Transcript || typeof ppro.Transcript.exportToJSON !== "function") throw new Error("Transcript APIs require Premiere Pro 25.6 or newer");
   const clip = await findProjectItem(project, args || {});
   const projectItem = ppro.ProjectItem.cast(clip);
-  return { project, clip, projectItemId: String(projectItem.getId()), projectItemName: clip.name };
+  return {
+    project,
+    projectGuid: String(project.guid),
+    clip,
+    projectItemId: String(await projectItem.getId()),
+    projectItemName: clip.name
+  };
 }
 
 async function exportTranscript(args) {
@@ -157,7 +204,12 @@ async function exportTranscript(args) {
   const json = await ppro.Transcript.exportToJSON(context.clip);
   if (typeof json !== "string" || !json) throw new Error("The selected clip has no transcript");
   TranscriptSupport.parseTranscriptJSON(json);
-  return { projectItemId: context.projectItemId, projectItemName: context.projectItemName, json };
+  return {
+    projectGuid: context.projectGuid,
+    projectItemId: context.projectItemId,
+    projectItemName: context.projectItemName,
+    json
+  };
 }
 
 async function searchTranscript(args) {
@@ -174,38 +226,32 @@ async function hasTranscript(args) {
   if (!ppro.Transcript) throw new Error("Transcript APIs require Premiere Pro 25.6 or newer");
   const clip = await findProjectItem(project, args || {});
   const projectItem = ppro.ProjectItem.cast(clip);
-  const context = { projectItemId: String(projectItem.getId()), projectItemName: clip.name, clip };
+  const context = {
+    projectGuid: String(project.guid),
+    projectItemId: String(await projectItem.getId()),
+    projectItemName: clip.name,
+    clip
+  };
   if (typeof ppro.Transcript.hasTranscript === "function") {
-    return { projectItemId: context.projectItemId, projectItemName: context.projectItemName, hasTranscript: !!ppro.Transcript.hasTranscript(context.clip), method: "native" };
+    return {
+      projectGuid: context.projectGuid,
+      projectItemId: context.projectItemId,
+      projectItemName: context.projectItemName,
+      hasTranscript: !!await ppro.Transcript.hasTranscript(context.clip),
+      method: "native"
+    };
   }
   if (typeof ppro.Transcript.exportToJSON !== "function") throw new Error("This Premiere build cannot check transcripts");
   const present = await TranscriptSupport.probeTranscriptExport(function () {
     return ppro.Transcript.exportToJSON(context.clip);
   });
-  return { projectItemId: context.projectItemId, projectItemName: context.projectItemName, hasTranscript: present, method: "export-probe" };
-}
-
-function canImportTranscript() {
-  return TranscriptSupport.versionAtLeast(host && host.version, "25.6.0")
-    && !!(ppro.Transcript && typeof ppro.Transcript.exportToJSON === "function")
-    && typeof ppro.Transcript.importFromJSON === "function"
-    && typeof ppro.Transcript.createImportTextSegmentsAction === "function";
-}
-
-async function importTranscript(args) {
-  if (!args || typeof args.json !== "string") throw new Error("json is required");
-  TranscriptSupport.parseTranscriptJSON(args.json);
-  const context = await transcriptContext(args);
-  if (typeof ppro.Transcript.createImportTextSegmentsAction !== "function") throw new Error("This Premiere build cannot create transcript import actions");
-  const textSegments = ppro.Transcript.importFromJSON(args.json);
-  let committed = false;
-  context.project.lockedAccess(function () {
-    committed = context.project.executeTransaction(function (compoundAction) {
-      compoundAction.addAction(ppro.Transcript.createImportTextSegmentsAction(textSegments, context.clip));
-    }, "Import transcript");
-  });
-  if (!committed) throw new Error("Premiere rejected the transcript import transaction");
-  return { imported: true, projectItemId: context.projectItemId, projectItemName: context.projectItemName, undoable: true };
+  return {
+    projectGuid: context.projectGuid,
+    projectItemId: context.projectItemId,
+    projectItemName: context.projectItemName,
+    hasTranscript: present,
+    method: "export-probe"
+  };
 }
 
 async function inspectCaptions() {
@@ -363,16 +409,14 @@ async function dispatch(raw, targetSocket, generation) {
       operation: result && result.operation
         ? result.operation
         : Protocol.operationSemantics(
-          (cmd.command.indexOf("transition.video.") === 0 && cmd.command !== "transition.video.list") || cmd.command === "transcript.import"
+          cmd.command.indexOf("transition.video.") === 0 && cmd.command !== "transition.video.list"
             ? {
                 mutatesProject: true,
                 verificationStatus: "verified",
                 verificationBoundary: "project_executeTransaction_return",
                 verificationEvidence: [{ type: "transaction", accepted: true }],
                 undoSupported: true,
-                undoLabel: cmd.command === "transcript.import"
-                  ? "Import transcript"
-                  : cmd.command === "transition.video.add"
+                undoLabel: cmd.command === "transition.video.add"
                     ? "Add video transition"
                     : "Remove video transition",
                 transactionActionGroup: true,
@@ -443,6 +487,7 @@ function connect() {
   socket = nextSocket;
   nextSocket.onopen = async () => {
     if (!isCurrentConnection(nextSocket, generation)) return;
+    persistBridgeSession(configuredUrl, token);
     const advertised = await capabilities();
     if (!isCurrentConnection(nextSocket, generation)) return;
     setStatus("Connected");
@@ -512,6 +557,12 @@ function supportedHostEvents() {
   const sequence = constants.SequenceEvent || {};
   const operation = constants.OperationCompleteEvent || {};
   const encoder = ppro.EncoderManager || {};
+  const snapEvents = typeof EventSupport.createTimelineSnapEventDefinitions === "function"
+    ? EventSupport.createTimelineSnapEventDefinitions(ppro.SnapEvent)
+    : [];
+  const operationBoundaryEvents = typeof EventSupport.createOperationBoundaryEventDefinitions === "function"
+    ? EventSupport.createOperationBoundaryEventDefinitions(ppro.OperationCompleteEvent)
+    : [];
   return [
     hostEvent("project", "project.opened", project.OPENED, true),
     hostEvent("project", "project.closed", project.CLOSED, true),
@@ -530,7 +581,7 @@ function supportedHostEvents() {
     hostEvent("encoder", "encoder.complete", encoder.EVENT_RENDER_COMPLETE, false),
     hostEvent("encoder", "encoder.error", encoder.EVENT_RENDER_ERROR, false),
     hostEvent("encoder", "encoder.cancelled", encoder.EVENT_RENDER_CANCEL, false)
-  ].filter((event) => event.eventName !== undefined && event.eventName !== null);
+  ].concat(snapEvents, operationBoundaryEvents).filter((event) => event.eventName !== undefined && event.eventName !== null);
 }
 function hostEvent(category, name, eventName, stateInvalidating, coalesceKey) {
   return { category, name, eventName, stateInvalidating, coalesceKey: coalesceKey || null };

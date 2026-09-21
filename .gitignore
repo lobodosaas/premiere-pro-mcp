@@ -27,8 +27,14 @@ Thumbs.db
 *~
 
 # Environment
-.env
-.env.local
+.env*
+!.env.example
+!.env.template
+*.pem
+*.key
+*.pfx
+*.p12
+.npmrc
 
 # Logs
 *.log
@@ -36,3 +42,13 @@ npm-debug.log*
 
 # Temp bridge files (runtime)
 *.jsx.response.json
+
+# Local landing previews and browser verification artifacts
+landing-dist/
+.playwright-cli/
+output/playwright/
+landing/test-results/
+landing/playwright-report/
+
+# Local OpenCode session config (per-machine MCP enablement)
+opencode.json

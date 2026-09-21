@@ -33,8 +33,13 @@ describe("capability profiles", () => {
     expect(capabilityForTool("capture_frame")).toBe("export");
     expect(capabilityForTool("validate_export_preset")).toBe("export");
     expect(capabilityForTool("verify_delivery_file")).toBe("filesystem");
+    expect(capabilityForTool("verify_delivery_conformance")).toBe("filesystem");
     expect(capabilityForTool("create_project_backup")).toBe("filesystem");
     expect(capabilityForTool("analyze_loudness")).toBe("filesystem");
+    expect(capabilityForTool("detect_beats")).toBe("filesystem");
+    expect(capabilityForTool("detect_motion_peaks")).toBe("filesystem");
+    expect(capabilityForTool("read_video_scopes")).toBe("filesystem");
+    expect(capabilityForTool("plan_shot_match")).toBe("filesystem");
     expect(capabilityForTool("analyze_video_qc")).toBe("filesystem");
     expect(capabilityForTool("detect_source_scene_changes")).toBe("filesystem");
     expect(capabilityForTool("normalize_loudness_file")).toBe("filesystem");
@@ -47,6 +52,7 @@ describe("capability profiles", () => {
     expect(capabilityForTool("encode_media_uxp")).toBe("export");
     expect(capabilityForTool("inspect_project_selection_uxp")).toBe("inspect");
     expect(capabilityForTool("manage_markers_uxp")).toBe("edit");
+    expect(capabilityForTool("list_markers_uxp")).toBe("inspect");
     expect(capabilityForTool("get_project_info")).toBe("inspect");
     expect(capabilityForTool("preview_transcript_edit_uxp")).toBe("inspect");
     expect(capabilityForTool("plan_transcript_rough_cut_uxp")).toBe("inspect");
@@ -95,6 +101,131 @@ describe("capability profiles", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 
+  it("requires all authority dimensions for guarded MOGRT authoring", async () => {
+    const handler = vi.fn(async () => "ok");
+    expect(capabilitiesForToolInvocation("verify_after_effects_connection", {})).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("preview_mogrt_recipe", {})).toEqual(["inspect", "filesystem"]);
+    expect(capabilitiesForToolInvocation("create_mogrt_recipe", {})).toEqual(["edit", "export", "filesystem"]);
+    expect(capabilitiesForToolInvocation("verify_mogrt_artifact", {})).toEqual(["inspect", "filesystem"]);
+    expect(capabilitiesForToolInvocation("preview_mogrt_batch", {})).toEqual(["inspect", "filesystem"]);
+    expect(capabilitiesForToolInvocation("create_mogrt_batch", {})).toEqual(["edit", "export", "filesystem"]);
+    expect(capabilitiesForToolInvocation("publish_mogrt_to_library", {})).toEqual(["filesystem"]);
+    expect(capabilitiesForToolInvocation("enqueue_after_effects_render", {})).toEqual(["edit", "export", "filesystem"]);
+    expect(capabilitiesForToolInvocation("apply_mogrt_premiere_handoff", {})).toEqual(["edit", "filesystem"]);
+    expect(isToolPermitted("create_mogrt_batch", resolveCapabilities("inspect,edit,filesystem"))).toBe(false);
+    expect(isToolPermitted("enqueue_after_effects_render", resolveCapabilities("edit,export,filesystem"))).toBe(true);
+
+    await expect(
+      guardToolHandler("create_mogrt_recipe", handler, resolveCapabilities("edit,export"), () => "mogrt-filesystem")({}),
+    ).rejects.toMatchObject({ code: "CAPABILITY_DENIED", capability: "filesystem", operationId: "mogrt-filesystem" });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("lists sequence-range inspection for inspect authority but requires edit to update", async () => {
+    const handler = vi.fn(async () => "ok");
+    const inspectOnly = resolveCapabilities("inspect");
+    expect(isToolPermitted("manage_sequence_range_uxp", inspectOnly)).toBe(true);
+    expect(capabilitiesForToolInvocation("manage_sequence_range_uxp", { action: "inspect" })).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("manage_sequence_range_uxp", { action: "update" })).toEqual(["edit"]);
+
+    await expect(
+      guardToolHandler("manage_sequence_range_uxp", handler, inspectOnly, () => "range-inspect")({ action: "inspect" }),
+    ).resolves.toBe("ok");
+    await expect(
+      guardToolHandler("manage_sequence_range_uxp", handler, inspectOnly, () => "range-update")({ action: "update" }),
+    ).rejects.toMatchObject({ code: "CAPABILITY_DENIED", capability: "edit", operationId: "range-update" });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists sequence-playhead inspection for inspect authority but requires edit to set", async () => {
+    const handler = vi.fn(async () => "ok");
+    const inspectOnly = resolveCapabilities("inspect");
+    expect(isToolPermitted("manage_sequence_playhead_uxp", inspectOnly)).toBe(true);
+    expect(capabilitiesForToolInvocation("manage_sequence_playhead_uxp", { action: "inspect" })).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("manage_sequence_playhead_uxp", { action: "set" })).toEqual(["edit"]);
+
+    await expect(
+      guardToolHandler("manage_sequence_playhead_uxp", handler, inspectOnly, () => "playhead-inspect")({ action: "inspect" }),
+    ).resolves.toBe("ok");
+    await expect(
+      guardToolHandler("manage_sequence_playhead_uxp", handler, inspectOnly, () => "playhead-set")({ action: "set" }),
+    ).rejects.toMatchObject({ code: "CAPABILITY_DENIED", capability: "edit", operationId: "playhead-set" });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists app-preference inspection for inspect authority but requires edit to set", async () => {
+    const handler = vi.fn(async () => "ok");
+    const inspectOnly = resolveCapabilities("inspect");
+    expect(isToolPermitted("manage_app_preferences_uxp", inspectOnly)).toBe(true);
+    expect(capabilitiesForToolInvocation("manage_app_preferences_uxp", { action: "inspect" })).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("manage_app_preferences_uxp", { action: "set" })).toEqual(["edit"]);
+
+    await expect(
+      guardToolHandler("manage_app_preferences_uxp", handler, inspectOnly, () => "preference-inspect")({ action: "inspect" }),
+    ).resolves.toBe("ok");
+    await expect(
+      guardToolHandler("manage_app_preferences_uxp", handler, inspectOnly, () => "preference-set")({ action: "set" }),
+    ).rejects.toMatchObject({ code: "CAPABILITY_DENIED", capability: "edit", operationId: "preference-set" });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists source-label inspection for inspect authority but requires edit to update", async () => {
+    const handler = vi.fn(async () => "ok");
+    const inspectOnly = resolveCapabilities("inspect");
+    expect(isToolPermitted("manage_timeline_source_label_uxp", inspectOnly)).toBe(true);
+    expect(capabilitiesForToolInvocation("manage_timeline_source_label_uxp", { action: "inspect" })).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("manage_timeline_source_label_uxp", { action: "update" })).toEqual(["edit"]);
+
+    await expect(
+      guardToolHandler("manage_timeline_source_label_uxp", handler, inspectOnly, () => "source-label-inspect")({ action: "inspect" }),
+    ).resolves.toBe("ok");
+    await expect(
+      guardToolHandler("manage_timeline_source_label_uxp", handler, inspectOnly, () => "source-label-update")({ action: "update" }),
+    ).rejects.toMatchObject({ code: "CAPABILITY_DENIED", capability: "edit", operationId: "source-label-update" });
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists and invokes native sequence-timing inspection with inspect authority only", async () => {
+    const handler = vi.fn(async () => "ok");
+    const inspectOnly = resolveCapabilities("inspect");
+    expect(isToolPermitted("inspect_sequence_timing_uxp", inspectOnly)).toBe(true);
+    expect(capabilitiesForToolInvocation("inspect_sequence_timing_uxp", {})).toEqual(["inspect"]);
+    expect(isToolPermitted("inspect_frame_alignment_uxp", inspectOnly)).toBe(true);
+    expect(capabilitiesForToolInvocation("inspect_frame_alignment_uxp", { action: "align", frame_rate: 24, seconds: 1 })).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("inspect_project_insertion_bin_uxp", {})).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("inspect_installed_mogrt_directory_uxp", {})).toEqual(["inspect"]);
+    expect(capabilitiesForToolInvocation("inspect_track_item_identity_uxp", {})).toEqual(["inspect"]);
+    await expect(
+      guardToolHandler("inspect_sequence_timing_uxp", handler, inspectOnly, () => "timing-inspect")({}),
+    ).resolves.toBe("ok");
+    await expect(
+      guardToolHandler("inspect_frame_alignment_uxp", handler, inspectOnly, () => "frame-alignment-inspect")({ action: "frame", frame_rate: 24, frame_count: 1 }),
+    ).resolves.toBe("ok");
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it("withholds and rejects non-undoable preset sequence creation without edit authority", async () => {
+    const handler = vi.fn(async () => "ok");
+    const inspectOnly = resolveCapabilities("inspect");
+    expect(capabilitiesForToolInvocation("create_sequence_with_preset_uxp", {})).toEqual(["edit"]);
+    expect(isToolPermitted("create_sequence_with_preset_uxp", inspectOnly)).toBe(false);
+    await expect(
+      guardToolHandler("create_sequence_with_preset_uxp", handler, inspectOnly, () => "preset-sequence-create")({}),
+    ).rejects.toMatchObject({ code: "CAPABILITY_DENIED", capability: "edit", operationId: "preset-sequence-create" });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("withholds and rejects non-undoable empty sequence creation without edit authority", async () => {
+    const handler = vi.fn(async () => "ok");
+    const inspectOnly = resolveCapabilities("inspect");
+    expect(capabilitiesForToolInvocation("create_empty_sequence_uxp", {})).toEqual(["edit"]);
+    expect(isToolPermitted("create_empty_sequence_uxp", inspectOnly)).toBe(false);
+    await expect(
+      guardToolHandler("create_empty_sequence_uxp", handler, inspectOnly, () => "empty-sequence-create")({}),
+    ).rejects.toMatchObject({ code: "CAPABILITY_DENIED", capability: "edit", operationId: "empty-sequence-create" });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["manage_clip_effects_uxp", "catalog"],
     ["batch_selected_clips_uxp", "inspect"],
@@ -102,6 +233,11 @@ describe("capability profiles", () => {
     ["manage_timeline_selection_uxp", "inspect_targets"],
     ["manage_proxy_ingest_uxp", "inspect_proxy"],
     ["manage_metadata_uxp", "get"],
+    ["manage_metadata_uxp", "inspect_fields"],
+    ["inspect_project_panel_metadata_uxp", "panel"],
+    ["inspect_project_panel_metadata_uxp", "item_columns"],
+    ["manage_project_panel_metadata_uxp", "inspect"],
+    ["create_project_metadata_field_uxp", "inspect"],
     ["manage_color_conformance_uxp", "preflight"],
     ["audition_source_monitor_uxp", "state"],
     ["preflight_production_storage_uxp", "preflight"],
@@ -109,13 +245,30 @@ describe("capability profiles", () => {
     ["manage_markers_uxp", "inspect"],
     ["organize_project_items_uxp", "inspect_bin"],
     ["manage_sequence_settings_uxp", "get"],
+    ["manage_sequence_display_format_uxp", "inspect"],
+    ["manage_sequence_range_uxp", "inspect"],
+    ["manage_sequence_playhead_uxp", "inspect"],
+    ["manage_app_preferences_uxp", "inspect"],
+    ["manage_timeline_source_label_uxp", "inspect"],
+    ["inspect_project_insertion_bin_uxp", undefined],
+    ["inspect_installed_mogrt_directory_uxp", undefined],
+    ["inspect_sequence_timing_uxp", undefined],
+    ["inspect_frame_alignment_uxp", undefined],
+    ["calculate_tick_time_uxp", undefined],
+    ["inspect_sequence_timing_by_guid_uxp", undefined],
+    ["inspect_track_item_identity_uxp", undefined],
     ["automate_effect_parameters_uxp", "inspect"],
+    ["automate_effect_parameters_uxp", "inspect_point_value"],
+    ["automate_effect_parameters_uxp", "inspect_point_displacement"],
+    ["automate_effect_parameters_uxp", "inspect_color_value"],
+    ["automate_effect_parameters_uxp", "inspect_keyframe", { keyframe_direction: "nearest" }],
+    ["automate_effect_parameters_uxp", "inspect_time_varying"],
     ["transform_track_item_uxp", "inspect"],
     ["manage_sequences_uxp", "inspect"],
     ["encode_media_uxp", "preflight"],
     ["animate_caption_clip_uxp", "preview"],
-  ])("keeps %s:%s available to inspect-only profiles", (toolName, action) => {
-    expect(capabilitiesForToolInvocation(toolName, { action })).toEqual(["inspect"]);
+  ])("keeps %s:%s available to inspect-only profiles", (toolName, action, args = {}) => {
+    expect(capabilitiesForToolInvocation(toolName, { action, ...args })).toEqual(["inspect"]);
     expect(isToolPermitted(toolName, resolveCapabilities("inspect"))).toBe(true);
   });
 
@@ -125,13 +278,25 @@ describe("capability profiles", () => {
     ["manage_timeline_selection_uxp", "replace", ["edit"]],
     ["manage_timeline_selection_uxp", "clear", ["edit"]],
     ["manage_metadata_uxp", "update", ["edit"]],
+    ["manage_metadata_uxp", "update_field", ["edit"]],
+    ["manage_project_panel_metadata_uxp", "update", ["edit"]],
+    ["create_project_metadata_field_uxp", "create", ["edit"]],
     ["manage_color_conformance_uxp", "update", ["edit"]],
     ["preflight_production_storage_uxp", "configure_project", ["edit"]],
     ["manage_markers_uxp", "remove", ["edit"]],
+    ["manage_markers_uxp", "remove_many", ["edit"]],
     ["organize_project_items_uxp", "move", ["edit"]],
     ["manage_sequence_settings_uxp", "update", ["edit"]],
+    ["manage_sequence_display_format_uxp", "update", ["edit"]],
+    ["manage_sequence_range_uxp", "update", ["edit"]],
+    ["manage_sequence_playhead_uxp", "set", ["edit"]],
+    ["manage_app_preferences_uxp", "set", ["edit"]],
+    ["manage_timeline_source_label_uxp", "update", ["edit"]],
     ["import_project_media_uxp", "files", ["edit", "filesystem"]],
+    ["automate_effect_parameters_uxp", "set_point_value", ["edit"]],
+    ["automate_effect_parameters_uxp", "set_color_value", ["edit"]],
     ["automate_effect_parameters_uxp", "add_keyframe", ["edit"]],
+    ["automate_effect_parameters_uxp", "set_time_varying", ["edit"]],
     ["transform_track_item_uxp", "update", ["edit"]],
     ["manage_sequences_uxp", "delete", ["edit"]],
     ["encode_media_uxp", "sequence", ["export", "filesystem"]],
@@ -177,6 +342,12 @@ describe("capability profiles", () => {
     expect(report.backends.cep.platforms).toEqual(["macOS", "Windows"]);
     expect(report.backends.uxp.hostVerificationRequired).toBe(true);
     expect(report.backends.uxp.commands).toContain("operation.cancel");
+    expect(report.backends.uxp.commands).toEqual(expect.arrayContaining([
+      "sequence.playhead.inspect",
+      "sequence.playhead.set",
+    ]));
+    expect(report.backends.uxp.commands).toContain("markers.addBeatGrid");
+    expect(report.backends.uxp.commands).toContain("markers.removeMany");
     expect(report.backends.uxp.events).toContain("premiere.state.changed");
     expect(report.backends.uxp.operationSemantics.atomicRollback).toBe(false);
     expect(report.authority.disabled).toContain("unsafe-script");
@@ -222,6 +393,67 @@ describe("capability profiles", () => {
       minimumPremiereVersion: null,
       verificationBoundary: "static_metadata_only",
       hostVerificationRequired: false,
+    });
+
+  });
+
+  it("classifies caption inventory with its UXP backend and baseline", () => {
+    const tool = deriveToolOperationalCapability(
+      "inspect_caption_tracks_uxp",
+      { description: "Inventory native caption tracks on the active sequence." },
+      resolveCapabilities("inspect"),
+    );
+    expect(tool).toMatchObject({
+      backend: "UXP",
+      backends: ["uxp"],
+      minimumPremiereVersion: "25.6",
+      authority: { required: "inspect", enabled: true },
+      verificationBoundary: "host_response",
+      hostVerificationRequired: true,
+    });
+    expect(tool.notes).toEqual([
+      "Runs through the authenticated local UXP bridge using Premiere UXP APIs.",
+    ]);
+  });
+
+  it("does not infer QE usage from a UXP tool description that rejects QE", () => {
+    const tool = deriveToolOperationalCapability(
+      "edit_timeline_uxp",
+      { description: "Edit through documented UXP APIs without undocumented QE calls." },
+      resolveCapabilities("edit"),
+    );
+    expect(tool).toMatchObject({
+      backend: "UXP",
+      backends: ["uxp"],
+      status: "supported",
+      minimumPremiereVersion: "25.6",
+    });
+    expect(tool.notes).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("undocumented QE DOM"),
+    ]));
+  });
+
+  it("represents authenticated UXP-only tool metadata without a CEP fallback claim", () => {
+    const tool = deriveToolOperationalCapability(
+      "inspect_caption_tracks_uxp",
+      {
+        description: "Inspect native caption tracks.",
+        operationalCapability: {
+          backend: "UXP",
+          backends: ["uxp"],
+          minimumPremiereVersion: "25.6",
+          verificationBoundary: "structured_uxp_readback",
+          hostVerificationRequired: true,
+        },
+      },
+      resolveCapabilities("inspect"),
+    );
+    expect(tool).toMatchObject({
+      backend: "UXP",
+      backends: ["uxp"],
+      minimumPremiereVersion: "25.6",
+      verificationBoundary: "structured_uxp_readback",
+      hostVerificationRequired: true,
     });
   });
 
@@ -360,10 +592,16 @@ describe("isToolPermitted", () => {
     expect(isToolPermitted("trim_clip", config)).toBe(false);
     expect(isToolPermitted("export_sequence", config)).toBe(false);
     expect(isToolPermitted("import_media", config)).toBe(false);
+    expect(isToolPermitted("verify_delivery_conformance", config)).toBe(false);
     expect(isToolPermitted("get_project_info", config)).toBe(true);
     expect(isToolPermitted("manage_proxy_ingest_uxp", config)).toBe(true);
     expect(isToolPermitted("audition_source_monitor_uxp", config)).toBe(true);
     expect(isToolPermitted("edit_timeline_uxp", config)).toBe(false);
+  });
+
+  it("permits delivery conformance verification only with filesystem authority", () => {
+    expect(isToolPermitted("verify_delivery_conformance", resolveCapabilities("inspect"))).toBe(false);
+    expect(isToolPermitted("verify_delivery_conformance", resolveCapabilities("filesystem"))).toBe(true);
   });
 
   it("always advertises the diagnostic tools, even under a profile that excludes inspect", () => {

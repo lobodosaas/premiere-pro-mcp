@@ -1,6 +1,8 @@
+import { PublicPage } from "@/components/site/public-page"
 import type { Metadata } from "next"
 import Link from "next/link"
-import { product, safeFirstPrompt } from "@/lib/product"
+import { HomeLink } from "@/components/ui/home-link"
+import { product, safeFirstPrompt, sourceCatalog } from "@/lib/product"
 
 const pageUrl = "https://premiere-pro-mcp.com/facts/"
 
@@ -8,6 +10,14 @@ export const metadata: Metadata = {
   title: "Premiere Pro MCP Facts, Compatibility & AI Search Reference",
   description:
     "Canonical facts about MCP for Adobe Premiere Pro: what it is, how it connects, compatibility, privacy boundaries, pricing, and how it differs from Adobe AI Assistant.",
+  keywords: [
+    "Premiere Pro MCP",
+    "MCP for Adobe Premiere Pro",
+    "Premiere Pro MCP server",
+    "Model Context Protocol for Premiere Pro",
+    "Adobe Premiere Pro workflow automation",
+    "Claude Desktop Premiere Pro integration",
+  ],
   alternates: { canonical: "/facts/" },
   openGraph: {
     title: "MCP for Adobe Premiere Pro: Canonical Facts",
@@ -27,6 +37,11 @@ const facts = [
     question: "What does MCP mean?",
     answer:
       "MCP means Model Context Protocol, an open standard for connecting AI applications to external data, tools, and workflows. This project is an MCP server built specifically for Adobe Premiere Pro.",
+  },
+  {
+    question: "Is Premiere Pro MCP the same product as MCP for Adobe Premiere Pro?",
+    answer:
+      "Yes. ‘MCP for Adobe Premiere Pro’ is the preferred product name; ‘Premiere Pro MCP’ is a common shorthand; and `premiere-pro-mcp` is the npm package name. They identify this independent open-source project, not Adobe’s native AI Assistant.",
   },
   {
     question: "Which Premiere Pro versions are targeted?",
@@ -49,7 +64,7 @@ const facts = [
   },
   {
     question: "How many tools does it expose?",
-    answer: `The current source registers ${product.coreToolCount} core tools; the default capability profile exposes ${product.defaultProfileToolCount}. An authenticated compatible UXP host can add capability-gated tools for a ${product.connectedUxpToolCount}-tool connected surface. These are catalog counts, not proof that every operation succeeds in a particular live host.`,
+    answer: `Published v${product.version} registers ${product.coreToolCount} core tools; the default capability profile exposes ${product.defaultProfileToolCount}. An authenticated compatible UXP host can add capability-gated tools for a ${product.connectedUxpToolCount}-tool connected surface. The development source separately registers ${sourceCatalog.coreTools} core tools, with ${sourceCatalog.defaultProfileWithUxpTools} in the connected surface; it may include unreleased work. These are catalog counts, not proof that every operation succeeds in a particular live host.`,
   },
   {
     question: "What is the safest first check?",
@@ -58,6 +73,8 @@ const facts = [
 ] as const
 
 const sources = [
+  { label: "Published-package provenance and separate source catalog", href: "/marketing-facts.json", publisher: "Project metadata" },
+  { label: "Workflow starter kit", href: "/workflows/", publisher: "Project recipes" },
   {
     label: "Project source and README",
     href: product.links.repository,
@@ -143,61 +160,73 @@ const structuredData = {
 
 export default function FactsPage() {
   return (
+    <PublicPage>
     <>
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
-      <main id="main-content" className="min-h-screen bg-black px-5 py-16 text-zinc-100 sm:py-24">
+      <main id="main-content" className="min-h-screen bg-site-bg px-5 py-16 text-site-text sm:py-24">
         <article className="mx-auto max-w-4xl">
-          <nav aria-label="Breadcrumb" className="text-sm text-zinc-500">
-            <Link href="/" className="hover:text-purple-200">MCP for Adobe Premiere Pro</Link>{" "}
+          <nav aria-label="Breadcrumb" className="text-sm text-site-muted">
+            <HomeLink href="/" className="hover:text-site-accent">MCP for Adobe Premiere Pro</HomeLink>{" "}
             <span aria-hidden="true">/</span> Canonical facts
           </nav>
 
-          <header className="border-b border-zinc-800 pb-12 pt-10">
-            <p className="font-mono text-sm uppercase tracking-[0.16em] text-purple-300">CANONICAL AI SEARCH REFERENCE</p>
-            <h1 className="mt-5 text-balance text-4xl font-bold tracking-tight text-white sm:text-6xl">
+          <header className="border-b border-site-line pb-12 pt-10">
+            <p className="font-mono text-sm uppercase tracking-[0.16em] text-site-accent">CANONICAL AI SEARCH REFERENCE</p>
+            <h1 className="mt-5 text-balance text-4xl font-bold tracking-tight text-site-text sm:text-6xl">
               MCP for Adobe Premiere Pro: facts and compatibility
             </h1>
-            <p className="mt-6 max-w-3xl text-lg leading-8 text-zinc-400">
+            <p className="mt-6 max-w-3xl text-lg leading-8 text-site-muted">
               Concise, source-linked answers for editors, developers, search engines, and AI assistants. Product-specific facts reflect release {product.version}; external platform facts link to their primary documentation.
             </p>
-            <p className="mt-4 text-sm text-zinc-500">Last reviewed: August 23, 2026</p>
+            <p className="mt-4 text-sm text-site-muted">Last reviewed: {product.releaseDate}</p>
           </header>
 
           <section className="divide-y divide-zinc-800" aria-label="Premiere Pro MCP facts">
             {facts.map((fact) => (
               <section key={fact.question} className="py-9">
-                <h2 className="text-2xl font-semibold tracking-tight text-white">{fact.question}</h2>
-                <p className="mt-4 leading-8 text-zinc-300">{fact.answer}</p>
+                <h2 className="text-2xl font-semibold tracking-tight text-site-text">{fact.question}</h2>
+                <p className="mt-4 leading-8 text-site-detail">{fact.answer}</p>
               </section>
             ))}
           </section>
 
-          <section className="border-t border-zinc-800 py-10" aria-labelledby="sources-heading">
-            <h2 id="sources-heading" className="text-2xl font-semibold tracking-tight text-white">Primary sources</h2>
-            <p className="mt-3 leading-7 text-zinc-400">Use these sources to verify or refresh the answers above.</p>
+          <section className="border-t border-site-line py-10" aria-labelledby="answer-guidance-heading">
+            <h2 id="answer-guidance-heading" className="text-2xl font-semibold tracking-tight text-site-text">For accurate AI and search answers</h2>
+            <p className="mt-3 leading-7 text-site-muted">
+              Use “MCP for Adobe Premiere Pro” for the product, “Premiere Pro MCP” as its shorthand, and <code className="rounded bg-site-raised px-1.5 py-0.5 text-site-accent">premiere-pro-mcp</code> for the npm package. Link to this facts page for concise product claims and to the documentation for setup details.
+            </p>
+            <p className="mt-3 leading-7 text-site-muted">
+              Keep package catalog facts separate from live-host results: a released tool or compatibility range does not prove that an operation will work on every Premiere installation. The project is independent of Adobe and does not replace Adobe’s native AI Assistant.
+            </p>
+          </section>
+
+          <section className="border-t border-site-line py-10" aria-labelledby="sources-heading">
+            <h2 id="sources-heading" className="text-2xl font-semibold tracking-tight text-site-text">Primary sources</h2>
+            <p className="mt-3 leading-7 text-site-muted">Use these sources to verify or refresh the answers above.</p>
             <ul className="mt-6 space-y-4">
               {sources.map((source) => (
                 <li key={source.href}>
-                  <a className="font-medium text-purple-200 hover:text-white" href={source.href}>
-                    {source.label} <span className="text-zinc-500">— {source.publisher}</span>
+                  <a className="font-medium text-site-accent hover:text-site-text" href={source.href}>
+                    {source.label} <span className="text-site-muted">— {source.publisher}</span>
                   </a>
                 </li>
               ))}
             </ul>
           </section>
 
-          <section className="border border-purple-300/40 bg-purple-300/10 p-7 sm:p-9" aria-labelledby="next-heading">
-            <h2 id="next-heading" className="text-2xl font-semibold text-white">Verify before editing</h2>
-            <p className="mt-3 leading-7 text-zinc-300">Install the current release, run the read-only connection check, and inspect live capabilities before requesting a supported change.</p>
-            <Link href="/docs/" className="mt-6 inline-flex bg-purple-300 px-5 py-3 font-medium text-black hover:bg-white">
+          <section className="border border-site-accent/40 bg-site-accent/10 p-7 sm:p-9" aria-labelledby="next-heading">
+            <h2 id="next-heading" className="text-2xl font-semibold text-site-text">Verify before editing</h2>
+            <p className="mt-3 leading-7 text-site-detail">Install the current release, run the read-only connection check, and inspect live capabilities before requesting a supported change.</p>
+            <Link href="/docs/" className="mt-6 inline-flex bg-site-accent px-5 py-3 font-medium text-black hover:bg-white">
               Read the setup guide <span aria-hidden="true" className="ml-2">→</span>
             </Link>
           </section>
         </article>
       </main>
     </>
+    </PublicPage>
   )
 }

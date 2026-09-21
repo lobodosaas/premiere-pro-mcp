@@ -1,4 +1,4 @@
-/* MCP Bridge - CEP Plugin Main Script
+/* MCP for Adobe Premiere Pro - CEP Plugin Main Script
  * Polls a temp directory for command files (.jsx), executes them
  * in Premiere Pro's ExtendScript engine, and writes results back. */
 
@@ -61,16 +61,18 @@ function refreshConnectionCenter() {
   setConnectionCheck("checkProject", "waiting", "Checking…");
   setConnectionCheck("checkSequence", "waiting", "Checking…");
   cs.evalScript(
-    '(function(){var p=app&&app.project;return JSON.stringify({projectOpen:!!(p&&typeof p.name!=="undefined"),sequenceOpen:!!(p&&p.activeSequence)});}())',
+    '(function(){var p=app&&app.project;return "mcpstate:"+(p&&typeof p.name!=="undefined"?"1":"0")+","+(p&&p.activeSequence?"1":"0");}())',
     function (raw) {
-      try {
-        var state = JSON.parse(raw || "{}");
-        setConnectionCheck("checkProject", state.projectOpen ? "ready" : "needs-attention", state.projectOpen ? "Project open" : "Open a project in Premiere Pro");
-        setConnectionCheck("checkSequence", state.sequenceOpen ? "ready" : "needs-attention", state.sequenceOpen ? "Active sequence open" : "Open a sequence in Premiere Pro");
-      } catch (e) {
+      var match = /^mcpstate:([01]),([01])$/.exec(String(raw || ""));
+      if (!match) {
         setConnectionCheck("checkProject", "needs-attention", "Could not read Premiere state");
         setConnectionCheck("checkSequence", "needs-attention", "Could not read Premiere state");
+        return;
       }
+      var projectOpen = match[1] === "1";
+      var sequenceOpen = match[2] === "1";
+      setConnectionCheck("checkProject", projectOpen ? "ready" : "needs-attention", projectOpen ? "Project open" : "Open a project in Premiere Pro");
+      setConnectionCheck("checkSequence", sequenceOpen ? "ready" : "needs-attention", sequenceOpen ? "Active sequence open" : "Open a sequence in Premiere Pro");
     }
   );
 }
@@ -95,17 +97,95 @@ var fs = nodeRequire("fs");
 var path = nodeRequire("path");
 var os = nodeRequire("os");
 var https = nodeRequire("https");
-tempDir = path.join(os.tmpdir(), "premiere-mcp-bridge");
+var nodeProcess = nodeRequire("process");
+var childProcess = nodeRequire("child_process");
+var bridgeDirectorySecurity = MCPBridgeDirectorySecurity.createBridgeDirectorySecurity({
+  fs: fs,
+  path: path,
+  platform: os.platform(),
+  process: nodeProcess,
+  childProcess: childProcess,
+  Buffer: Buffer,
+});
+function defaultBridgeDirectory() {
+  try {
+    var nodeProcess = nodeRequire("process");
+    var configured = nodeProcess && nodeProcess.env && nodeProcess.env.PREMIERE_TEMP_DIR;
+    if (typeof configured === "string" && configured.trim()) return configured.trim();
+  } catch (e) {
+    // The panel still has a safe OS temporary-directory fallback.
+  }
+  return path.join(os.tmpdir(), "premiere-mcp-bridge");
+}
+tempDir = defaultBridgeDirectory();
 var latestUpdate = null;
+var UPDATE_STATUS_STORAGE_KEY = "mcp_bridge_desktop_update_status_path";
+var MAX_UPDATE_RESPONSE_BYTES = 64 * 1024;
+
+function getPerUserGlobalInstall() {
+  try {
+    var nodeProcess = nodeRequire("process");
+    var appData = nodeProcess && nodeProcess.env && nodeProcess.env.APPDATA;
+    if (typeof appData !== "string" || !appData.trim()) return null;
+    var npmDirectory = path.resolve(appData, "npm");
+    var commandPath = path.resolve(npmDirectory, "premiere-pro-mcp.cmd");
+    var packagePath = path.resolve(npmDirectory, "node_modules", "premiere-pro-mcp", "package.json");
+    var relative = path.relative(npmDirectory, commandPath);
+    var packageRelative = path.relative(npmDirectory, packagePath);
+    if (
+      !relative ||
+      !packageRelative ||
+      relative.indexOf(".." + path.sep) === 0 ||
+      packageRelative.indexOf(".." + path.sep) === 0 ||
+      path.isAbsolute(relative) ||
+      path.isAbsolute(packageRelative) ||
+      !fs.existsSync(commandPath) ||
+      !fs.existsSync(packagePath)
+    ) return null;
+    var packageMetadata = JSON.parse(fs.readFileSync(packagePath, "utf-8"));
+    var serverVersion = MCPBridgeUpdater.normalizeVersion(packageMetadata && packageMetadata.version);
+    if (!serverVersion) return null;
+    return { commandPath: commandPath, serverVersion: serverVersion };
+  } catch (e) {
+    return null;
+  }
+}
+
+function getPerUserGlobalCommand() {
+  var install = getPerUserGlobalInstall();
+  return install ? install.commandPath : null;
+}
+
+function saveUpdateStatusPath(statusPath) {
+  try {
+    localStorage.setItem(UPDATE_STATUS_STORAGE_KEY, statusPath);
+  } catch (e) {}
+}
+
+function readScheduledUpdateStatus() {
+  var statusPath = "";
+  try {
+    statusPath = localStorage.getItem(UPDATE_STATUS_STORAGE_KEY) || "";
+  } catch (e) {
+    return null;
+  }
+  if (!statusPath || !path.isAbsolute(statusPath) || !fs.existsSync(statusPath)) return null;
+  try {
+    var status = JSON.parse(fs.readFileSync(statusPath, "utf-8"));
+    var validStates = ["waiting_for_premiere", "updating", "complete", "failed"];
+    if (
+      !status ||
+      status.schemaVersion !== "premiere-pro-mcp.desktop-update.v1" ||
+      validStates.indexOf(status.state) === -1
+    ) return null;
+    return status;
+  } catch (e) {
+    return null;
+  }
+}
 
 function ensureDir(dir) {
-  try {
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    }
-  } catch (e) {
-    log("Error creating dir: " + e.message, "err");
-  }
+  return bridgeDirectorySecurity.ensurePrivateBridgeDirectory(dir);
 }
 
 function listCommandFiles() {
@@ -200,16 +280,20 @@ function executeScript(script, callback) {
 
 // ---- Command Processing ----
 function processCommands() {
+  if (commandInFlight) return;
   var cmdFiles = listCommandFiles();
-  for (var i = 0; i < cmdFiles.length; i++) {
-    processOneCommand(cmdFiles[i]);
-  }
+  // Premiere's scripting engine is stateful. Starting every discovered command
+  // at once lets overlapping edits race each other and overload the host. The
+  // atomic claim below still prevents duplicate work across the visible and
+  // headless panels, while this panel dispatches strictly one command at a time.
+  if (cmdFiles.length > 0) processOneCommand(cmdFiles[0]);
 }
 
 // Both the visible panel and the headless auto-start instance run this file.
 // A rename is atomic on the same volume, so whichever engine renames first owns
 // the command; the loser's rename throws and it skips the file.
 var ENGINE_ID = Math.random().toString(36).slice(2, 8);
+var commandInFlight = false;
 
 function processOneCommand(cmdFileName) {
   var cmdFilePath = path.join(tempDir, cmdFileName);
@@ -226,6 +310,8 @@ function processOneCommand(cmdFileName) {
     log("Failed to read: " + cmdFileName, "err");
     return;
   }
+
+  commandInFlight = true;
 
   // Derive response filename: cmd_12345.jsx -> res_12345.json
   var id = cmdFileName.replace("cmd_", "").replace(".jsx", "");
@@ -282,6 +368,10 @@ function processOneCommand(cmdFileName) {
     }
 
     writeResponseFile(resFilePath, response);
+    commandInFlight = false;
+    // Continue without waiting for the next poll interval, preserving FIFO
+    // ordering while minimizing queue handoff latency.
+    if (bridgeRunning) processCommands();
   });
 }
 
@@ -294,7 +384,15 @@ function startBridge() {
     return;
   }
 
-  ensureDir(tempDir);
+  try {
+    tempDir = ensureDir(tempDir);
+    document.getElementById("tempDir").value = tempDir;
+  } catch (e) {
+    bridgeRunning = false;
+    setStatus("error", "Connector needs attention");
+    log("Bridge directory rejected: " + e.message, "err");
+    return;
+  }
   bridgeRunning = true;
   startBridgeHeartbeat();
   setStatus("waiting", "Connector running");
@@ -343,8 +441,70 @@ function setUpdateUI(title, detail, buttonText, disabled) {
   button.disabled = !!disabled;
 }
 
+function updateInstructionUrl() {
+  return MCPBridgeUpdater.RELEASES_URL;
+}
+
+function openTrustedUpdateInstructions() {
+  var url = updateInstructionUrl();
+  if (!MCPBridgeUpdater.isTrustedDownloadUrl(url)) {
+    showUpdateCheckError("The update instructions link was not trusted.");
+    return;
+  }
+  try {
+    var childProcess = nodeRequire("child_process");
+    var command =
+      os.platform() === "win32"
+        ? ["cmd.exe", ["/d", "/s", "/c", "start", "", url]]
+        : ["open", [url]];
+    var child = childProcess.spawn(command[0], command[1], {
+      detached: true,
+      stdio: "ignore",
+    });
+    child.unref();
+  } catch (e) {
+    showUpdateCheckError("Could not open the update instructions. Try again.");
+  }
+}
+
+function restoreScheduledUpdateStatus() {
+  var status = readScheduledUpdateStatus();
+  if (!status) return false;
+
+  if (status.state === "complete") {
+    setUpdateUI(
+      "Update complete",
+      "Restart your MCP client, then use Verify Premiere connection before editing.",
+      "Check again",
+      false
+    );
+    return true;
+  }
+  if (status.state === "failed") {
+    setUpdateUI(
+      "Update needs attention",
+      "Nothing was changed in your projects. Check the update command or retry after Premiere closes.",
+      "Check again",
+      false
+    );
+    return true;
+  }
+
+  setUpdateUI(
+    "Update scheduled",
+    status.state === "updating"
+      ? "The global MCP server and connector are being updated. Keep Premiere closed."
+      : "Quit Premiere Pro. The updater will begin after it fully closes.",
+    "Scheduled",
+    true
+  );
+  return true;
+}
+
 function checkForUpdates() {
   latestUpdate = null;
+  var globalInstall = os.platform() === "win32" ? getPerUserGlobalInstall() : null;
+  var responseTooLarge = false;
   setUpdateUI(
     "Version " + MCPBridgeUpdater.CURRENT_VERSION,
     "Checking for updates…",
@@ -353,10 +513,10 @@ function checkForUpdates() {
   );
 
   var request = https.get(
-    MCPBridgeUpdater.LATEST_RELEASE_API,
+    MCPBridgeUpdater.LATEST_PACKAGE_API,
     {
       headers: {
-        Accept: "application/vnd.github+json",
+        Accept: "application/vnd.npm.install-v1+json",
         "User-Agent": "premiere-pro-mcp-connector/" + MCPBridgeUpdater.CURRENT_VERSION,
       },
     },
@@ -364,46 +524,71 @@ function checkForUpdates() {
       var body = "";
       response.setEncoding("utf8");
       response.on("data", function (chunk) {
-        if (body.length < 1024 * 1024) body += chunk;
+        if (body.length + chunk.length > MAX_UPDATE_RESPONSE_BYTES) {
+          responseTooLarge = true;
+          request.destroy(new Error("npm registry update record was unexpectedly large."));
+          return;
+        }
+        body += chunk;
       });
       response.on("end", function () {
+        if (responseTooLarge) return;
         if (response.statusCode !== 200) {
-          showUpdateCheckError("Could not check GitHub (HTTP " + response.statusCode + ").");
+          showUpdateCheckError("Could not check npm (HTTP " + response.statusCode + ").");
           return;
         }
         try {
-          var release = JSON.parse(body);
-          var latestVersion = MCPBridgeUpdater.normalizeVersion(
-            release.tag_name || release.name
+          var update = MCPBridgeUpdater.updateStateFromPackageRecord(
+            MCPBridgeUpdater.CURRENT_VERSION,
+            JSON.parse(body)
           );
-          if (!latestVersion) throw new Error("Release has no version");
+          var serverUpdateAvailable = Boolean(
+            globalInstall &&
+            MCPBridgeUpdater.compareVersions(update.latestVersion, globalInstall.serverVersion) > 0
+          );
+          var needsUpdate = update.updateAvailable || serverUpdateAvailable;
 
-          if (
-            MCPBridgeUpdater.compareVersions(
-              latestVersion,
-              MCPBridgeUpdater.CURRENT_VERSION
-            ) > 0
-          ) {
+          if (needsUpdate) {
             latestUpdate = {
-              version: latestVersion,
-              url: MCPBridgeUpdater.chooseDownloadUrl(release),
+              version: update.latestVersion,
             };
-            setUpdateUI(
-              "Version " + latestVersion + " is available",
-              "Download it, then close Premiere and run the installer.",
-              "Download update",
-              false
-            );
+            if (os.platform() === "win32" && globalInstall) {
+              var versionSummary =
+                "Server " + globalInstall.serverVersion + ", connector " + MCPBridgeUpdater.CURRENT_VERSION + ". ";
+              setUpdateUI(
+                "Version " + update.latestVersion + " is available",
+                versionSummary + "Update both together after you close Premiere.",
+                "Update after quit",
+                false
+              );
+            } else if (os.platform() === "win32") {
+              setUpdateUI(
+                "Version " + update.latestVersion + " is available",
+                "A global npm install was not found. This panel will not modify a source checkout.",
+                "Open instructions",
+                false
+              );
+            } else {
+              setUpdateUI(
+                "Version " + update.latestVersion + " is available",
+                "Open the matching release, then update your local server using the documented install path.",
+                "Open instructions",
+                false
+              );
+            }
           } else {
+            var currentDetail = globalInstall
+              ? "Server " + globalInstall.serverVersion + " and connector " + MCPBridgeUpdater.CURRENT_VERSION + " are current."
+              : "Your connector release is current. This check does not alter your projects or MCP client configuration.";
             setUpdateUI(
               "Version " + MCPBridgeUpdater.CURRENT_VERSION,
-              "You have the latest connector.",
+              currentDetail,
               "Check again",
               false
             );
           }
         } catch (e) {
-          showUpdateCheckError("GitHub returned an unreadable release.");
+          showUpdateCheckError("npm returned an unreadable package record.");
         }
       });
     }
@@ -412,7 +597,9 @@ function checkForUpdates() {
     request.destroy(new Error("Update check timed out"));
   });
   request.on("error", function () {
-    showUpdateCheckError("Unable to check while offline.");
+    showUpdateCheckError(
+      responseTooLarge ? "npm returned an unexpectedly large package record." : "Unable to check while offline."
+    );
   });
 }
 
@@ -430,25 +617,46 @@ function handleUpdateClick() {
     checkForUpdates();
     return;
   }
-  if (!MCPBridgeUpdater.isTrustedDownloadUrl(latestUpdate.url)) {
-    showUpdateCheckError("The update link was not trusted.");
+
+  if (os.platform() !== "win32") {
+    openTrustedUpdateInstructions();
     return;
   }
+
+  var cliPath = getPerUserGlobalCommand();
+  if (!cliPath) {
+    openTrustedUpdateInstructions();
+    return;
+  }
+
+  var confirmation =
+    "Update Premiere MCP to " + latestUpdate.version + " after Premiere Pro fully closes?\n\n" +
+    "This updates only the per-user global MCP server and its connector. " +
+    "It does not change your projects or MCP client configuration, and it will not force Premiere to close.";
+  if (typeof window.confirm === "function" && !window.confirm(confirmation)) return;
+
   try {
     var childProcess = nodeRequire("child_process");
-    var command =
-      os.platform() === "win32"
-        ? ["cmd.exe", ["/d", "/s", "/c", "start", "", latestUpdate.url]]
-        : ["open", [latestUpdate.url]];
-    var child = childProcess.spawn(command[0], command[1], {
-      detached: true,
-      stdio: "ignore",
+    var nodeCrypto = nodeRequire("crypto");
+    var scheduled = MCPBridgeUpdater.scheduleWindowsGlobalUpdate({
+      cliPath: cliPath,
+      runtime: {
+        fs: fs,
+        path: path,
+        os: os,
+        childProcess: childProcess,
+        crypto: nodeCrypto,
+      },
     });
-    child.unref();
-    document.getElementById("updateDetail").textContent =
-      "Download opened. Close Premiere before installing.";
+    saveUpdateStatusPath(scheduled.statusPath);
+    setUpdateUI(
+      "Update scheduled",
+      "Quit Premiere Pro. The updater will refresh the global server and connector after it fully closes.",
+      "Scheduled",
+      true
+    );
   } catch (e) {
-    showUpdateCheckError("Could not open the download. Try again.");
+    showUpdateCheckError("Could not schedule the local update. No files were changed.");
   }
 }
 
@@ -472,9 +680,16 @@ function handleUpdateClick() {
   // Always auto-start. The headless instance (StartOn ApplicationActivate) has no
   // one to click Start, and macOS periodically purges the temp dir — so create it
   // rather than gating auto-start on its existence.
-  ensureDir(tempDir);
+  try {
+    tempDir = ensureDir(tempDir);
+    document.getElementById("tempDir").value = tempDir;
+  } catch (e) {
+    setStatus("error", "Connector needs attention");
+    log("Bridge directory rejected: " + e.message, "err");
+    return;
+  }
   startBridgeHeartbeat();
   log("Auto-starting bridge...");
   setTimeout(startBridge, 500);
-  setTimeout(checkForUpdates, 1200);
+  if (!restoreScheduledUpdateStatus()) setTimeout(checkForUpdates, 1200);
 })();

@@ -64,8 +64,9 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
     },
 
     set_effect_property: {
-      description: "Set the value of a specific effect property on a clip. " +
-        "CAUTION: matching is by FIRST displayName occurrence — when a component has duplicate names (e.g., several 'Text' params in MOGRTs), this writes to the first one, which may be an internal GUID param. Inspect with get_effect_properties / list_clip_effects and confirm the target is unique before writing.",
+      description:
+        "Set the value of a specific effect property on a clip. Accepts scalar, boolean, string, array-shaped vector values (for example Motion > Position as [x, y]), and MOGRT JSON objects or strings, and verifies the readback component by component; a readback mismatch rolls the previous value back. " +
+        "CAUTION: matching is by FIRST displayName occurrence - when a component has duplicate names (e.g., several 'Text' params in MOGRTs), this writes to the first one, which may be an internal GUID param. Inspect with get_effect_properties / list_clip_effects and confirm the target is unique before writing.",
       parameters: {
         type: "object" as const,
         properties: {
@@ -82,29 +83,36 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
             description: "Display name of the property (e.g., 'Scale', 'Position', 'Opacity')",
           },
           value: {
-            type: ["number", "string", "array"],
-            items: { type: "number" },
-            minItems: 2,
-            maxItems: 2,
+            type: ["number", "string", "boolean", "array", "object"],
             maxLength: 8192,
-            description: "Number, string, or two-element [x, y] array value to set. Use the exact JSON string reported for a MOGRT text or graphic parameter; use [x, y] for 2D properties such as Position.",
+            items: { type: "number" },
+            minItems: 1,
+            maxItems: 4,
+            additionalProperties: true,
+            description:
+              "Value to set. Use a number for scalar properties, an array of numbers for vector properties such as Motion > Position or Anchor Point ([x, y]), a boolean for checkbox properties, the exact JSON string reported for a MOGRT text or graphic parameter, or that same JSON object if the client parsed it.",
           },
         },
         required: ["node_id", "effect_name", "property_name", "value"],
       },
-      handler: async (args: { node_id: string; effect_name: string; property_name: string; value: number | string | [number, number] }) => {
-        const valueIsArray = Array.isArray(args.value);
-        if (valueIsArray) {
-          const entries: unknown = args.value;
-          if (!Array.isArray(entries) || entries.length !== 2 || !entries.every((entry: unknown) => typeof entry === "number")) {
-            return { success: false, error: "Array values must be a two-element [x, y] array of numbers; no mutation was attempted." };
+      handler: async (args: { node_id: string; effect_name: string; property_name: string; value: number | string | boolean | number[] | Record<string, unknown> }) => {
+        if (Array.isArray(args.value)) {
+          if (!args.value.length || args.value.length > 4) {
+            return { success: false, error: "value must be an array of 1 to 4 numbers for a vector property" };
           }
+          if (args.value.some((component) => typeof component !== "number" || !Number.isFinite(component))) {
+            return { success: false, error: "every component of a vector value must be a finite number" };
+          }
+        } else if (typeof args.value === "number" && !Number.isFinite(args.value)) {
+          return { success: false, error: "value must be a finite number" };
         }
-        const requestedValue = valueIsArray
-          ? "[" + (args.value as [number, number]).join(", ") + "]"
-          : typeof args.value === "string"
-            ? `"${escapeForExtendScript(args.value)}"`
-            : String(args.value);
+        const requestedValue = Array.isArray(args.value)
+          ? `[${args.value.map((component) => String(component)).join(", ")}]`
+          : args.value !== null && typeof args.value === "object"
+            ? `"${escapeForExtendScript(JSON.stringify(args.value))}"`
+            : typeof args.value === "string"
+              ? `"${escapeForExtendScript(args.value)}"`
+              : String(args.value);
         const script = buildToolScript(`
           var result = __findClip("${escapeForExtendScript(args.node_id)}");
           if (!result) return __error("Clip not found");
@@ -129,14 +137,25 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           if (!prop) return __error("Property not found: ${escapeForExtendScript(args.property_name)}");
           
           var requestedValue = ${requestedValue};
-          var requestedIsArray = ${valueIsArray};
-          function readbackMatches(requested, actual) {
-            if (!requestedIsArray) return actual === requested;
-            if (!actual || typeof actual.length !== "number" || actual.length !== requested.length) return false;
-            for (var matchIndex = 0; matchIndex < requested.length; matchIndex++) {
-              if (Math.abs(actual[matchIndex] - requested[matchIndex]) > 0.0001) return false;
+          // Array-shaped properties (Position, Anchor Point, and other vector
+          // parameters) are never === equal to the written value, so compare
+          // element by element with the same tolerance used for scalars.
+          function __sameParameterValue(actual, expected) {
+            var tolerance = 0.0001;
+            var actualIsArray = actual instanceof Array;
+            var expectedIsArray = expected instanceof Array;
+            if (actualIsArray !== expectedIsArray) return false;
+            if (actualIsArray) {
+              if (actual.length !== expected.length) return false;
+              for (var index = 0; index < expected.length; index++) {
+                if (!__sameParameterValue(actual[index], expected[index])) return false;
+              }
+              return true;
             }
-            return true;
+            if (typeof actual === "number" && typeof expected === "number") {
+              return Math.abs(actual - expected) <= tolerance;
+            }
+            return actual === expected;
           }
           var previousValue = null;
           var previousAvailable = true;
@@ -158,14 +177,14 @@ export function getKeyframeTools(bridgeOptions: BridgeOptions) {
           } catch (eReadback) {
             readbackAvailable = false;
           }
-          var readbackVerified = readbackAvailable && readbackMatches(requestedValue, readbackValue);
+          var readbackVerified = readbackAvailable && __sameParameterValue(readbackValue, requestedValue);
           if (!readbackVerified) {
             var previousValueRestored = null;
             if (previousAvailable) {
               var restored = false;
               try {
                 prop.setValue(previousValue, true);
-                restored = readbackMatches(previousValue, prop.getValue());
+                restored = __sameParameterValue(previousValue, prop.getValue());
               } catch (eRestore) {}
               previousValueRestored = restored;
             }

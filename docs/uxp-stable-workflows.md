@@ -15,19 +15,32 @@ discipline, selection performance, readback evidence, and filesystem authority.
 It does not remove or silently replace the production CEP path. A failed UXP
 mutation is returned to the caller and is never replayed automatically through CEP.
 
-The public MCP surface adds eleven consolidated tools. Each maps to smaller protocol
+The public MCP surface adds consolidated tools. Each maps to smaller protocol
 commands so `capabilities.get` can report the exact methods available in the running
 Premiere build.
 
 | Improvement | Public MCP tool | UXP commands | Host evidence |
 | --- | --- | --- | --- |
 | Native effects pipeline | `manage_clip_effects_uxp` | `effects.catalog`, `effects.chain.get`, `effects.chain.add`, `effects.chain.remove` | Effect catalog allowlist; component-chain count and component readback after an action transaction |
+| Bounded effect-parameter catalog | `inspect_effect_parameter_catalog_uxp` | `parameters.catalog.inspect` | One active audio/video coordinate resolves at most 64 component-parameter index/name/animation descriptors twice; no raw Color, PointF, or other parameter values are read |
+| Native track-item identity | `inspect_track_item_identity_uxp` | `trackItem.identity.inspect` | One bounded audio/video coordinate resolves documented match name, item/media type, track index, and selected state only after the active sequence identity is re-read |
+| Native TickTime arithmetic | `calculate_tick_time_uxp` | `time.tickArithmetic.inspect` | Canonical caller-supplied ticks use documented native add/subtract/multiply/divide and return only ticks/seconds; no frame alignment, timecode, sequence/project access, rendering, playback, or licensed-host claim |
+| Guarded timeline source label | `manage_timeline_source_label_uxp` | `timeline.sourceLabel.inspect`, `timeline.sourceLabel.update` | A bounded active audio/video coordinate resolves its source `ClipProjectItem`; update requires the complete snapshot, confirmation, operation ID, per-source serialization, one transaction, and source-label readback. The label is project-global rather than timeline-instance state. |
+| Guarded sequence preview frame | `manage_sequence_preview_frame_uxp` | `sequence.previewFrame.inspect`, `sequence.previewFrame.update` | One explicit sequence GUID returns its documented native preview-frame width/height twice; update requires that full snapshot, confirmation, and operation ID, serializes bridge updates by project/sequence, commits one settings transaction, then reads the same sequence back. It does not set video dimensions or prove preview rendering. |
+| Bounded source-media provenance | `inspect_source_media_provenance_uxp` | `source.provenance.inspect` | One exact media-backed Project-item ID plus at least one explicit path-disclosure flag returns only the selected documented media-file and/or originating-project path. It resolves the item through a capped tree twice and rejects a changed project, target, or selected path; it never returns a project tree, reads a file, validates a path, establishes source lineage or rights, or proves licensed-host behavior. |
+| Bounded source-proxy readiness | `inspect_source_proxy_uxp` | `source.proxy.inspect` | One exact media-backed Project-item ID returns documented proxy availability, attachment, offline, and path-change capability state twice. A native proxy path is read only with explicit opt-in and only when a proxy is attached; it never accesses the filesystem, attaches/relinks proxy media, proves proxy compatibility, or proves licensed-host behavior. |
 | Selection compound batch | `batch_selected_clips_uxp` | `selection.inspect`, `effects.selection.add`, `effects.selection.remove` | Preflight all selected items, then commit one action group and read every chain count back |
 | Deterministic timeline selection | `manage_timeline_selection_uxp` | `selection.fingerprints.inspect`, `selection.targets.inspect`, `selection.update` | Current or coordinate-resolved clips return active-sequence GUID and project-item/time fingerprints; mutations check them before one native selection update and exact readback |
-| Scene-edit detection | `detect_scene_edits_uxp` | `sceneEdit.detect` | Adobe host return plus selected-item count; no Undo or detection-count claim |
+| Scene-edit detection | `detect_scene_edits_uxp` | `sceneEdit.detect` | `createMarkers` requires selected project-item marker-GUID growth; cut/subclip modes return only Adobe's host result and selected-item count |
 | Proxy and ingest controller | `manage_proxy_ingest_uxp` | `proxy.inspect`, `proxy.attach`, `ingest.get`, `ingest.configure` | Proxy path/attachment readback; ingest state readback after transaction |
 | Offline relink repair | `relink_offline_media_uxp` | `media.relink` | Expected old path, offline default, capability check, then media-path and online-state readback |
-| Transactional metadata | `manage_metadata_uxp` | `metadata.get`, `metadata.update` | Project metadata and XMP are committed together and read back; each payload is size bounded |
+| Transactional metadata | `manage_metadata_uxp` | `metadata.get`, `metadata.update`, `metadata.fields.inspect`, `metadata.fields.update` | Named fields from column JSON and XMP; GPS/serials omitted unless requested; one-field updates serialize a complete packet, commit in a locked transaction, and read the field back |
+| Project-panel metadata inspection | `inspect_project_panel_metadata_uxp` | `metadata.columns.get`, `metadata.projectPanel.get` | Read one native item-column or active-project panel-metadata string, bounded to 350,000 characters and a 900,000-byte serialized result; no schema or metadata writes are exposed |
+| Guarded Project-panel metadata replacement | `manage_project_panel_metadata_uxp` | `metadata.projectPanel.get`, `metadata.projectPanel.update` | Require the exact inspected project GUID and XML, confirmation, operation ID, local per-project serialization, then exact native readback; the direct setter is non-undoable and no atomic compare-and-set is claimed |
+| Guarded Project metadata schema field creation | `create_project_metadata_field_uxp` | `metadata.projectSchema.inspect`, `metadata.projectSchema.create` | Require the exact inspected project GUID and bounded panel XML, typed name/label, confirmation, operation ID, and shared per-project serialization; native acceptance and panel-XML change are observable but Adobe exposes no atomic compare-and-set or field-level getter, so creation is always `committed_unverified` |
+| Guarded app preferences | `manage_app_preferences_uxp` | `preferences.inspect`, `preferences.set` | Inspect only Adobe's three named application preferences; direct string writes require stale value, persistence, confirmation, operation ID, per-key serialization, and exact native-string readback; no transaction or Undo claim |
+| Installed MOGRT-directory inspection | `inspect_installed_mogrt_directory_uxp` | `graphics.mogrtPath.inspect` | Return only documented installed-directory availability by default. A caller must explicitly request the bounded native path; the bridge does not enumerate it, read templates, or import MOGRTs. |
+| Bounded Object Mask audit | `audit_object_masks_uxp` | `objectMask.audit` | Up to 64 exact sequences (or an entire project under that cap) are re-resolved with the active-project identity and every yes/no Object Mask result double-read before a response is returned. |
 | Color and conformance | `manage_color_conformance_uxp` | `color.preflight`, `footage.conform` | Project graphics-white values, embedded/input LUT IDs, and requested footage fields read back |
 | Source Monitor audition | `audition_source_monitor_uxp` | `sourceMonitor.state`, `sourceMonitor.open`, `sourceMonitor.position.set`, `sourceMonitor.play`, `sourceMonitor.close` | Project-item and position readback where Adobe exposes it; file open/play rely on explicit host returns |
 | Productions and storage | `preflight_production_storage_uxp` | `storage.preflight`, `scratch.configure` | Project/Production scratch snapshots and project action-transaction result |
@@ -67,9 +80,11 @@ documented as non-undoable. Their MCP workflows require
 Setting `override_compatibility_check` remains opt-in.
 
 `SequenceUtils.performSceneEditDetectionOnSelection()` is also kept outside the
-action-transaction claim. The workflow returns `committed_unverified` after Adobe's
-positive host result because the API does not return the number or identities of
-created cuts, markers, or subclips.
+action-transaction claim. For `createMarkers`, the workflow snapshots each selected
+item's project-item marker GUIDs and returns `verified` only when at least one GUID
+is added. Cut and subclip modes return `committed_unverified` after Adobe's positive
+host result because the API does not return the number or identities of created cuts
+or subclips.
 
 ## Filesystem authority
 
@@ -113,6 +128,53 @@ loopback-only authority and rejects remote hosts, credentials, fragments, and no
 
 Video additions accept only a match name returned by `VideoFilterFactory`.
 Audio additions accept only a display name returned by `AudioFilterFactory`.
+
+### `inspect_effect_parameter_catalog_uxp`
+
+Require one `media_type`, `track_index`, `clip_index`, and `component_index`.
+The panel resolves that active-sequence coordinate and returns no more than 64
+parameter descriptors: the zero-based index, native display name, whether
+keyframes are supported, and whether the parameter is currently time-varying.
+It never reads a parameter value, including PointF or Color data. Optional
+`expected_sequence_guid` and `expected_component_id` reject a changed target
+before the final result. The complete catalog is read twice, so a changed active
+project, sequence, component identity, or descriptor set rejects rather than
+returning a mixed result. This remains a read-only contract check, not evidence
+of parameter editability, rendered output, playback, persistence, Undo, or a
+licensed Premiere host.
+
+### `inspect_track_item_identity_uxp`
+
+Require one `media_type`, `track_index`, and `clip_index`; callers may provide
+`expected_sequence_guid` from a recent result. The read returns only the host's
+track-item match name, numeric item type, media UUID, reported track index, and
+selected state. It rejects a changed active sequence before returning. It neither
+reads source paths nor effect values and is not visual, playback, persistence, or
+licensed-host proof.
+
+### `audit_object_masks_uxp`
+
+This is a read-only bounded audit over documented `ObjectMaskUtils.hasObjectMask()`
+calls. It accepts an optional active-project GUID and either one to 64 exact sequence
+GUIDs or, if no selectors are supplied, audits the whole active project only when it
+has at most 64 sequences. The bridge sorts stable sequence identities, reads the
+project aggregate and every selected sequence boolean, resolves the same targets a
+second time, and rejects any changed active project, sequence identity/name, aggregate
+boolean, or per-sequence boolean rather than returning a mixed result.
+
+Adobe's API exposes only presence. The audit does not return mask counts, locations,
+selection, tracking state, editability, source items, render output, playback results,
+or licensed-host evidence. The double read is not an atomic host snapshot: a change
+that occurs and returns to the identical values between reads is outside this boundary.
+
+### `inspect_installed_mogrt_directory_uxp`
+
+The documented `SequenceEditor.getInstalledMogrtPath()` getter is called only
+through the authenticated bridge. The result is a bounded string and stays
+redacted unless `include_path: true`. The command never enumerates, reads, or
+imports from that directory, so a returned path is not evidence of installed
+templates, compatibility, successful insertion, rendering, or licensed-host
+behavior.
 
 ### `batch_selected_clips_uxp`
 
@@ -158,10 +220,56 @@ Ingest updates use `ProjectSettings.createSetIngestSettingsAction()`.
 
 ### `manage_metadata_uxp`
 
-Actions are `get` and `update`. Project metadata requires 1-128 exact
-`updated_fields`. Project and XMP strings are each capped at 350,000 characters,
-and their combined serialized UTF-8 readback is capped at 900,000 bytes so the
-complete response remains below the bridge's 1 MiB frame limit.
+Actions are `get`, `update`, `inspect_fields`, and `update_field`. Project metadata
+requires 1-128 exact `updated_fields` for packet replacement. `inspect_fields`
+parses column JSON plus `uxp.XMPMeta` leaves (cap 256), omitting GPS/serials unless
+`include_sensitive` is true. `update_field` sets one property, serializes the
+complete packet, and verifies field readback. Project and XMP strings are each
+capped at 350,000 characters, and their combined serialized UTF-8 readback is
+capped at 900,000 bytes so the complete response remains below the bridge's 1 MiB
+frame limit.
+
+### `inspect_project_panel_metadata_uxp`
+
+Actions are `panel` and `item_columns`. `panel` returns the active project's
+native Project-panel metadata; `item_columns` uses the established exact
+project-item ID, name, or singleton-selection resolution rules, then returns that
+item's native column metadata. Both strings may be empty but are capped at 350,000
+characters and a 900,000-byte serialized result. This tool is read-only: it does
+not create metadata schema fields or invoke `setProjectPanelMetadata()`, whose
+documented setter has no project-targeted action or transaction boundary that
+could truthfully guard it across an awaited call. The result is a current-host
+read, not an atomic project revision, persistence, or licensed-host proof.
+
+### `manage_project_panel_metadata_uxp`
+
+`inspect` returns the same active-project panel metadata as the read-only tool.
+`update` requires the exact `expected_project_guid` and
+`expected_project_panel_metadata` returned by inspection, the complete replacement
+`project_panel_metadata`, `confirm_update: true`, and a bounded `operation_id`.
+Both XML strings are limited to 12 KiB UTF-8 at the host boundary because two exact
+XML values can expand when serialized in the bridge request. The panel serializes
+this bridge's updates per project and performs the final async snapshot/stale check
+immediately before it starts the documented direct setter under `lockedAccess()`.
+Premiere exposes no atomic compare-and-set and another extension or the user
+interface may still race that direct call. The setter is non-undoable and has no
+cancellation claim. The result is verified only if an active-project exact XML
+readback matches; a completed call with another project or XML is
+`committed_unverified`. Operation-ID replay is scoped to the connected panel
+session. Automated contracts do not prove host acceptance, persistence, UI effects,
+Undo, or licensed-host behavior.
+
+### `manage_app_preferences_uxp`
+
+`inspect` returns just the native string values of the documented
+`auto_peak_generation`, `import_workspace`, and `show_quickstart_dialog` keys.
+`set` accepts one allow-listed key plus the exact inspected string, a requested
+string value (each capped at 1024 characters), explicit persistence, confirmation,
+and an operation ID. The panel keeps all snapshot/stale-check/set/readback work for
+that key within its per-key exclusion boundary. `AppPreference.setValue()` is a
+direct application-state call rather than a project action, so this tool makes no
+claim of a project transaction, cancellation, Undo, durable persistence, or
+licensed-host validation.
 
 ### `manage_color_conformance_uxp`
 
@@ -184,12 +292,15 @@ claim that UXP exposes an equivalent Production mutation API.
 
 ## Automated evidence
 
-- `tests/uxp/stable-workflows.test.ts` exercises all eleven host workflows against a
+- `tests/uxp/stable-workflows.test.ts` exercises the workflow-module host paths against a
   deterministic mock Premiere surface, including transaction and readback behavior.
 - `tests/uxp/workspace.test.ts` exercises token persistence, path normalization,
   containment, redaction, restore, and revoke behavior.
-- `tests/tools/uxp-workflows.test.ts` checks the eleven public schemas and snake-case to
+- `tests/tools/uxp-workflows.test.ts` checks the workflow-module public schemas and snake-case to
   protocol argument translation.
+- `tests/uxp/commands.test.ts` exercises the command-registry AppPreference contract,
+  including allowlisted keys, stale reads, direct-set rejection, exact readback,
+  replay, and competing operation IDs.
 - `tests/adobe-uxp-coverage.test.ts` keeps the official-source coverage manifest
   machine validated.
 

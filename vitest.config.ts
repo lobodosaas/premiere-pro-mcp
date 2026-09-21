@@ -5,6 +5,7 @@ export default defineConfig({
     globals: true,
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    setupFiles: ["tests/setup/clean-temp-dir.ts"],
     testTimeout: 10000,
     maxWorkers: 1,
     coverage: {
