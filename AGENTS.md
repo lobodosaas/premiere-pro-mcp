@@ -13,8 +13,10 @@ Antes de propor arquitetura, mexer em legenda/keyframe/broker/ACL, ou responder
    página inteira com `memory_read_page` antes de agir.
 3. Páginas-chave (escopo `default/scratch`):
    - `procedures/premiere-fork-upstream-merge.md` — como trazer release nova do upstream sem perder o fork.
-   - `gotchas/premiere-fork-traps.md` — ACL/%TEMP%, pasta do painel, "Update after quit", restart do broker vs. chat.
+   - `procedures/premiere-montagem-de-plano.md` — como montar um `plano-montagem.md` no Premiere (subclips, preview/apply, escala PT-BR).
+   - `gotchas/premiere-fork-traps.md` — ACL/%TEMP%, pasta do painel, "Update after quit", restart do broker vs. chat, UI PT-BR, lookup UXP.
    - `procedures/premiere-uxp-mcp-setup.md` — setup do painel UXP + config do MCP (pinned).
+   - `notes/danone-10-11-2026-montagem.md` — job Danone: 12 vídeos verticais entregues (regra `Dur` manda).
    - `notes/premiere-fork-merge-upstream-1.17.0.md` — estado atual do fork (1.17.0, 478 tools).
    - `notes/premiere-mcp-por-pasta-funcionando.md` — esquema V2 de MCP por pasta.
    - `notes/premiere-mcp-indice.md` — índice operacional no escopo deste repo.
