@@ -1,3 +1,27 @@
+<!-- ai-memory:start -->
+## Memória do projeto (ai-memory)
+
+Toda a memória durável deste projeto vive no **ai-memory** (wiki no Docker), NÃO em
+arquivos locais. As páginas do Premiere ficam no escopo `default/scratch`.
+
+Antes de propor arquitetura, mexer em legenda/keyframe/broker/ACL, ou responder
+"por que X funciona assim":
+
+1. `memory_recent` (o que rolou nas últimas sessões) e/ou `memory_query` com o tema
+   (ex. `fork upstream merge`, `bridge ACL`, `caption entrance`).
+2. Se um hit for relevante (`_rules/`, `decisions/`, `gotchas/`, `procedures/`), leia a
+   página inteira com `memory_read_page` antes de agir.
+3. Páginas-chave (escopo `default/scratch`):
+   - `procedures/premiere-fork-upstream-merge.md` — como trazer release nova do upstream sem perder o fork.
+   - `gotchas/premiere-fork-traps.md` — ACL/%TEMP%, pasta do painel, "Update after quit", restart do broker vs. chat.
+   - `procedures/premiere-uxp-mcp-setup.md` — setup do painel UXP + config do MCP (pinned).
+   - `notes/premiere-fork-merge-upstream-1.17.0.md` — estado atual do fork (1.17.0, 478 tools).
+   - `notes/premiere-mcp-por-pasta-funcionando.md` — esquema V2 de MCP por pasta.
+   - `notes/premiere-mcp-indice.md` — índice operacional no escopo deste repo.
+4. Conhecimento novo e durável vai para o ai-memory via `memory_write_page` (pedido
+   explícito do usuário); contexto da próxima sessão via handoff, não via arquivos soltos.
+<!-- ai-memory:end -->
+
 # AGENTS.md
 
 Canonical instructions for any IDE or coding agent working in this repository.
