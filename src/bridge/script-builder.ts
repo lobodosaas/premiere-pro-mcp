@@ -113,20 +113,156 @@ function __getCurrentActiveSequence() {
   return __isCurrentProjectSequence(sequence) ? sequence : null;
 }
 
+function __isBinItem(item) {
+  if (!item) return false;
+  try { return item.type === 2; } catch (e) { return false; }
+}
+
+// Some bin-typed project items (search bins, items mid-refresh) expose no
+// children collection. A project walk must skip them instead of aborting with
+// "undefined is not an object" on an unguarded .children.numItems read.
+function __childCount(item) {
+  if (!item) return 0;
+  try {
+    var children = item.children;
+    if (!children) return 0;
+    var count = children.numItems;
+    return typeof count === "number" && count > 0 ? count : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function __childAt(item, index) {
+  try { return item.children[index] || null; } catch (e) { return null; }
+}
+
+function __nodeIdOf(item) {
+  try {
+    var id = item.nodeId;
+    return id === undefined || id === null ? "" : String(id);
+  } catch (e) {
+    return "";
+  }
+}
+
 function __findProjectItem(nodeIdOrName, rootItem) {
   if (!rootItem) rootItem = app.project.rootItem;
   var wantedId = String(nodeIdOrName);
-  for (var i = 0; i < rootItem.children.numItems; i++) {
-    var item = rootItem.children[i];
+  var count = __childCount(rootItem);
+  for (var i = 0; i < count; i++) {
+    var item = __childAt(rootItem, i);
+    if (!item) continue;
     if (String(item.nodeId) === wantedId || item.name === nodeIdOrName) {
       return item;
     }
-    if (item.type === 2) { // Bin
+    if (__isBinItem(item)) { // Bin
       var found = __findProjectItem(nodeIdOrName, item);
       if (found) return found;
     }
   }
   return null;
+}
+
+// Exact node-ID lookup across every nested bin. Never matches by name, so a
+// same-named item elsewhere in the project cannot shadow the requested ID.
+function __findProjectItemByNodeId(nodeId, rootItem) {
+  if (!rootItem) rootItem = app.project.rootItem;
+  var wantedId = String(nodeId);
+  if (!wantedId) return null;
+  var count = __childCount(rootItem);
+  for (var i = 0; i < count; i++) {
+    var item = __childAt(rootItem, i);
+    if (!item) continue;
+    if (__nodeIdOf(item) === wantedId) return item;
+    if (__isBinItem(item)) {
+      var found = __findProjectItemByNodeId(wantedId, item);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// Resolve a bin by node ID, then slash-separated bin path from the root, then
+// the first bin with that exact name. Returns null for non-bin matches.
+function __findBin(idPathOrName) {
+  var root = app.project.rootItem;
+  var wanted = String(idPathOrName);
+  var byId = __findProjectItemByNodeId(wanted, root);
+  if (byId && __isBinItem(byId)) return byId;
+  var parts = wanted.split("/");
+  var current = root;
+  for (var p = 0; p < parts.length && current; p++) {
+    var next = null;
+    var count = __childCount(current);
+    for (var i = 0; i < count; i++) {
+      var child = __childAt(current, i);
+      if (child && child.name === parts[p] && __isBinItem(child)) { next = child; break; }
+    }
+    current = next;
+  }
+  if (current && current !== root) return current;
+  return __findBinByName(wanted, root);
+}
+
+function __findBinByName(name, rootItem) {
+  var count = __childCount(rootItem);
+  for (var i = 0; i < count; i++) {
+    var item = __childAt(rootItem, i);
+    if (!item || !__isBinItem(item)) continue;
+    if (item.name === name) return item;
+    var found = __findBinByName(name, item);
+    if (found) return found;
+  }
+  return null;
+}
+
+// Record every project item node ID (recursively) into map; used to diff the
+// project before and after a host call that does not return the created item.
+function __collectNodeIds(rootItem, map) {
+  if (!rootItem) rootItem = app.project.rootItem;
+  var count = __childCount(rootItem);
+  for (var i = 0; i < count; i++) {
+    var item = __childAt(rootItem, i);
+    if (!item) continue;
+    var id = __nodeIdOf(item);
+    if (id) map[id] = true;
+    if (__isBinItem(item)) __collectNodeIds(item, map);
+  }
+  return map;
+}
+
+// First non-bin project item absent from beforeMap, preferring an exact name.
+function __findNewProjectItem(beforeMap, preferredName, rootItem) {
+  var fallback = null;
+  var pending = [rootItem || app.project.rootItem];
+  while (pending.length > 0) {
+    var bin = pending.shift();
+    var count = __childCount(bin);
+    for (var i = 0; i < count; i++) {
+      var item = __childAt(bin, i);
+      if (!item) continue;
+      if (__isBinItem(item)) { pending.push(item); continue; }
+      var id = __nodeIdOf(item);
+      if (!id || beforeMap[id]) continue;
+      var name = null;
+      try { name = item.name; } catch (e) {}
+      if (name === preferredName) return item;
+      if (!fallback) fallback = item;
+    }
+  }
+  return fallback;
+}
+
+function __isDirectChild(parent, item) {
+  var wantedId = __nodeIdOf(item);
+  if (!wantedId) return false;
+  var count = __childCount(parent);
+  for (var i = 0; i < count; i++) {
+    var child = __childAt(parent, i);
+    if (child && __nodeIdOf(child) === wantedId) return true;
+  }
+  return false;
 }
 
 function __findClip(nodeId) {
@@ -568,14 +704,36 @@ function __exportStillFrame(outputPath, ticks) {
         // interval and the still export produces no file.
         var frameTicks = parseFloat(seq.timebase);
         var startTicks = parseFloat(atTicks);
+        var ameMutatedMarks = false;
         try {
           seq.setInPoint(__ticksToSeconds(startTicks));
+          ameMutatedMarks = true;
           seq.setOutPoint(__ticksToSeconds(startTicks + frameTicks));
           seq.exportAsMediaDirect(outputPath, preset, app.encoder.ENCODE_IN_TO_OUT);
           notes.push("AME preset: " + preset);
         } finally {
           try { seq.setInPoint(__ticksToSeconds(savedIn)); } catch (eIn) {}
           try { seq.setOutPoint(__ticksToSeconds(savedOut)); } catch (eOut) {}
+        }
+        // Premiere 26.x setters can throw or silently no-op. A still file is
+        // not success if the sequence is still pinned to the one-frame range.
+        if (ameMutatedMarks) {
+          var restoredIn = null, restoredOut = null;
+          try { restoredIn = seq.getInPointAsTime().ticks; } catch (eRi) {}
+          try { restoredOut = seq.getOutPointAsTime().ticks; } catch (eRo) {}
+          var restoreTol = (frameTicks && !isNaN(frameTicks)) ? frameTicks : (TICKS_PER_SECOND / 24);
+          var inRestored = restoredIn != null && !isNaN(parseFloat(restoredIn))
+            && Math.abs(parseFloat(restoredIn) - parseFloat(savedIn)) <= restoreTol;
+          var outRestored = restoredOut != null && !isNaN(parseFloat(restoredOut))
+            && Math.abs(parseFloat(restoredOut) - parseFloat(savedOut)) <= restoreTol;
+          if (!inRestored || !outRestored) {
+            notes.push("AME: sequence in/out could not be restored after the one-frame export");
+            return {
+              ok: false,
+              error: "Media Encoder still export left the sequence in/out points unrestored. The sequence may still be pinned to a one-frame range; restore the marks in Premiere or Undo before exporting again.",
+              notes: notes
+            };
+          }
         }
       }
     }

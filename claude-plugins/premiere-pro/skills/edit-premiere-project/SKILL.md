@@ -19,7 +19,7 @@ project state, make only requested changes, and verify the timeline after mutati
    silently fall back to CEP after a failed UXP probe.
 3. If `ping` fails, stop editing and tell the user to:
    - Open or restart Premiere Pro.
-   - Install the bridge with `npx -y premiere-pro-mcp@1.16.3 --install-cep` if needed.
+   - Install the bridge with `npx -y premiere-pro-mcp@1.16.4 --install-cep` if needed.
    - Open **Window > Extensions > MCP Bridge** and confirm it reports **Running**.
 4. Call `get_premiere_state` and inspect the active sequence before planning changes.
 5. Do not claim that a project, sequence, or export exists until a live tool result confirms it.
@@ -98,6 +98,11 @@ For other mutations:
   machine verification from subjective editorial approval.
 - Treat file paths as local to the Premiere host. Never expose unrelated files or
   secrets from the machine in the response.
+- To change a placed clip's timeline length or extend a still image, use
+  `set_clip_duration` when it is registered; it keeps the start, refuses overlaps
+  with the next clip, and reports verified or restored results. Clip speed has no
+  documented scripting setter: `speed_change` and `set_clip_speed_qe` always fail
+  before mutation, so retime in the Speed/Duration dialog or pre-render the media.
 
 ## Clip metadata and XMP
 

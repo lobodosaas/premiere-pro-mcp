@@ -253,6 +253,7 @@ describe("issue #9 — frame export uses the QE DOM and verifies the file landed
     // than leaving the sequence pinned to the still-export range.
     expect(helpers).toContain("savedIn === null || savedIn === undefined || savedOut === null || savedOut === undefined");
     expect(helpers).toContain("could not read sequence in/out points, so they were not changed");
+    expect(helpers).toContain("sequence in/out could not be restored after the one-frame export");
   });
 });
 
@@ -699,7 +700,8 @@ describe("issue #235 — CEP tool calls use the host's documented argument types
     expect(script).toContain("1,");
     expect(script).toContain("48000,");
     expect(script).toContain('"Bars"');
-    expect(script).toContain("if (!item) return __error");
+    expect(script).toContain("var beforeIds = __collectNodeIds(");
+    expect(script).toContain("__findNewProjectItem(beforeIds, requestedName)");
   });
 
   it("writes the Anti-flicker numeric stream value and verifies it", async () => {

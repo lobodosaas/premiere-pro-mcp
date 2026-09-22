@@ -120,7 +120,9 @@ describe("generated script structure", () => {
 
   it("__findProjectItem recursively searches bins", () => {
     const result = getHelpersSource();
-    expect(result).toContain("if (item.type === 2)");
+    expect(result).toContain("if (__isBinItem(item))");
+    expect(result).toContain("function __findProjectItemByNodeId(nodeId, rootItem)");
+    expect(result).toContain("var count = __childCount(rootItem);");
     expect(result).toContain("var found = __findProjectItem(nodeIdOrName, item);");
   });
 
@@ -244,8 +246,8 @@ describe("__exportStillFrame AME fallback restores sequence in/out", () => {
       name: "Seq",
       timebase: String(TICKS / 24),
       getPlayerPosition() { return { ticks: String(TICKS * 5) }; },
-      getInPointAsTime() { return { ticks: String(TICKS * 10) }; },
-      getOutPointAsTime() { return { ticks: String(TICKS * 20) }; },
+      getInPointAsTime() { return { ticks: String(marks.inPoint * TICKS) }; },
+      getOutPointAsTime() { return { ticks: String(marks.outPoint * TICKS) }; },
       setInPoint(value: number) { marks.inPoint = value; },
       setOutPoint(value: number) {
         if (value < 10) throw new Error("rejected one-frame out point");
@@ -265,8 +267,8 @@ describe("__exportStillFrame AME fallback restores sequence in/out", () => {
       name: "Seq",
       timebase: String(TICKS / 24),
       getPlayerPosition() { return { ticks: String(TICKS * 5) }; },
-      getInPointAsTime() { return { ticks: String(TICKS * 10) }; },
-      getOutPointAsTime() { return { ticks: String(TICKS * 20) }; },
+      getInPointAsTime() { return { ticks: String(marks.inPoint * TICKS) }; },
+      getOutPointAsTime() { return { ticks: String(marks.outPoint * TICKS) }; },
       setInPoint(value: number) { marks.inPoint = value; },
       setOutPoint(value: number) { marks.outPoint = value; },
       exportAsMediaDirect() { exported = true; },
@@ -274,5 +276,30 @@ describe("__exportStillFrame AME fallback restores sequence in/out", () => {
     expect(exported).toBe(true);
     expect(result.notes?.join(" ")).toMatch(/AME preset/);
     expect(marks).toEqual({ inPoint: 10, outPoint: 20 });
+  });
+
+  it("fails closed when restore setters no-op after the one-frame export", () => {
+    const marks = { inPoint: 10, outPoint: 20 };
+    const result = runExport({
+      name: "Seq",
+      timebase: String(TICKS / 24),
+      getPlayerPosition() { return { ticks: String(TICKS * 5) }; },
+      getInPointAsTime() { return { ticks: String(marks.inPoint * TICKS) }; },
+      getOutPointAsTime() { return { ticks: String(marks.outPoint * TICKS) }; },
+      setInPoint(value: number) {
+        if (Math.abs(value - 10) < 0.0001) return;
+        marks.inPoint = value;
+      },
+      setOutPoint(value: number) {
+        if (Math.abs(value - 20) < 0.0001) return;
+        marks.outPoint = value;
+      },
+      exportAsMediaDirect() { return true; },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/unrestored/);
+    expect(result.notes?.join(" ")).toMatch(/could not be restored after the one-frame export/);
+    expect(marks.inPoint).toBe(5);
+    expect(marks.outPoint).toBeCloseTo(5 + 1 / 24, 8);
   });
 });

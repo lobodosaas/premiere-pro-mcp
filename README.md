@@ -12,7 +12,7 @@ Free, MIT licensed, local-first, and published to npm as [`premiere-pro-mcp`](ht
 
 [Website](https://premiere-pro-mcp.com/) · [Recorded demo](https://premiere-pro-mcp.com/demo/) · [Compare servers](https://premiere-pro-mcp.com/compare/) · [Setup guides](https://premiere-pro-mcp.com/blog/how-to-set-up-premiere-pro-mcp/) · [Search tools](https://premiere-pro-mcp.com/tools/) · [Troubleshooting](https://premiere-pro-mcp.com/docs/troubleshooting/) · [Release facts](https://premiere-pro-mcp.com/facts/)
 
-Development source: 381 core tools across 56 modules, 4 resources, and 19 guided workflows. A connected UXP host adds 96 capability-gated tools.
+Development source: 384 core tools across 57 modules, 4 resources, and 19 guided workflows. A connected UXP host adds 96 capability-gated tools.
 
 The [completed AE render handoff](docs/after-effects-render-handoff.md) previews and confirms importing one finished render into an existing Premiere bin, with host and file rechecks and an import receipt.
 
@@ -104,14 +104,14 @@ and repository before configuring a client. The new
 VS Code, or Codex settings that point directly to this installation. It is a
 feature included in v1.15.1 and later.
 
-The current source exposes 381 core tools for supported workflow steps spanning the supported ExtendScript, QE DOM, local media and interchange analysis, revisioned project-context retrieval, safe edit-planning, project-intake preview, review handoff, connection verification, and guarded After Effects MOGRT authoring, batch, library, render-queue, inspection, and Premiere-handoff workflows. A compatible, authenticated UXP panel adds 95 documented, capability-gated tools without replacing the production CEP bridge.
+The current source exposes 384 core tools for supported workflow steps spanning the supported ExtendScript, QE DOM, local media and interchange analysis, revisioned project-context retrieval, safe edit-planning, project-intake preview, review handoff, connection verification, and guarded After Effects MOGRT authoring, batch, library, render-queue, inspection, and Premiere-handoff workflows. A compatible, authenticated UXP panel adds 95 documented, capability-gated tools without replacing the production CEP bridge.
 
 <a id="latest-release"></a>
 
-### Latest release: 1.16.4
+### Latest release: 1.17.0
 
-The published v1.16.3 npm artifact contains **381 core tools**, 379 in its default profile,
-and 475 with a compatible UXP connection. The development catalog above can include
+The published v1.16.4 npm artifact contains **381 core tools**, 379 in its default profile,
+and 474 with a compatible UXP connection. The development catalog above can include
 unreleased work. See the [versioned facts and package provenance](https://premiere-pro-mcp.com/facts/).
 
 ### Try a bounded workflow
@@ -160,7 +160,7 @@ if the connection is unavailable.
   local Premiere processes. See the generated [supported action catalog](docs/supported-actions.md)
   for individual capability and verification contracts.
 
-See the [v1.16.4 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.16.4)
+See the [v1.17.0 release notes](https://github.com/leancoderkavy/premiere-pro-mcp/releases/tag/v1.17.0)
 for complete details. Live installation in Premiere Pro still requires host verification.
 
 ### Current MCP protocol support
@@ -208,7 +208,7 @@ their bins, media rules, and organization rules before a facility uses one.
 > ### Install the published package (verify the name)
 >
 > ```bash
-> npm i -g premiere-pro-mcp@1.16.4
+> npm i -g premiere-pro-mcp@1.17.0
 > ```
 >
 > This repository publishes only **`premiere-pro-mcp`**. A differently named package (`adobe-premiere-pro-mcp`) may also declare a `premiere-pro-mcp` executable. Before configuring a client, confirm:
@@ -216,7 +216,7 @@ their bins, media rules, and organization rules before a facility uses one.
 > | Check | Expected |
 > | --- | --- |
 > | Package name | `premiere-pro-mcp` (not `adobe-premiere-pro-mcp`) |
-> | Version | `1.16.4` |
+> | Version | `1.17.0` |
 > | Homepage / repo | https://premiere-pro-mcp.com/ · https://github.com/leancoderkavy/premiere-pro-mcp |
 >
 > ```bash
@@ -229,9 +229,9 @@ their bins, media rules, and organization rules before a facility uses one.
 
 ### Easiest supported path: Claude Desktop
 
-1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.16.4/premiere-pro-mcp-1.16.4.mcpb).
+1. Download the current [Claude Desktop bundle (`.mcpb`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.17.0/premiere-pro-mcp-1.17.0.mcpb).
 2. In Claude Desktop, open **Settings > Extensions > Advanced settings > Install Extension**, select the downloaded bundle, and restart Claude Desktop.
-3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.16.4/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
+3. Download the separate [signed Premiere connector (`.zxp`)](https://github.com/leancoderkavy/premiere-pro-mcp/releases/download/v1.17.0/MCPBridgeCEP.zxp). Open it with your trusted ZXP installer. If your computer has no ZXP installer, use the npm connector installer in **Advanced setup** below.
 4. Restart Premiere, open a project, then open **Window > Extensions > MCP for Adobe Premiere Pro**.
 5. In Claude, enter: `Safely check my Premiere connection with verify_premiere_connection. Make no changes.`
 
@@ -531,11 +531,11 @@ From a clone of this repository:
 ```bash
 codex plugin marketplace add .
 codex plugin add premiere-pro@premiere-pro-mcp
-npx -y premiere-pro-mcp@1.16.3 --install-cep
+npx -y premiere-pro-mcp@1.16.4 --install-cep
 ```
 
 Restart Premiere Pro and start a new Codex session after installation. The plugin
-launches `premiere-pro-mcp@1.16.3` through `npx`; the separate CEP installation is
+launches `premiere-pro-mcp@1.16.4` through `npx`; the separate CEP installation is
 required because the MCP server communicates with the running Premiere host through
 the local bridge.
 
@@ -566,7 +566,7 @@ For Claude Code, add this repository as a marketplace and install the plugin:
 Then install the Premiere bridge and start a new Claude Code session:
 
 ```bash
-npx -y premiere-pro-mcp@1.16.3 --install-cep
+npx -y premiere-pro-mcp@1.16.4 --install-cep
 ```
 
 The Claude Code package lives in
@@ -908,7 +908,7 @@ reports revision-bound notes, VFX state, change impact and turnover exceptions.
 It performs local inspection; host edits and exports use separate guarded tools.
 See [usage, example and remaining execution adapters](docs/film-editorial-workflows.md).
 
-## Tools (381 core total; 379 under the default profile; 475 with a connected UXP bridge)
+## Tools (384 core total; 382 under the default profile; 478 with a connected UXP bridge)
 
 The [complete supported-actions catalog](docs/supported-actions.md) lists every
 registered core tool, the two tools restricted behind explicit `unsafe-script`
@@ -948,7 +948,7 @@ the tables below are a shorter workflow-oriented overview.
 | `set_scratch_disk_path` | Configure scratch disks |
 | `consolidate_and_transfer` | Project Manager consolidation |
 
-### Timeline & Editing (10 + 27 advanced)
+### Timeline & Editing (11 + 27 advanced)
 
 | Tool | Description |
 | :--- | :---------- |
@@ -956,8 +956,9 @@ the tables below are a shorter workflow-oriented overview.
 | `ripple_delete` | Remove clip and close gap (QE) |
 | `roll_edit` / `slide_edit` / `slip_edit` | Professional trim modes (QE) |
 | `move_clip_to_track` | Move between tracks (QE) |
-| `reverse_clip` / `speed_change` / `set_clip_speed_qe` | Unavailable: Premiere has no supported scripting API for changing a timeline clip's speed or direction |
+| `reverse_clip` / `speed_change` / `set_clip_speed_qe` | Unavailable: Premiere's documented ExtendScript and UXP APIs have no setter for a timeline clip's speed or direction; use `set_clip_duration` for timeline length |
 | `split_clip` / `trim_clip` / `move_clip` | Basic edits; trim verifies source points and visible timeline edges |
+| `set_clip_duration` | Set a clip's timeline duration or absolute end (extends still images); refuses next-clip overlaps and restores the original end if Premiere clamps |
 | `set_clip_properties` | Opacity, scale, rotation, position (speed requests fail before mutation) |
 | `link_selection` / `unlink_selection` | Link/unlink A/V |
 
@@ -972,9 +973,10 @@ the tables below are a shorter workflow-oriented overview.
 
 > **Speed, caption, and visual-keyframe boundaries:** Premiere Pro 26.3 may reflect legacy QE
 > speed/direction methods, but exposes no supported scripting setter or Time Remapping component
-> for timeline-clip speed or direction. `reverse_clip`,
+> for timeline-clip speed or direction (documented UXP through 26.3 has only `getSpeed` /
+> `isSpeedReversed`). `reverse_clip`,
 > `speed_change`, `set_clip_speed_qe`, and `set_clip_properties` with `speed` now stop before host mutation;
-> use the Speed/Duration UI or pre-render retimed media. `add_text_overlay` likewise stops
+> use `set_clip_duration` to change timeline length, or the Speed/Duration UI or pre-rendered media to retime. `add_text_overlay` likewise stops
 > before mutation because a raw-text-to-caption API is not exposed; import an `.srt`/`.vtt`
 > and use `create_caption_track`, or use a MOGRT/PNG overlay. Keyframe and caption-track
 > responses can prove parameter/structure readback only—not rendered pixels—so verify playback
@@ -998,6 +1000,15 @@ count. `split_clip` verifies a spanning clip, the expected count increase, and t
 cut boundaries. Its QE path cannot prove effect-keyframe redistribution, so a successful result
 labels those semantics `unverified`. These are CEP contract checks, not validation in a licensed
 Premiere Pro 26.x host.
+
+`set_clip_duration` changes a placed clip's timeline length without touching source in/out
+directly: pass exactly one of `duration_seconds` (from the current start) or `end_seconds`
+(absolute timeline end). It writes the documented `TrackItem.end` as a tick-based `Time`, refuses
+an end that would overlap the next clip on the same track, applies the same `keyframe_policy`
+guard as `trim_clip` when shortening, and reads start/end back. If Premiere clamps the end (for
+example, video media with no remaining handle, or a still whose project item has in/out points),
+the original end is restored and the tool returns an error. Linked audio/video partners are not
+adjusted. This is a CEP contract check, not validation in a licensed Premiere Pro host.
 
 ### Effects & Color (8)
 
@@ -1062,12 +1073,13 @@ presenting UI-only operations as available tools.
 | `play_timeline` / `stop_playback` | Playback control (QE) |
 | `play_source_monitor` | Play in source monitor |
 
-### Selection & Clipboard (7 + 6)
+### Selection & Clipboard (7 + 7)
 
 | Tool | Description |
 | :--- | :---------- |
 | `select_clips_by_name` / `select_clips_in_range` | Smart selection |
 | `copy_effects_between_clips` | Copy effects via QE |
+| `paste_clip_attributes` | Paste Attributes: effect stack, values, and keyframes with per-property readback; masks and differing Blend Mode are reported, not copied |
 | `batch_apply_effect` | Apply effect to multiple clips |
 | `set_blend_mode` | 27 blend modes |
 
@@ -1135,6 +1147,12 @@ evidence behind these tools and their verification boundaries.
 | :--- | :---------- |
 | `plan_speaker_checkerboard` | Per-speaker segments, split points, and track assignments for checkerboarded dialogue |
 | `plan_active_speaker_reframe` | Active-speaker vertical reframe keyframes, or static stacked / side-by-side two-speaker layouts |
+
+### Mask Fit (1)
+
+| Tool | Description |
+| :--- | :---------- |
+| `compute_mask_fit_motion` | Inspect only: Motion Scale and Position that place a still's subject box (source-image fractions) inside an existing Rounded Crop, Crop, or similar mask, with the math inputs and warnings. Apply with `set_clip_scale` / `set_clip_position`, then check with `capture_frame`. No image analysis. |
 
 ### Rhythm Plans (2)
 
@@ -1376,7 +1394,7 @@ premiere-pro-mcp/
 ├── src/
 │   ├── index.ts                 # Entry point — stdio transport setup
 │   ├── http-server.ts           # Entry point — HTTP/SSE transport (Fly.io / remote)
-│   ├── server.ts                # MCP server — registers 381 tools, filtered by authority profile
+│   ├── server.ts                # MCP server — registers 384 tools, filtered by authority profile
 │   ├── bridge/
 │   │   ├── file-bridge.ts       # File-based IPC (write .jsx, poll .json)
 │   │   └── script-builder.ts    # ExtendScript generator with ES3 helpers

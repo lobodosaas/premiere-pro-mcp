@@ -505,9 +505,10 @@ describe("UXP MCP tools", () => {
       // inspection add fifty consolidated UXP tools;
       // connection verification and delivery conformance add two default-profile core tools.
       // Guarded Speech-to-Text start (transcribe_clip_uxp, is_language_pack_available_uxp)
-      // and caption style guidance (get_caption_style_guidance) add three more tools.
+      // and caption style guidance (get_caption_style_guidance) add three more tools;
+      // paste_clip_attributes, set_clip_duration, and compute_mask_fit_motion each add one core tool.
       // The fork adds the saved caption-entrance pattern (animate_caption_clip_uxp).
-      expect(tools.tools).toHaveLength(475);
+      expect(tools.tools).toHaveLength(478);
     } finally {
       await client.close();
       await server.close();

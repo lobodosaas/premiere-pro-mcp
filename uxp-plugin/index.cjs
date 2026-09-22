@@ -1,7 +1,7 @@
 "use strict";
 // Keep in sync with uxp-plugin/manifest.json "version"; enforced by
 // tests/uxp/panel-version.test.ts so a stale panel can be told apart.
-const PANEL_VERSION = "1.16.4";
+const PANEL_VERSION = "1.17.0";
 const uxp = require("uxp");
 const { entrypoints, host, storage } = uxp;
 const ppro = require("premierepro");
