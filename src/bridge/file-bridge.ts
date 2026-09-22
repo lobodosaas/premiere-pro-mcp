@@ -51,6 +51,8 @@ export const BRIDGE_SERVER_IDENTITY_FILE = "bridge-server.json";
 export const BRIDGE_HEARTBEAT_FILE = "bridge-heartbeat.json";
 export const BRIDGE_HEARTBEAT_STALE_MS = 3_000;
 
+const validatedWindowsBridgeDirectories = new Set<string>();
+
 /**
  * Publish the running server's own version next to the bridge protocol files.
  *
@@ -413,6 +415,14 @@ export function ensurePrivateBridgeDirectory(
   }
 
   if (platform === "win32") {
+    // The Windows check spawns PowerShell and, on first use, locks the
+    // directory ACL down. Running it on every command cost a process per
+    // command and could time out under load, so a directory that this process
+    // already validated and locked down is trusted for the rest of the
+    // process. An injected inspector (tests) always runs.
+    const usingDefaultInspector = inspectWindowsAcl === inspectWindowsBridgeDirectoryAcl;
+    if (usingDefaultInspector && validatedWindowsBridgeDirectories.has(dir)) return;
+
     let acl: WindowsBridgeDirectoryAcl;
     try {
       // Always run with the lockdown enabled: an existing directory that we own
@@ -450,6 +460,7 @@ export function ensurePrivateBridgeDirectory(
         `Bridge temp dir ${dir} rejected because unexpected contents appeared during creation.`,
       );
     }
+    if (usingDefaultInspector) validatedWindowsBridgeDirectories.add(dir);
     return;
   }
 
