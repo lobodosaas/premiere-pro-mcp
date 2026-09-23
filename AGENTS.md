@@ -13,6 +13,8 @@ Antes de propor arquitetura, mexer em legenda/keyframe/broker/ACL, ou responder
    página inteira com `memory_read_page` antes de agir.
 3. Páginas-chave (escopo `default/scratch`):
    - `procedures/premiere-fork-upstream-merge.md` — como trazer release nova do upstream sem perder o fork.
+   - `procedures/video-novo-do-zero.md` — checklist de job novo + regras editoriais (institucional = poucos efeitos).
+   - `procedures/prompt-de-trilha-lyria.md` — trilha com Google Lyria + prompt eletrônico aprovado.
    - `procedures/premiere-montagem-de-plano.md` — como montar um `plano-montagem.md` no Premiere (subclips, preview/apply, escala PT-BR).
    - `gotchas/premiere-fork-traps.md` — ACL/%TEMP%, pasta do painel, "Update after quit", restart do broker vs. chat, UI PT-BR, lookup UXP.
    - `procedures/premiere-uxp-mcp-setup.md` — setup do painel UXP + config do MCP (pinned).
