@@ -19,6 +19,7 @@ Antes de propor arquitetura, mexer em legenda/keyframe/broker/ACL, ou responder
    - `gotchas/premiere-fork-traps.md` — ACL/%TEMP%, pasta do painel, "Update after quit", restart do broker vs. chat, UI PT-BR, lookup UXP.
    - `procedures/premiere-uxp-mcp-setup.md` — setup do painel UXP + config do MCP (pinned).
    - `notes/danone-10-11-2026-montagem.md` — job Danone: 12 vídeos verticais entregues (regra `Dur` manda).
+   - `notes/heineken-gestores-14-09-montagem.md` — job Heineken gestores 14-09: 11 vídeos verticais montados (60 blocos).
    - `notes/premiere-fork-merge-upstream-1.17.0.md` — estado atual do fork (1.17.0, 478 tools).
    - `notes/premiere-mcp-por-pasta-funcionando.md` — esquema V2 de MCP por pasta.
    - `notes/premiere-mcp-indice.md` — índice operacional no escopo deste repo.
