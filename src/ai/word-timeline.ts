@@ -41,7 +41,7 @@ export const WORD_TIMELINE_PARAMETER = {
       type: "array",
       minItems: 1,
       maxItems: MAX_TIMELINE_WORDS,
-      description: "Ordered word tokens with source-time boundaries.",
+      description: "Ordered timed tokens with source-time boundaries. Preserve native empty-text disfluency tokens as non-empty timed placeholders, such as [disfluency], rather than dropping their occupied intervals when planning pauses.",
       items: {
         type: "object",
         additionalProperties: false,

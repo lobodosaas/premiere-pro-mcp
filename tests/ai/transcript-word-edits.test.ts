@@ -195,6 +195,22 @@ describe("planFillerWordRemoval", () => {
 });
 
 describe("planPauseTightening", () => {
+  it("preserves a timed disfluency placeholder instead of treating it as a silent gap", () => {
+    const plan = planPauseTightening({
+      word_timeline: timeline([
+        { text: "continue", start_seconds: 0, end_seconds: 1 },
+        { text: "[disfluency]", start_seconds: 1, end_seconds: 1.56 },
+        { text: "speaking", start_seconds: 1.56, end_seconds: 2 },
+      ]),
+      max_pause_seconds: 0.5,
+      target_pause_seconds: 0.16,
+    });
+    expect(plan.evidence.word_count).toBe(3);
+    expect(plan.pauses_tightened).toBe(0);
+    expect(plan.removal_ranges).toEqual([]);
+    expect(plan.keep_ranges).toEqual([{ start_seconds: 0, end_seconds: 2, start_frame: 0, end_frame: 60 }]);
+  });
+
   it("tightens a long pause to the target, centered in the gap", () => {
     const plan = planPauseTightening({ word_timeline: timeline([{ text: "hello", start_seconds: 0, end_seconds: 0.5 }, { text: "world", start_seconds: 2.5, end_seconds: 3 }]) });
     expect(plan.removal_ranges).toHaveLength(1);

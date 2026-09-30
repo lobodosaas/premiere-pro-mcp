@@ -307,6 +307,10 @@ export async function analyzeSilenceFile(
     "-hide_banner",
     "-i",
     mediaPath,
+    // Silence analysis must not decode high-resolution video or attached artwork.
+    "-vn",
+    "-sn",
+    "-dn",
     "-af",
     `silencedetect=noise=${noiseDb}dB:d=${minDuration}`,
     "-f",

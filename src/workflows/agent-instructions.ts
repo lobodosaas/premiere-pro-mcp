@@ -16,7 +16,9 @@ export function buildPremiereInstructions(registeredTools: ReadonlySet<string>):
   route(["preview_edit_plan", "apply_edit_plan"],
     "For compound insert/remove edits, preview the exact plan, then apply only that unchanged plan with its issued confirmation token and required approval. Changed plans need a fresh preview.");
   route(["get_clip_transcript_uxp", "search_clip_transcript_uxp"],
-    "Retrieve native transcript evidence when this UXP backend is connected. Preserve source timing and speaker evidence; do not infer speech from filenames.");
+    "Read existing source-media transcript evidence when this UXP backend is connected; this does not run Speech-to-Text or edit the sequence. Preserve source timing, speaker evidence, and timed empty-text disfluency tokens as non-empty placeholders such as [disfluency] when building word_timeline. Do not infer speech or camera type from filenames.");
+  route(["preview_transcript_edit_uxp", "plan_transcript_rough_cut_uxp"],
+    "These tools only preview or plan source-time deletions; they do not apply timeline edits and expose no apply_transcript_edit_uxp counterpart. handle_seconds expands the removed region on both sides, not preserved breathing room. For pause tightening, use plan_pause_tightening when registered, preserve its target pause, and keep deletion handles at 0. Review the plan, verify source-to-timeline mapping, and choose a registered apply route before mutating a duplicate or derivative sequence.");
   route(["set_clip_duration"],
     "Set a placed clip's timeline length or extend a still image by moving only its end; it refuses overlaps with the next clip and restores the original end if Premiere clamps. Clip speed has no documented scripting setter, so speed_change and set_clip_speed_qe always fail before mutation; use set_clip_duration for timing, or the Speed/Duration UI to retime.");
   route(["capture_frame"],

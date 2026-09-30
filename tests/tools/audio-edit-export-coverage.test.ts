@@ -77,6 +77,19 @@ afterEach(() => {
 });
 
 describe("audio tool analysis coverage", () => {
+  it("analyses only audio without decoding video, subtitles, or data streams", async () => {
+    const mediaPath = temporaryPath("high-resolution.mp4");
+    execSucceeds();
+    execSucceeds("Duration: 00:00:12.00, start: 0.000000");
+
+    const result = await getAudioTools(bridgeOptions).detect_silence.handler({ media_path: mediaPath });
+
+    expect(result).toMatchObject({ success: true, data: { silenceIntervals: [], segments: [{ start: 0, end: 12, duration: 12 }] } });
+    const analysisArgs = mockExecFile.mock.calls[1][1] as string[];
+    expect(analysisArgs).toEqual(expect.arrayContaining(["-vn", "-sn", "-dn"]));
+    expect(mockedSendCommand).not.toHaveBeenCalled();
+  });
+
   it("resolves a project item, runs ffmpeg, and returns silent and retained ranges", async () => {
     const mediaPath = temporaryPath("speech.mp4");
     mockedSendCommand.mockResolvedValueOnce({

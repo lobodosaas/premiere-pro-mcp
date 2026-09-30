@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 const require = createRequire(import.meta.url);
 const api = require("../../uxp-plugin/dialogue-workflows.cjs");
 
@@ -13,12 +13,12 @@ describe("UXP dialogue command module", () => {
     const children: any[] = [];
     const parent = { name: "Media", getId: async () => "bin", getItems: async () => children };
     const source = { name: "Source", getId: async () => "clip", getParentBin: async () => parent, isMulticamClip: async () => false,
-      createSubClipAction: (name: string) => ({ apply: () => children.push({ name, getId: async () => `sub-${children.length + 1}` }) }) };
+      createSubClipAction: (name: string) => ({ apply: () => { const id = `sub-${children.length + 1}`; children.push({ name, getId: async () => id }); } }) };
     const root = { getId: async () => "root", getItems: async () => [source] };
     const createdSequences: any[] = [];
-    const project = { getGuid: async () => "project", getRootItem: async () => root, getSequences: async () => createdSequences,
+    const project = { guid: { toString: () => "project" }, getRootItem: async () => root, getSequences: async () => createdSequences,
       lockedAccess: (fn: () => void) => fn(), executeTransaction: (fn: (compound: any) => void) => { fn({ addAction: (action: any) => { action.apply(); return true; } }); return true; },
-      createSequenceFromMedia: async (name: string) => { const sequence = { name, getGuid: async () => "sequence" }; createdSequences.push(sequence); return sequence; } };
+      createSequenceFromMedia: async (name: string) => { const sequence = { name, guid: { toString: () => "sequence" } }; createdSequences.push(sequence); return sequence; } };
     const ppro = { Project: { getActiveProject: async () => project }, ClipProjectItem: { cast: (item: any) => item.createSubClipAction ? item : null }, FolderItem: { cast: (item: any) => item.getItems ? item : null },
       TickTime: { createWithSeconds: (seconds: number) => ({ seconds }) }, SequenceEditor: { getEditor: () => ({ createInsertProjectItemAction: () => ({ apply() {} }) }) } };
     const command = api.createDialogueWorkflowDefinitions({ ppro })["dialogue.deriveSequence"];
@@ -29,18 +29,21 @@ describe("UXP dialogue command module", () => {
     expect(result).toMatchObject({ outcome: "committed_unverified", partial: false, originalSourcesChanged: false, renderVerified: false });
     expect(result.createdSubclips).toHaveLength(2);
     expect(result.insertedProjectItemIds).toHaveLength(2);
+    expect(result.sequence).toEqual({ id: "sequence", name: "Reviewed" });
+    expect(result.createdSubclips.map((item: { id: string }) => item.id)).toEqual(["sub-1", "sub-2"]);
+    expect(result.insertedProjectItemIds).toEqual(["sub-1", "sub-2"]);
   });
   it("walks the project tree when the cast clip has no getParentBin", async () => {
     const children: any[] = [];
     const parent = { name: "Media", getId: async () => "bin", getItems: async () => children };
     const source = { name: "Source", getId: async () => "clip", isMulticamClip: async () => false,
-      createSubClipAction: (name: string) => ({ apply: () => children.push({ name, getId: async () => `sub-${children.length + 1}` }) }) };
+      createSubClipAction: (name: string) => ({ apply: () => { const id = `sub-${children.length + 1}`; children.push({ name, getId: async () => id }); } }) };
     children.push(source);
     const root = { getId: async () => "root", getItems: async () => [parent] };
     const createdSequences: any[] = [];
-    const project = { getGuid: async () => "project", getRootItem: async () => root, getSequences: async () => createdSequences,
+    const project = { guid: "project", getRootItem: async () => root, getSequences: async () => createdSequences,
       lockedAccess: (fn: () => void) => fn(), executeTransaction: (fn: (compound: any) => void) => { fn({ addAction: (action: any) => { action.apply(); return true; } }); return true; },
-      createSequenceFromMedia: async (name: string) => { const sequence = { name, getGuid: async () => "sequence" }; createdSequences.push(sequence); return sequence; } };
+      createSequenceFromMedia: async (name: string) => { const sequence = { name, guid: "sequence" }; createdSequences.push(sequence); return sequence; } };
     const ppro = { Project: { getActiveProject: async () => project }, ClipProjectItem: { cast: (item: any) => item.createSubClipAction ? item : null }, FolderItem: { cast: (item: any) => item.getItems ? item : null },
       TickTime: { createWithSeconds: (seconds: number) => ({ seconds }) }, SequenceEditor: { getEditor: () => ({ createInsertProjectItemAction: () => ({ apply() {} }) }) } };
     const command = api.createDialogueWorkflowDefinitions({ ppro })["dialogue.deriveSequence"];
@@ -49,5 +52,60 @@ describe("UXP dialogue command module", () => {
     ], output_duration_seconds: 1, original_sources_unchanged: true, render_verified: false } });
     expect(result).toMatchObject({ outcome: "committed_unverified", partial: false });
     expect(result.createdSubclips).toHaveLength(1);
+    expect(result.sequence.id).toBe("sequence");
+  });
+  it.each([undefined, "another-project"])("rejects project GUID %s before creating actions", async (guid) => {
+    const lockedAccess = vi.fn(), executeTransaction = vi.fn(), createSequenceFromMedia = vi.fn();
+    const project = { guid, lockedAccess, executeTransaction, createSequenceFromMedia };
+    const command = api.createDialogueWorkflowDefinitions({ ppro: { Project: { getActiveProject: async () => project } } })["dialogue.deriveSequence"];
+    await expect(command.handler({ operationId: "stale-project", plan: {
+      schema_version: 1, project_guid: "project", mode: "talking_head", sequence_name: "Reviewed",
+      segments: [{ id: "one", source_project_item_id: "clip", transcript_revision: `sha256:${"a".repeat(64)}`, source_start_seconds: 0, source_end_seconds: 1 }],
+      output_duration_seconds: 1, original_sources_unchanged: true, render_verified: false,
+    } })).rejects.toMatchObject({ code: "UXP_STALE_PROJECT" });
+    expect(lockedAccess).not.toHaveBeenCalled();
+    expect(executeTransaction).not.toHaveBeenCalled();
+    expect(createSequenceFromMedia).not.toHaveBeenCalled();
+  });
+  it.each([
+    [{}, "[object Object]"],
+    [["project"], "project"],
+    [0, "0"],
+    [true, "true"],
+    [{ toString: () => "undefined" }, "undefined"],
+  ])("rejects an unreadable GUID even when its string representation matches the plan %#", async (guid, projectGuid) => {
+    const lockedAccess = vi.fn(), executeTransaction = vi.fn(), createSequenceFromMedia = vi.fn();
+    const getRootItem = vi.fn(() => { throw new Error("Project guard was bypassed"); });
+    const project = { guid, lockedAccess, executeTransaction, createSequenceFromMedia, getRootItem };
+    const command = api.createDialogueWorkflowDefinitions({ ppro: { Project: { getActiveProject: async () => project } } })["dialogue.deriveSequence"];
+    await expect(command.handler({ operationId: "unreadable-project", plan: {
+      schema_version: 1, project_guid: projectGuid, mode: "talking_head", sequence_name: "Reviewed",
+      segments: [{ id: "one", source_project_item_id: "clip", transcript_revision: `sha256:${"a".repeat(64)}`, source_start_seconds: 0, source_end_seconds: 1 }],
+      output_duration_seconds: 1, original_sources_unchanged: true, render_verified: false,
+    } })).rejects.toMatchObject({ code: "UXP_STALE_PROJECT" });
+    expect(getRootItem).not.toHaveBeenCalled();
+    expect(lockedAccess).not.toHaveBeenCalled();
+    expect(executeTransaction).not.toHaveBeenCalled();
+    expect(createSequenceFromMedia).not.toHaveBeenCalled();
+  });
+  it("recovers the new sequence GUID after creation throws without mistaking an existing sequence", async () => {
+    const children: any[] = [];
+    const parent = { getId: async () => "bin", getItems: async () => children };
+    const source = { name: "Source", getId: async () => "clip", getParentBin: async () => parent,
+      createSubClipAction: (name: string) => ({ apply: () => children.push({ name, getId: async () => "sub-1" }) }) };
+    const root = { getId: async () => "root", getItems: async () => [source] };
+    const createdSequences = [{ name: "Original", guid: "existing-sequence" }];
+    const project = { guid: "project", getRootItem: async () => root, getSequences: async () => createdSequences,
+      lockedAccess: (fn: () => void) => fn(), executeTransaction: (fn: (compound: any) => void) => { fn({ addAction: (action: any) => { action.apply(); return true; } }); return true; },
+      createSequenceFromMedia: async (name: string) => { createdSequences.push({ name, guid: "new-sequence" }); throw new Error("Host receipt unavailable"); } };
+    const ppro = { Project: { getActiveProject: async () => project }, ClipProjectItem: { cast: (item: any) => item.createSubClipAction ? item : null }, FolderItem: { cast: (item: any) => item.getItems ? item : null },
+      SequenceEditor: { getEditor: () => ({ createInsertProjectItemAction() {} }) }, TickTime: { createWithSeconds: (seconds: number) => ({ seconds }) } };
+    const result = await api.createDialogueWorkflowDefinitions({ ppro })["dialogue.deriveSequence"].handler({ operationId: "recover-sequence", plan: {
+      schema_version: 1, project_guid: "project", mode: "talking_head", sequence_name: "Reviewed",
+      segments: [{ id: "one", source_project_item_id: "clip", transcript_revision: `sha256:${"a".repeat(64)}`, source_start_seconds: 0, source_end_seconds: 1 }],
+      output_duration_seconds: 1, original_sources_unchanged: true, render_verified: false,
+    } });
+    expect(result).toMatchObject({ partial: false, sequence: { id: "new-sequence", name: "Reviewed" }, originalSourcesChanged: false });
+    expect(createdSequences[0]).toEqual({ name: "Original", guid: "existing-sequence" });
   });
 });
